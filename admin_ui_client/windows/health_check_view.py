@@ -257,11 +257,13 @@ class HealthCheckView(QWidget):
         
         balance_title = QLabel("OpenAI余额:")
         balance_title.setFont(QFont("Arial", 10, QFont.Bold))
+        # 使用主题颜色，不设置固定颜色
         balance_layout.addWidget(balance_title)
         
         self.balance_label = QLabel("加载中...")
         self.balance_label.setFont(QFont("Arial", 10))
         self.balance_label.setWordWrap(True)
+        # 使用主题颜色，不设置固定颜色
         balance_layout.addWidget(self.balance_label)
         
         balance_layout.addStretch()
@@ -286,6 +288,7 @@ class HealthCheckView(QWidget):
         filter_layout.setSpacing(8)
 
         start_label = QLabel("开始日期:")
+        # 使用主题颜色，不设置固定颜色
         self.start_date_edit = QDateEdit()
         self.start_date_edit.setCalendarPopup(True)
         self.start_date_edit.setDate(QDate.currentDate().addDays(-30))
@@ -294,6 +297,7 @@ class HealthCheckView(QWidget):
         apply_theme_to_date_edit(self.start_date_edit)
 
         end_label = QLabel("结束日期:")
+        # 使用主题颜色，不设置固定颜色
         self.end_date_edit = QDateEdit()
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setDate(QDate.currentDate())
@@ -301,6 +305,7 @@ class HealthCheckView(QWidget):
         apply_theme_to_date_edit(self.end_date_edit)
 
         status_label = QLabel("状态筛选:")
+        # 使用主题颜色，不设置固定颜色
         self.status_combo = QComboBox()
         self.status_combo.addItems(["全部", "healthy", "rate_limited", "error", "unknown"])
 
@@ -425,18 +430,46 @@ class HealthCheckView(QWidget):
             time_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 1, time_item)
 
-            # 状态（带颜色）
+            # 状态（带颜色，适配暗色模式）
             status = item.get('status', 'unknown')
             status_item = QTableWidgetItem(status)
             status_item.setTextAlignment(Qt.AlignCenter)
-            if status == 'healthy':
-                status_item.setBackground(QColor(200, 255, 200))
-            elif status == 'rate_limited':
-                status_item.setBackground(QColor(255, 200, 100))
-            elif status == 'error':
-                status_item.setBackground(QColor(255, 200, 200))
+            
+            # 检测当前主题
+            from utils.theme_manager import ThemeManager
+            cfg = ConfigManager.load()
+            theme_pref = cfg.get("theme", "auto")
+            if theme_pref == "auto":
+                current_theme = ThemeManager.detect_system_theme()
             else:
-                status_item.setBackground(QColor(240, 240, 240))
+                current_theme = theme_pref
+            
+            # 根据主题设置背景色和文字颜色
+            if current_theme == "dark":
+                # 暗色模式
+                if status == 'healthy':
+                    status_item.setBackground(QColor(30, 80, 30))  # 深绿色
+                    status_item.setForeground(QColor(100, 255, 100))  # 浅绿色文字
+                elif status == 'rate_limited':
+                    status_item.setBackground(QColor(80, 60, 20))  # 深橙色
+                    status_item.setForeground(QColor(255, 200, 100))  # 浅橙色文字
+                elif status == 'error':
+                    status_item.setBackground(QColor(80, 30, 30))  # 深红色
+                    status_item.setForeground(QColor(255, 150, 150))  # 浅红色文字
+                else:
+                    status_item.setBackground(QColor(50, 50, 50))  # 深灰色
+                    status_item.setForeground(QColor(200, 200, 200))  # 浅灰色文字
+            else:
+                # 亮色模式
+                if status == 'healthy':
+                    status_item.setBackground(QColor(200, 255, 200))
+                elif status == 'rate_limited':
+                    status_item.setBackground(QColor(255, 200, 100))
+                elif status == 'error':
+                    status_item.setBackground(QColor(255, 200, 200))
+                else:
+                    status_item.setBackground(QColor(240, 240, 240))
+            
             self.table.setItem(row, 2, status_item)
 
             # HTTP状态码
@@ -493,12 +526,24 @@ class HealthCheckView(QWidget):
         
         if not session_key:
             self.balance_label.setText("⚠️ 未配置 OpenAI Session Key\n请在 config.json 中设置 openai_session_key")
-            self.balance_label.setStyleSheet("color: orange;")
+            # 暗色模式下使用更亮的橙色
+            from utils.theme_manager import ThemeManager
+            theme_pref = cfg.get("theme", "auto")
+            if theme_pref == "auto":
+                current_theme = ThemeManager.detect_system_theme()
+            else:
+                current_theme = theme_pref
+            
+            if current_theme == "dark":
+                self.balance_label.setStyleSheet("color: #FFA500;")  # 亮橙色
+            else:
+                self.balance_label.setStyleSheet("color: orange;")
             self.balance_label.setToolTip("Session Key 可以从浏览器 Cookie 中获取（访问 platform.openai.com）")
             return
         
         self.balance_label.setText("加载中...")
-        self.balance_label.setStyleSheet("color: gray;")
+        # 使用主题颜色，不设置固定颜色（让主题系统自动处理）
+        # self.balance_label.setStyleSheet("color: gray;")
         
         # 在后台线程中获取余额
         worker = _OpenAIBalanceWorker(session_key)
@@ -522,13 +567,31 @@ class HealthCheckView(QWidget):
             if usage_percentage > 0:
                 balance_text += f" ({usage_percentage:.1f}%)"
             
-            # 根据使用率设置颜色
-            if usage_percentage >= 90:
-                self.balance_label.setStyleSheet("color: red; font-weight: bold;")
-            elif usage_percentage >= 70:
-                self.balance_label.setStyleSheet("color: orange; font-weight: bold;")
+            # 根据使用率设置颜色（适配暗色模式）
+            from utils.theme_manager import ThemeManager
+            cfg = ConfigManager.load()
+            theme_pref = cfg.get("theme", "auto")
+            if theme_pref == "auto":
+                current_theme = ThemeManager.detect_system_theme()
             else:
-                self.balance_label.setStyleSheet("color: green;")
+                current_theme = theme_pref
+            
+            if current_theme == "dark":
+                # 暗色模式使用更亮的颜色
+                if usage_percentage >= 90:
+                    self.balance_label.setStyleSheet("color: #FF6B6B; font-weight: bold;")  # 亮红色
+                elif usage_percentage >= 70:
+                    self.balance_label.setStyleSheet("color: #FFA500; font-weight: bold;")  # 亮橙色
+                else:
+                    self.balance_label.setStyleSheet("color: #4ECDC4; font-weight: bold;")  # 亮青色
+            else:
+                # 亮色模式
+                if usage_percentage >= 90:
+                    self.balance_label.setStyleSheet("color: red; font-weight: bold;")
+                elif usage_percentage >= 70:
+                    self.balance_label.setStyleSheet("color: orange; font-weight: bold;")
+                else:
+                    self.balance_label.setStyleSheet("color: green;")
             
             self.balance_label.setText(balance_text)
             
@@ -543,12 +606,25 @@ class HealthCheckView(QWidget):
             self.balance_label.setToolTip(tooltip)
         else:
             self.balance_label.setText("无法获取余额信息")
-            self.balance_label.setStyleSheet("color: orange;")
+            # 暗色模式下使用更亮的橙色
+            from utils.theme_manager import ThemeManager
+            cfg = ConfigManager.load()
+            theme_pref = cfg.get("theme", "auto")
+            if theme_pref == "auto":
+                current_theme = ThemeManager.detect_system_theme()
+            else:
+                current_theme = theme_pref
+            
+            if current_theme == "dark":
+                self.balance_label.setStyleSheet("color: #FFA500;")  # 亮橙色
+            else:
+                self.balance_label.setStyleSheet("color: orange;")
     
     def _on_balance_error(self, message: str):
         """余额获取失败"""
         self.balance_label.setText(f"获取失败: {message}")
-        self.balance_label.setStyleSheet("color: red;")
+        # 使用主题颜色，不设置固定颜色（让主题系统自动处理）
+        # self.balance_label.setStyleSheet("color: red;")
         self.balance_label.setToolTip("请检查 session key 是否正确，或点击右侧按钮打开 Dashboard 查看")
     
     def _on_open_dashboard(self):

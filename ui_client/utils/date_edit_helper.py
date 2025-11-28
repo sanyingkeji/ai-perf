@@ -84,13 +84,6 @@ def _apply_theme_to_widget(widget):
                 border: none;
                 background-color: transparent;
             }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #ffffff;
-                margin-right: 5px;
-            }
             QComboBox QAbstractItemView {
                 background-color: #2a2a2a;
                 color: #ffffff;
@@ -119,13 +112,6 @@ def _apply_theme_to_widget(widget):
                 border: none;
                 background-color: transparent;
             }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #000000;
-                margin-right: 5px;
-            }
             QComboBox QAbstractItemView {
                 background-color: #ffffff;
                 color: #000000;
@@ -146,6 +132,46 @@ def _apply_theme_to_calendar(date_edit: QDateEdit):
     calendar = date_edit.calendarWidget()
     if calendar is None:
         return
+    
+    # 设置日历的背景色和文字颜色（通过样式表）
+    if is_dark:
+        # 深色模式
+        calendar.setStyleSheet("""
+            QCalendarWidget {
+                background-color: #2a2a2a;
+                color: #ffffff;
+            }
+            QCalendarWidget QTableView {
+                background-color: #2a2a2a;
+                color: #ffffff;
+                selection-background-color: #4a90e2;
+                selection-color: #ffffff;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #2a2a2a;
+                color: #ffffff;
+                border: none;
+            }
+        """)
+    else:
+        # 浅色模式
+        calendar.setStyleSheet("""
+            QCalendarWidget {
+                background-color: #ffffff;
+                color: #000000;
+            }
+            QCalendarWidget QTableView {
+                background-color: #ffffff;
+                color: #000000;
+                selection-background-color: #4a90e2;
+                selection-color: #ffffff;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #f1f3f5;
+                color: #000000;
+                border: none;
+            }
+        """)
     
     # 设置星期标题样式
     weekdays = [Qt.Monday, Qt.Tuesday, Qt.Wednesday, Qt.Thursday, Qt.Friday, Qt.Saturday, Qt.Sunday]

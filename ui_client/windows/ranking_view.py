@@ -172,49 +172,53 @@ class RankingView(QWidget):
         monthly_layout.setContentsMargins(0, 0, 0, 0)
         monthly_layout.setSpacing(16)
 
-        # 月份选择区域（月排名）
+        # 月份选择区域（月排名）- 照搬历史评分页面的样式
         monthly_filter_frame = QFrame()
-        monthly_filter_frame.setFrameShape(QFrame.NoFrame)  # 去掉边框
         monthly_filter_layout = QHBoxLayout(monthly_filter_frame)
         monthly_filter_layout.setContentsMargins(12, 12, 12, 12)
         monthly_filter_layout.setSpacing(8)
 
         month_label = QLabel("月份：")
         month_label.setStyleSheet("background-color: transparent;")
-        self.month_date_edit = QDateEdit()
-        # 设置月份选择模式（只显示年月）
-        self.month_date_edit.setDisplayFormat("yyyy-MM")
-        self.month_date_edit.setCalendarPopup(True)
-        # 设置日期范围：2025-11-01 到当前月份
+        self.month_combo = QComboBox()
+        self.month_combo.setMinimumWidth(150)
+        # 生成从 2025-11 到 2027-11 的所有月份选项
+        months = []
+        for year in range(2025, 2028):  # 2025, 2026, 2027
+            start_month = 11 if year == 2025 else 1
+            end_month = 11 if year == 2027 else 12
+            for month in range(start_month, end_month + 1):
+                months.append(f"{year}-{month:02d}")
+        self.month_combo.addItems(months)
+        # 设置当前月份为默认选中
         from datetime import date as date_class
         today = date_class.today()
-        start_date = date_class(2025, 11, 1)
-        current_month_start = date_class(today.year, today.month, 1)
-        self.month_date_edit.setDateRange(QDate(start_date.year, start_date.month, 1), 
-                                          QDate(current_month_start.year, current_month_start.month, 1))
-        # 设置当前月份为默认选中
-        self.month_date_edit.setDate(QDate(current_month_start.year, current_month_start.month, 1))
-        # 对齐管理端的样式
-        self.month_date_edit.setFixedHeight(28)
-        # 适配深色模式
-        apply_theme_to_date_edit(self.month_date_edit)
-        # 连接日期改变事件，确保选择的是月份的第一天
-        self.month_date_edit.dateChanged.connect(self._on_month_date_changed)
+        current_month_str = f"{today.year}-{today.month:02d}"
+        if current_month_str in months:
+            index = months.index(current_month_str)
+            self.month_combo.setCurrentIndex(index)
+        else:
+            # 如果当前月份不在范围内，选择最后一个
+            self.month_combo.setCurrentIndex(len(months) - 1)
+        # 应用主题适配（确保倒三角图标正确显示并支持动态主题切换）
+        apply_theme_to_combo_box(self.month_combo)
         
         monthly_filter_layout.addWidget(month_label)
-        monthly_filter_layout.addWidget(self.month_date_edit)
+        monthly_filter_layout.addWidget(self.month_combo)
         monthly_filter_layout.addStretch()
         
-        # 刷新按钮
+        # 刷新按钮（确保在浅色模式下可见）
         self.monthly_refresh_btn = QPushButton("刷新")
-        self.monthly_refresh_btn.setFixedWidth(100)
         self.monthly_refresh_btn.clicked.connect(self._on_monthly_refresh_clicked)
+        # 应用按钮主题样式，确保在浅色模式下可见
         self._apply_button_theme(self.monthly_refresh_btn)
         monthly_filter_layout.addWidget(self.monthly_refresh_btn)
 
-        # 去掉外边框
-        monthly_filter_frame.setStyleSheet("background-color: transparent;")
+        monthly_filter_frame.setProperty("class", "card")
         monthly_layout.addWidget(monthly_filter_frame)
+        
+        # 连接下拉框改变事件（和历史评分页面一样使用 currentIndexChanged）
+        self.month_combo.currentIndexChanged.connect(self._on_month_changed)
 
         # 日排名内容区域（可滚动）
         daily_scroll = QScrollArea()
@@ -317,26 +321,21 @@ class RankingView(QWidget):
         # 刷新时，不传日期，让后端返回上一个工作日的数据
         self._load_ranking(date_str=None)
 
-    def _on_month_date_changed(self, qdate: QDate):
-        """月份日期改变时重新加载月排名"""
+    def _on_month_changed(self, index: int):
+        """月份下拉框改变时重新加载月排名（和历史评分页面一样的实现方式）"""
         # 如果正在初始化，不触发加载
         if self._is_initializing:
             return
-        # 确保选择的是月份的第一天
-        month_start = QDate(qdate.year(), qdate.month(), 1)
-        if qdate != month_start:
-            self.month_date_edit.blockSignals(True)
-            self.month_date_edit.setDate(month_start)
-            self.month_date_edit.blockSignals(False)
-        # 用户手动改变月份时，使用日期选择器的值
-        month_str = f"{qdate.year()}-{qdate.month():02d}-01"
+        # 用户手动改变月份时，使用下拉框的值
+        month_text = self.month_combo.itemText(index)
+        month_str = f"{month_text}-01"
         self._load_monthly_ranking(month_str=month_str)
 
     def _on_monthly_refresh_clicked(self):
         """刷新按钮点击事件（月排名）"""
         # 刷新时，使用当前选择的月份
-        qdate = self.month_date_edit.date()
-        month_str = f"{qdate.year()}-{qdate.month():02d}-01"
+        month_text = self.month_combo.currentText()
+        month_str = f"{month_text}-01"
         self._load_monthly_ranking(month_str=month_str)
 
     def _load_ranking(self, date_str: Optional[str] = None):
@@ -430,10 +429,13 @@ class RankingView(QWidget):
             if month_str:
                 try:
                     d = date.fromisoformat(month_str)
+                    month_text = f"{d.year}-{d.month:02d}"
                     # 使用 blockSignals 临时阻止信号，避免触发加载
-                    self.month_date_edit.blockSignals(True)
-                    self.month_date_edit.setDate(QDate(d.year, d.month, 1))
-                    self.month_date_edit.blockSignals(False)
+                    self.month_combo.blockSignals(True)
+                    index = self.month_combo.findText(month_text)
+                    if index >= 0:
+                        self.month_combo.setCurrentIndex(index)
+                    self.month_combo.blockSignals(False)
                 except Exception:
                     pass
 
@@ -616,7 +618,7 @@ class RankingView(QWidget):
             self._is_dark = current_is_dark
             # 重新应用日期选择器的主题
             apply_theme_to_date_edit(self.date_edit)
-            # 重新应用月份下拉框的主题
+            # 重新应用月份下拉框的主题（支持动态主题切换）
             apply_theme_to_combo_box(self.month_combo)
             # 重新应用按钮主题
             self._apply_button_theme(self.refresh_btn)
@@ -874,8 +876,8 @@ class RankingView(QWidget):
     
     def _get_current_month_str(self) -> str:
         """获取当前选中的月份字符串（YYYY-MM-DD格式）"""
-        qdate = self.month_date_edit.date()
-        return f"{qdate.year()}-{qdate.month():02d}-01"
+        month_text = self.month_combo.currentText()
+        return f"{month_text}-01"
     
     def _show_monthly_detail(self, month_str: str):
         """显示月排名明细对话框（先弹窗再请求接口）"""
@@ -910,6 +912,11 @@ class MonthlyDetailDialog(QDialog):
         self.setWindowTitle(f"月排名明细 - {month_str}")
         self.resize(600, 400)
         
+        # 检测当前主题
+        self._is_dark = self._detect_theme()
+        # 应用对话框背景色
+        self._apply_dialog_theme()
+        
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -917,6 +924,7 @@ class MonthlyDetailDialog(QDialog):
         # 月份信息
         month_label = QLabel(f"月份：{month_str}")
         month_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self._apply_label_theme(month_label)
         layout.addWidget(month_label)
         
         # 信息显示区域
@@ -931,11 +939,12 @@ class MonthlyDetailDialog(QDialog):
         self.final_score_label = QLabel("最终综合分：--")
         self.working_days_label = QLabel("有效工作日：--")
         
-        # 设置字体
+        # 设置字体和主题
         for label in [self.ai_score_label, self.salary_ratio_label, self.growth_rate_label, 
                       self.final_score_label, self.working_days_label]:
             label.setFont(QFont("Arial", 12))
             label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+            self._apply_label_theme(label)
             info_layout.addWidget(label)
         
         layout.addWidget(info_frame)
@@ -943,59 +952,63 @@ class MonthlyDetailDialog(QDialog):
         
         # 不立即加载数据，等待对话框显示后再加载（在 _show_monthly_detail 中调用）
     
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            from utils.config_manager import ConfigManager
+            from utils.theme_manager import ThemeManager
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference  # "light" or "dark"
+            
+            return theme == "dark"
+        except:
+            return False
+    
+    def _apply_dialog_theme(self):
+        """应用对话框背景色"""
+        if self._is_dark:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #202124;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #F7F9FC;
+                }
+            """)
+    
+    def _apply_label_theme(self, label: QLabel):
+        """应用标签文字颜色"""
+        if self._is_dark:
+            label.setStyleSheet("color: #E8EAED; background-color: transparent;")
+        else:
+            label.setStyleSheet("color: #222; background-color: transparent;")
+    
     def _load_data(self):
         """加载月度汇总数据"""
         try:
             client = ApiClient.from_config()
-            # 获取月度排行榜数据
-            data = client.get_monthly_ranking(month_str=self._month_str)
+            # 使用专门的月度明细接口，查询 ai_score_monthly 表
+            data = client.get_monthly_detail(month_str=self._month_str)
             
             if data.get("status") != "success":
                 error_msg = data.get("message") or "加载失败"
                 self._show_error(f"加载失败：{error_msg}")
                 return
             
-            # 获取当前用户的月度数据
-            current_user_rank = data.get("current_user_rank")
-            if not current_user_rank:
-                # 如果不在current_user_rank中，可能在前十名中
-                top_10 = data.get("top_10", [])
-                for item in top_10:
-                    if item.get("is_current_user", False):
-                        current_user_rank = item
-                        break
-            
-            if not current_user_rank:
-                self._show_error("未找到您的月度排名数据")
-                return
-            
             # 提取数据
-            total_ai_month = current_user_rank.get("total_ai_month", 0.0)
-            salary_ratio = current_user_rank.get("salary_ratio", 0.0)  # 数据库存的是小数
-            growth_rate = current_user_rank.get("growth_rate", 0.0)  # 数据库存的是小数
-            final_score = current_user_rank.get("final_score", 0.0)
-            
-            # 计算有效工作日数（查询当月有eligible=1的记录数量）
-            from datetime import date as date_class
-            d = date_class.fromisoformat(self._month_str)
-            from calendar import monthrange
-            _, last_day = monthrange(d.year, d.month)
-            month_start = date_class(d.year, d.month, 1)
-            month_end = date_class(d.year, d.month, last_day)
-            
-            # 查询有效工作日数
-            working_days = 0
-            current_date = month_start
-            while current_date <= month_end:
-                try:
-                    daily_data = client.get_daily_score(current_date.isoformat())
-                    if daily_data.get("status") == "success":
-                        score_data = daily_data.get("data", {})
-                        if score_data.get("eligible", False):
-                            working_days += 1
-                except Exception:
-                    pass  # 忽略某一天的数据获取失败
-                current_date += timedelta(days=1)
+            total_ai_month = data.get("total_ai_month", 0.0)
+            salary_ratio = data.get("salary_ratio", 0.0)  # 数据库存的是小数
+            growth_rate = data.get("growth_rate", 0.0)  # 数据库存的是小数
+            final_score = data.get("final_score", 0.0)
+            working_days = data.get("working_days", 0)  # 从接口直接获取有效工作日数
             
             # 格式化显示
             # 工资贡献率：乘以100，格式化为整数，加%
@@ -1025,7 +1038,11 @@ class MonthlyDetailDialog(QDialog):
     def _show_error(self, message: str):
         """显示错误信息"""
         error_label = QLabel(message)
-        error_label.setStyleSheet("color: red;")
+        # 根据主题设置错误信息颜色
+        if self._is_dark:
+            error_label.setStyleSheet("color: #ff6b6b; background-color: transparent;")
+        else:
+            error_label.setStyleSheet("color: red; background-color: transparent;")
         main_layout = self.layout()
         if main_layout:
             main_layout.addWidget(error_label)

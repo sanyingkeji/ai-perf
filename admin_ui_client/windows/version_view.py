@@ -777,6 +777,7 @@ class VersionView(QWidget):
         filter_layout.setSpacing(8)
         
         client_type_label = QLabel("客户端类型：")
+        # 使用主题颜色，不设置固定颜色
         self.client_type_combo = QComboBox()
         self.client_type_combo.addItems(["全部", "employee", "admin"])
         

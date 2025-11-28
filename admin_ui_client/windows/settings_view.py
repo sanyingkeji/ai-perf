@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QFrame, QRadioButton, QMessageBox, QTabWidget
 )
 from PySide6.QtGui import QFont
-from PySide6.QtCore import QTimer, QRunnable, QThreadPool, QObject, Signal, Slot
+from PySide6.QtCore import QTimer, QRunnable, QThreadPool, QObject, Signal, Slot, Qt
 from typing import Dict, Any
 from datetime import date
 from pathlib import Path
@@ -374,7 +374,100 @@ class SettingsView(QWidget):
         
         tab_widget.addTab(third_party_tab, "第三方平台配置")
         
-        # Tab 3: 其他设置
+        # Tab 3: 打包配置（独立的 GitHub 仓库配置）
+        packaging_tab = QWidget()
+        packaging_layout = QVBoxLayout(packaging_tab)
+        packaging_layout.setContentsMargins(16, 16, 16, 16)
+        packaging_layout.setSpacing(12)
+        
+        packaging_title = QLabel("打包配置（GitHub 仓库）")
+        packaging_title_font = QFont()
+        packaging_title_font.setPointSize(12)
+        packaging_title_font.setBold(True)
+        packaging_title.setFont(packaging_title_font)
+        packaging_layout.addWidget(packaging_title)
+        
+        packaging_desc = QLabel("此配置用于打包TAB的版本管理和构建功能，与第三方平台配置中的GitHub配置完全独立。")
+        packaging_desc.setWordWrap(True)
+        packaging_desc.setStyleSheet("color: #666; font-size: 10px;")
+        packaging_layout.addWidget(packaging_desc)
+        
+        # GitHub API 地址（打包专用）
+        packaging_github_api_row = QHBoxLayout()
+        packaging_github_api_label = QLabel("GitHub API 地址：")
+        self.packaging_github_api_edit = QLineEdit()
+        self.packaging_github_api_edit.setPlaceholderText("例如：https://api.github.com")
+        self.packaging_github_api_edit.setText(self.cfg.get("packaging_github_api_url", "https://api.github.com"))
+        self._packaging_github_api_save_timer = QTimer()
+        self._packaging_github_api_save_timer.setSingleShot(True)
+        self._packaging_github_api_save_timer.timeout.connect(self._auto_save_packaging_github_api_url)
+        self.packaging_github_api_edit.textChanged.connect(lambda: self._packaging_github_api_save_timer.start(500))
+        self.packaging_github_api_edit.editingFinished.connect(self._on_packaging_github_api_url_changed)
+        self.packaging_github_api_edit.returnPressed.connect(self._on_packaging_github_api_url_changed)
+        packaging_github_api_row.addWidget(packaging_github_api_label)
+        packaging_github_api_row.addWidget(self.packaging_github_api_edit, 1)
+        packaging_layout.addLayout(packaging_github_api_row)
+        
+        # GitHub API Key（打包专用）
+        packaging_github_key_row = QHBoxLayout()
+        packaging_github_key_label = QLabel("GitHub API Key：")
+        self.packaging_github_api_key_edit = QLineEdit()
+        self.packaging_github_api_key_edit.setPlaceholderText("必需，用于访问私有仓库")
+        self.packaging_github_api_key_edit.setEchoMode(QLineEdit.Password)  # 密码模式
+        self.packaging_github_api_key_edit.setText(self.cfg.get("packaging_github_api_key", ""))
+        self._packaging_github_api_key_save_timer = QTimer()
+        self._packaging_github_api_key_save_timer.setSingleShot(True)
+        self._packaging_github_api_key_save_timer.timeout.connect(self._auto_save_packaging_github_api_key)
+        self.packaging_github_api_key_edit.textChanged.connect(lambda: self._packaging_github_api_key_save_timer.start(500))
+        self.packaging_github_api_key_edit.editingFinished.connect(self._on_packaging_github_api_key_changed)
+        self.packaging_github_api_key_edit.returnPressed.connect(self._on_packaging_github_api_key_changed)
+        packaging_github_key_row.addWidget(packaging_github_key_label)
+        packaging_github_key_row.addWidget(self.packaging_github_api_key_edit, 1)
+        packaging_layout.addLayout(packaging_github_key_row)
+        
+        # GitHub 仓库配置
+        packaging_github_repo_row = QHBoxLayout()
+        packaging_github_repo_label = QLabel("GitHub 仓库：")
+        packaging_github_repo_label.setToolTip("格式：owner/repo，例如：sanyingkeji/ai-perf")
+        packaging_github_repo_container = QHBoxLayout()
+        packaging_github_repo_container.setSpacing(4)
+        
+        self.packaging_github_repo_owner_edit = QLineEdit()
+        self.packaging_github_repo_owner_edit.setPlaceholderText("仓库所有者")
+        self.packaging_github_repo_owner_edit.setText(self.cfg.get("packaging_github_repo_owner", "sanyingkeji"))
+        self._packaging_github_repo_owner_save_timer = QTimer()
+        self._packaging_github_repo_owner_save_timer.setSingleShot(True)
+        self._packaging_github_repo_owner_save_timer.timeout.connect(self._auto_save_packaging_github_repo_owner)
+        self.packaging_github_repo_owner_edit.textChanged.connect(lambda: self._packaging_github_repo_owner_save_timer.start(500))
+        self.packaging_github_repo_owner_edit.editingFinished.connect(self._on_packaging_github_repo_owner_changed)
+        self.packaging_github_repo_owner_edit.returnPressed.connect(self._on_packaging_github_repo_owner_changed)
+        packaging_github_repo_container.addWidget(self.packaging_github_repo_owner_edit)
+        
+        packaging_separator_label = QLabel("/")
+        packaging_separator_label.setFixedWidth(20)
+        packaging_separator_label.setAlignment(Qt.AlignCenter)
+        packaging_github_repo_container.addWidget(packaging_separator_label)
+        
+        self.packaging_github_repo_name_edit = QLineEdit()
+        self.packaging_github_repo_name_edit.setPlaceholderText("仓库名称")
+        self.packaging_github_repo_name_edit.setText(self.cfg.get("packaging_github_repo_name", "ai-perf"))
+        self._packaging_github_repo_name_save_timer = QTimer()
+        self._packaging_github_repo_name_save_timer.setSingleShot(True)
+        self._packaging_github_repo_name_save_timer.timeout.connect(self._auto_save_packaging_github_repo_name)
+        self.packaging_github_repo_name_edit.textChanged.connect(lambda: self._packaging_github_repo_name_save_timer.start(500))
+        self.packaging_github_repo_name_edit.editingFinished.connect(self._on_packaging_github_repo_name_changed)
+        self.packaging_github_repo_name_edit.returnPressed.connect(self._on_packaging_github_repo_name_changed)
+        packaging_github_repo_container.addWidget(self.packaging_github_repo_name_edit)
+        
+        packaging_github_repo_row.addWidget(packaging_github_repo_label)
+        packaging_github_repo_row.addLayout(packaging_github_repo_container, 1)
+        packaging_layout.addLayout(packaging_github_repo_row)
+        
+        packaging_layout.addStretch()
+        
+        tab_widget.addTab(packaging_tab, "打包配置")
+        
+        # Tab 4: 其他设置
         other_tab = QWidget()
         other_layout = QVBoxLayout(other_tab)
         other_layout.setContentsMargins(16, 16, 16, 16)
@@ -759,6 +852,75 @@ class SettingsView(QWidget):
         if self._github_org_save_timer.isActive():
             self._github_org_save_timer.stop()
         self._auto_save_github_org()
+    
+    # 打包配置保存方法（独立的 GitHub 仓库配置）
+    def _auto_save_packaging_github_api_url(self):
+        """自动保存打包用 GitHub API 地址"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["packaging_github_api_url"] = self.packaging_github_api_edit.text().strip()
+        ConfigManager.save(self.cfg)
+    
+    def _on_packaging_github_api_url_changed(self):
+        """打包用 GitHub API地址改变时（失去焦点或按回车）立即保存"""
+        if self._packaging_github_api_save_timer.isActive():
+            self._packaging_github_api_save_timer.stop()
+        self._auto_save_packaging_github_api_url()
+    
+    def _auto_save_packaging_github_api_key(self):
+        """自动保存打包用 GitHub API Key"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["packaging_github_api_key"] = self.packaging_github_api_key_edit.text().strip()
+        ConfigManager.save(self.cfg)
+    
+    def _on_packaging_github_api_key_changed(self):
+        """打包用 GitHub API Key改变时（失去焦点或按回车）立即保存"""
+        if self._packaging_github_api_key_save_timer.isActive():
+            self._packaging_github_api_key_save_timer.stop()
+        self._auto_save_packaging_github_api_key()
+    
+    def _auto_save_packaging_github_repo_owner(self):
+        """自动保存打包用 GitHub 仓库所有者"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["packaging_github_repo_owner"] = self.packaging_github_repo_owner_edit.text().strip()
+        ConfigManager.save(self.cfg)
+    
+    def _on_packaging_github_repo_owner_changed(self):
+        """打包用 GitHub 仓库所有者改变时（失去焦点或按回车）立即保存"""
+        if self._packaging_github_repo_owner_save_timer.isActive():
+            self._packaging_github_repo_owner_save_timer.stop()
+        self._auto_save_packaging_github_repo_owner()
+    
+    def _auto_save_packaging_github_repo_name(self):
+        """自动保存打包用 GitHub 仓库名称"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["packaging_github_repo_name"] = self.packaging_github_repo_name_edit.text().strip()
+        ConfigManager.save(self.cfg)
+    
+    def _on_packaging_github_repo_name_changed(self):
+        """打包用 GitHub 仓库名称改变时（失去焦点或按回车）立即保存"""
+        if self._packaging_github_repo_name_save_timer.isActive():
+            self._packaging_github_repo_name_save_timer.stop()
+        self._auto_save_packaging_github_repo_name()
     
     # Jira API 配置保存方法（与后端 .env 保持一致）
     def _auto_save_jira_base(self):

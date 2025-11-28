@@ -166,6 +166,40 @@ def main():
         # macOS 打包
         log_warn("开始 macOS 打包...")
         
+        # 设置部署目标，确保向后兼容性（支持 macOS 10.13+）
+        deployment_target = "10.13"
+        log_info(f"设置 macOS 部署目标: {deployment_target}")
+        os.environ["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
+        
+        # 设置 SDK 路径（如果可用）
+        try:
+            sdk_result = subprocess.run(
+                ["xcrun", "--show-sdk-path"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if sdk_result.returncode == 0:
+                sdk_path = sdk_result.stdout.strip()
+                os.environ["SDKROOT"] = sdk_path
+                log_info(f"SDK 路径: {sdk_path}")
+        except Exception as e:
+            log_warn(f"无法获取 SDK 路径: {e}")
+        
+        # 设置编译器标志，确保使用兼容的 API
+        # 这些环境变量会影响所有编译过程，包括 Python 扩展模块
+        if "CFLAGS" not in os.environ:
+            os.environ["CFLAGS"] = f"-mmacosx-version-min={deployment_target}"
+        else:
+            os.environ["CFLAGS"] += f" -mmacosx-version-min={deployment_target}"
+        
+        if "LDFLAGS" not in os.environ:
+            os.environ["LDFLAGS"] = f"-mmacosx-version-min={deployment_target}"
+        else:
+            os.environ["LDFLAGS"] += f" -mmacosx-version-min={deployment_target}"
+        
+        log_info("✓ 部署目标环境变量已设置")
+        
         # 检测芯片类型并设置输出目录
         try:
             # 使用 uname -m 检测芯片架构
@@ -259,13 +293,17 @@ def main():
         
         # 打包
         log_warn("执行 PyInstaller 打包...")
+        # 确保 PyInstaller 使用部署目标环境变量
+        pyinstaller_env = os.environ.copy()
+        pyinstaller_env["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
+        
         subprocess.run([
             sys.executable, "-m", "PyInstaller",
             spec_file,
             "--clean",
             "--noconfirm",
             "--log-level=ERROR"
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=pyinstaller_env)
         
         # 恢复 spec 文件（如果修改过）
         if spec_backup and spec_backup.exists():
@@ -327,9 +365,123 @@ def main():
         
         # 代码签名（使用配置的凭据）
         codesign_identity = os.environ.get("CODESIGN_IDENTITY", "Developer ID Application: wei liu (U5SLTWD6AH)")
+        installer_identity = os.environ.get("INSTALLER_CODESIGN_IDENTITY", None)
         apple_id = os.environ.get("APPLE_ID", "ruier09@qq.com")
         team_id = os.environ.get("TEAM_ID", "U5SLTWD6AH")
         notary_password = os.environ.get("NOTARY_PASSWORD", "qhiz-rnwg-fhtz-tude")
+        
+        # 支持从 p12 文件导入证书（包含证书和私钥）
+        # APPLICATION_P12_PATH: Developer ID Application 证书 p12 文件路径（用于 DMG）
+        # APPLICATION_P12_PASSWORD: Application p12 文件密码（可选）
+        # INSTALLER_P12_PATH: Developer ID Installer 证书 p12 文件路径（用于 PKG）
+        # INSTALLER_P12_PASSWORD: Installer p12 文件密码（可选）
+        # 默认路径：项目根目录下的 apple-p12 目录
+        # 注意：project_root 已经在 main() 函数开头定义
+        default_application_p12 = project_root / "apple-p12" / "developerID_application.p12"
+        default_installer_p12 = project_root / "apple-p12" / "developerID_installer.p12"
+        
+        application_p12_path = os.environ.get("APPLICATION_P12_PATH", None)
+        if not application_p12_path and default_application_p12.exists():
+            application_p12_path = str(default_application_p12)
+            log_info(f"使用默认 Application p12 证书: {application_p12_path}")
+        
+        application_p12_password = os.environ.get("APPLICATION_P12_PASSWORD", "123456")
+        
+        installer_p12_path = os.environ.get("INSTALLER_P12_PATH", None)
+        if not installer_p12_path and default_installer_p12.exists():
+            installer_p12_path = str(default_installer_p12)
+            log_info(f"使用默认 Installer p12 证书: {installer_p12_path}")
+        
+        installer_p12_password = os.environ.get("INSTALLER_P12_PASSWORD", "123456")
+        
+        # 导入 Application p12 证书（如果提供了 p12 文件路径）
+        if application_p12_path and Path(application_p12_path).exists():
+            log_warn(f"导入 Application p12 证书: {application_p12_path}")
+            try:
+                # 构建 security import 命令
+                import_cmd = [
+                    "security", "import", application_p12_path,
+                    "-k", os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+                    "-T", "/usr/bin/codesign",
+                    "-T", "/usr/bin/productsign",
+                    "-P", application_p12_password if application_p12_password else ""
+                ]
+                
+                import_result = subprocess.run(
+                    import_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    input=application_p12_password if application_p12_password else None
+                )
+                
+                if import_result.returncode == 0:
+                    log_info("  ✓ Application p12 证书导入成功")
+                    # 如果未设置 CODESIGN_IDENTITY，尝试从证书中提取
+                    if not codesign_identity or codesign_identity.startswith("Developer ID Application: wei liu"):
+                        # 查找证书名称
+                        find_result = subprocess.run([
+                            "security", "find-identity", "-v", "-p", "codesigning"
+                        ], capture_output=True, text=True, check=False)
+                        
+                        if find_result.returncode == 0:
+                            for line in find_result.stdout.split('\n'):
+                                if "Developer ID Application" in line:
+                                    import re
+                                    match = re.search(r'"([^"]+)"', line)
+                                    if match:
+                                        codesign_identity = match.group(1)
+                                        log_info(f"  ✓ 找到 Application 证书: {codesign_identity}")
+                                        break
+                else:
+                    error_msg = import_result.stderr or import_result.stdout or ""
+                    log_warn(f"  ⚠ Application p12 证书导入失败: {error_msg[:200]}")
+            except Exception as e:
+                log_warn(f"  ⚠ 导入 Application p12 证书时出错: {e}")
+        
+        # 导入 Installer p12 证书（如果提供了 p12 文件路径）
+        if installer_p12_path and Path(installer_p12_path).exists():
+            log_warn(f"导入 Installer p12 证书: {installer_p12_path}")
+            try:
+                # 构建 security import 命令
+                import_cmd = [
+                    "security", "import", installer_p12_path,
+                    "-k", os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+                    "-T", "/usr/bin/productsign",
+                    "-P", installer_p12_password if installer_p12_password else ""
+                ]
+                
+                import_result = subprocess.run(
+                    import_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    input=installer_p12_password if installer_p12_password else None
+                )
+                
+                if import_result.returncode == 0:
+                    log_info("  ✓ Installer p12 证书导入成功")
+                    # 如果未设置 INSTALLER_CODESIGN_IDENTITY，尝试从证书中提取
+                    if not installer_identity:
+                        # 查找证书名称
+                        find_result = subprocess.run([
+                            "security", "find-identity", "-v", "-p", "codesigning"
+                        ], capture_output=True, text=True, check=False)
+                        
+                        if find_result.returncode == 0:
+                            for line in find_result.stdout.split('\n'):
+                                if "Developer ID Installer" in line:
+                                    import re
+                                    match = re.search(r'"([^"]+)"', line)
+                                    if match:
+                                        installer_identity = match.group(1)
+                                        log_info(f"  ✓ 找到 Installer 证书: {installer_identity}")
+                                        break
+                else:
+                    error_msg = import_result.stderr or import_result.stdout or ""
+                    log_warn(f"  ⚠ Installer p12 证书导入失败: {error_msg[:200]}")
+            except Exception as e:
+                log_warn(f"  ⚠ 导入 Installer p12 证书时出错: {e}")
         
         if codesign_identity:
             log_warn("代码签名（使用改进的签名流程）...")
@@ -1143,14 +1295,14 @@ def main():
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
     <pkg-ref id="{app_id}"/>
-    <product id="{app_id}" version="1.0.0" />
+    <product id="{app_id}" version="1.0.1" />
     <choices-outline>
         <line choice="{app_id}"/>
     </choices-outline>
     <choice id="{app_id}" visible="false">
         <pkg-ref id="{app_id}"/>
     </choice>
-    <pkg-ref id="{app_id}" version="1.0.0" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
+    <pkg-ref id="{app_id}" version="1.0.1" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
 </installer-gui-script>''')
         
         # 使用 pkgbuild 创建组件包
@@ -1195,7 +1347,7 @@ def main():
             "pkgbuild",
             "--root", str(pkg_root),
             "--identifier", app_id,
-            "--version", "1.0.0",
+            "--version", "1.0.1",
             "--install-location", "/",
             str(component_pkg)
         ], check=True)
@@ -1312,8 +1464,7 @@ def main():
                 log_warn(f"  错误详情: {traceback.format_exc()}")
         
         # 签名 PKG（需要 Installer 证书，不是 Application 证书）
-        # 首先尝试查找 Installer 证书
-        installer_identity = os.environ.get("INSTALLER_CODESIGN_IDENTITY", None)
+        # installer_identity 已经在上面从环境变量或 p12 文件中获取
         pkg_signed_successfully = False
         
         # 如果没有明确指定，尝试从 Application 证书名称推断 Installer 证书
@@ -1847,7 +1998,7 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
             with open(wxs_file, "w", encoding="utf-8") as f:
                 f.write(f'''<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-    <Package Name="{app_name}" Version="1.0.0" Manufacturer="SanYing" UpgradeCode="{upgrade_code}" Language="2052">
+    <Package Name="{app_name}" Version="1.0.1" Manufacturer="SanYing" UpgradeCode="{upgrade_code}" Language="2052">
         <MajorUpgrade DowngradeErrorMessage="无法安装旧版本，请先卸载当前版本。" />
         <MediaTemplate EmbedCab="yes" />
         

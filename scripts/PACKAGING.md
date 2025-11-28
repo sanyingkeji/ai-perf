@@ -135,8 +135,17 @@ python3 ../scripts/build_client.py admin linux
 2. 在 [Apple Developer Portal](https://developer.apple.com/account/) 创建证书：
    - 登录 Apple Developer
    - 进入 "Certificates, Identifiers & Profiles"
-   - 创建 "Developer ID Application" 证书（用于分发）
-   - 下载并安装到 Keychain
+   - 创建 **两个证书**：
+     - **Developer ID Application** 证书（用于应用和 DMG）
+     - **Developer ID Installer** 证书（用于 PKG 安装包）
+   - 下载证书文件（.cer）并安装到 Keychain
+
+3. 导出为 p12 格式（推荐）：
+   - 打开 Keychain Access
+   - 找到对应的证书
+   - 右键 → "Export" → 选择 "Personal Information Exchange (.p12)"
+   - 设置密码（可选，但推荐）
+   - 保存为 `developerID_application.p12` 和 `developerID_installer.p12`
 
 #### 2. 查看证书
 
@@ -152,14 +161,39 @@ security find-identity -v -p codesigning
 
 #### 3. 签名应用
 
+**方式一：使用 p12 证书文件（推荐）**
+
+```bash
+# 设置 p12 证书文件路径和密码
+export APPLICATION_P12_PATH="/path/to/developerID_application.p12"
+export APPLICATION_P12_PASSWORD="your_password"  # 如果 p12 文件有密码
+export INSTALLER_P12_PATH="/path/to/developerID_installer.p12"
+export INSTALLER_P12_PASSWORD="your_password"  # 如果 p12 文件有密码
+
+# 打包并自动签名（脚本会自动导入证书）
+cd ui_client
+APPLICATION_P12_PATH="$APPLICATION_P12_PATH" \
+APPLICATION_P12_PASSWORD="$APPLICATION_P12_PASSWORD" \
+INSTALLER_P12_PATH="$INSTALLER_P12_PATH" \
+INSTALLER_P12_PASSWORD="$INSTALLER_P12_PASSWORD" \
+../scripts/build_client.py employee macos
+```
+
+**方式二：使用证书名称（如果证书已在 Keychain 中）**
+
 ```bash
 # 设置证书标识（从上面的输出中复制）
 export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAM_ID)"
+export INSTALLER_CODESIGN_IDENTITY="Developer ID Installer: Your Name (TEAM_ID)"
 
 # 打包并自动签名
 cd ui_client
-CODESIGN_IDENTITY="$CODESIGN_IDENTITY" ../scripts/build_client.sh employee macos
+CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
+INSTALLER_CODESIGN_IDENTITY="$INSTALLER_CODESIGN_IDENTITY" \
+../scripts/build_client.py employee macos
 ```
+
+**注意：** 如果只设置了 `CODESIGN_IDENTITY` 而没有设置 `INSTALLER_CODESIGN_IDENTITY`，脚本会尝试从 Application 证书名称推断 Installer 证书名称（将 "Developer ID Application" 替换为 "Developer ID Installer"）。
 
 或手动签名：
 

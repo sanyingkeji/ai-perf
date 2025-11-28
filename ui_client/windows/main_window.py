@@ -14,6 +14,7 @@ from windows.review_view import ReviewView
 from windows.ranking_view import RankingView
 from windows.settings_view import SettingsView
 from windows.update_dialog import UpdateDialog
+from windows.help_center_window import HelpCenterWindow
 from utils.config_manager import ConfigManager
 from utils.google_login import login_and_get_id_token, GoogleLoginError
 from utils.api_client import ApiClient, ApiError, AuthError
@@ -106,6 +107,24 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(self.nav)
         nav_layout.addStretch()  # 恢复 addStretch()，让菜单在顶部，底部留空
         
+        # 帮助中心（放在菜单底部，默认隐藏，只有接收到 help_text 时才显示）
+        self.help_label = QLabel("帮助中心")
+        self.help_label.setAlignment(Qt.AlignCenter)
+        self.help_label.setStyleSheet("""
+            QLabel {
+                padding: 10px 14px;
+                border-radius: 4px;
+            }
+            QLabel:hover {
+                background-color: rgba(58, 122, 254, 0.1);
+            }
+        """)
+        # 设置为可点击
+        self.help_label.mousePressEvent = self._on_help_center_clicked
+        # 默认隐藏，只有接收到 help_text 时才显示
+        self.help_label.setVisible(False)
+        nav_layout.addWidget(self.help_label)
+        
         # 延迟计算菜单高度，确保在窗口显示后准确计算
         from PySide6.QtCore import QTimer
         def adjust_nav_height():
@@ -173,6 +192,13 @@ class MainWindow(QMainWindow):
         
         # 启动统一轮询服务（延迟启动，等待登录完成）
         QTimer.singleShot(3000, self._start_polling_service)
+        
+        # 启动帮助中心文字动态更新定时器（定期检查 help_text）
+        self._help_text_timer = QTimer()
+        self._help_text_timer.timeout.connect(self._check_help_text)
+        self._help_text_timer.start(30000)  # 每30秒检查一次
+        # 立即执行一次
+        QTimer.singleShot(2000, self._check_help_text)
         
         # 设置系统托盘（macOS 和 Windows 都支持）
         self._tray_icon = None
@@ -722,6 +748,9 @@ class MainWindow(QMainWindow):
         
     def closeEvent(self, event):
         """窗口关闭事件"""
+        # 停止帮助中心文字更新定时器
+        if hasattr(self, '_help_text_timer'):
+            self._help_text_timer.stop()
         system = platform.system()
         if system == "Darwin":
             # macOS: 直接隐藏到状态栏，不询问用户
@@ -925,6 +954,7 @@ class MainWindow(QMainWindow):
         
         class _VersionCheckWorkerSignals(QObject):
             finished = Signal(dict)  # version_info
+            health_data_received = Signal(dict)  # health_data
             error = Signal(str)
         
         class _VersionCheckWorker(QRunnable):
@@ -946,6 +976,9 @@ class MainWindow(QMainWindow):
                         if isinstance(data, dict) and data.get("status") == "success":
                             health_data = data.get("data")
                             if health_data:
+                                # 发送整个 health_data，用于检查 help_text
+                                self.signals.health_data_received.emit(health_data)
+                                # 发送 version_info，用于版本检查
                                 version_info = health_data.get("version_info")
                                 if version_info:
                                     self.signals.finished.emit(version_info)
@@ -955,7 +988,65 @@ class MainWindow(QMainWindow):
         
         worker = _VersionCheckWorker(client_version, api_base)
         worker.signals.finished.connect(self._on_version_update_available)
+        worker.signals.health_data_received.connect(self._on_health_data_received)
         QThreadPool.globalInstance().start(worker)
+    
+    def _check_help_text(self):
+        """定期检查 help_text，动态更新帮助中心标签"""
+        try:
+            cfg = ConfigManager.load()
+            api_base = (cfg.get("api_base") or cfg.get("api_base_url") or "http://127.0.0.1:8000").strip()
+        except Exception:
+            # 如果获取配置失败，隐藏标签
+            self.help_label.setVisible(False)
+            return
+        
+        # 后台检查 help_text（直接使用HTTP请求，不需要登录）
+        from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal, Slot
+        import httpx
+        
+        class _HelpTextCheckWorkerSignals(QObject):
+            health_data_received = Signal(dict)  # health_data
+            error = Signal(str)
+        
+        class _HelpTextCheckWorker(QRunnable):
+            def __init__(self, api_base: str):
+                super().__init__()
+                self.signals = _HelpTextCheckWorkerSignals()
+                self._api_base = api_base.rstrip("/")
+            
+            @Slot()
+            def run(self):
+                try:
+                    # 直接使用HTTP请求，不需要登录
+                    url = f"{self._api_base}/api/health"
+                    r = httpx.get(url, timeout=10)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, dict) and data.get("status") == "success":
+                            health_data = data.get("data")
+                            if health_data:
+                                self.signals.health_data_received.emit(health_data)
+                except Exception:
+                    # 检查失败不影响应用，静默处理
+                    pass
+        
+        worker = _HelpTextCheckWorker(api_base)
+        worker.signals.health_data_received.connect(self._on_health_data_received)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_health_data_received(self, health_data: dict):
+        """接收到健康检查数据，检查是否有 help_text 字段，动态更新标签"""
+        help_text = health_data.get("help_text")
+        # 只有在 help_text 存在、是字符串、且非空时才显示
+        # 处理三种情况：不存在、null、空字符串
+        if help_text and isinstance(help_text, str) and help_text.strip():
+            # 更新帮助中心标签的文字并显示
+            self.help_label.setText(help_text.strip())
+            self.help_label.setVisible(True)
+        else:
+            # 如果没有 help_text、为 null、或为空字符串，隐藏标签
+            self.help_label.setVisible(False)
     
     def _on_version_update_available(self, version_info: dict):
         """检测到新版本，显示升级弹窗（从轮询服务调用）"""
@@ -1171,6 +1262,25 @@ class MainWindow(QMainWindow):
         if self._last_theme != current_theme:
             self._last_theme = current_theme
             self._apply_window_title_bar_theme()
+    
+    def _on_help_center_clicked(self, event):
+        """帮助中心标签点击事件"""
+        if event.button() == Qt.LeftButton:
+            self._open_help_center()
+    
+    def _open_help_center(self):
+        """打开帮助中心窗口"""
+        try:
+            # 创建帮助中心窗口
+            help_window = HelpCenterWindow(self)
+            help_window.show()
+        except Exception as e:
+            # 如果QWebEngineView不可用，显示错误提示
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"无法打开帮助中心：{e}\n\n请确保已安装 PySide6-QtWebEngine。"
+            )
     
     def show_notification_detail(self, notification_id: int = None):
         """显示通知详情（供外部调用，如通知点击）"""

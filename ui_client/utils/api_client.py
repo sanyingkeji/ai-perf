@@ -261,6 +261,17 @@ class ApiClient:
         data = self._get("/api/monthly_ranking", params=params if params else None)
         return data
 
+    def get_monthly_detail(self, month_str: Optional[str] = None) -> Any:
+        """
+        GET /api/monthly_detail?month=YYYY-MM-DD
+        返回格式：MonthlyDetailResponse
+        """
+        params = {}
+        if month_str:
+            params["month"] = month_str
+        data = self._get("/api/monthly_detail", params=params if params else None)
+        return data
+
     def get_comparison(self, target_user_id: str, date_str: str) -> Any:
         """
         POST /api/comparison

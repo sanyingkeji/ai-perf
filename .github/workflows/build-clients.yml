@@ -4,9 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
-      - develop
   workflow_dispatch:
     inputs:
       client_type:
@@ -48,6 +45,8 @@ jobs:
           architecture: 'arm64'
       
       - name: Install dependencies
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
           python3 -m pip install --upgrade pip
           pip3 install -r requirements.txt
@@ -64,10 +63,46 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
       
+      - name: Import certificates from p12
+        if: steps.check_build.outputs.should_build == 'true'
+        id: import_certs
+        run: |
+          # 创建证书目录
+          mkdir -p certs
+          
+          # 如果有 Application p12 证书文件，导入到 Keychain
+          if [ -n "${{ secrets.APPLICATION_P12_BASE64 }}" ]; then
+            echo "${{ secrets.APPLICATION_P12_BASE64 }}" | base64 -d > certs/developerID_application.p12
+            security import certs/developerID_application.p12 \
+              -k ~/Library/Keychains/login.keychain-db \
+              -T /usr/bin/codesign \
+              -T /usr/bin/productsign \
+              -P "${{ secrets.APPLICATION_P12_PASSWORD }}" || true
+            echo "✓ Application p12 证书已导入"
+            echo "APPLICATION_P12_PATH=certs/developerID_application.p12" >> $GITHUB_ENV
+          fi
+          
+          # 如果有 Installer p12 证书文件，导入到 Keychain
+          if [ -n "${{ secrets.INSTALLER_P12_BASE64 }}" ]; then
+            echo "${{ secrets.INSTALLER_P12_BASE64 }}" | base64 -d > certs/developerID_installer.p12
+            security import certs/developerID_installer.p12 \
+              -k ~/Library/Keychains/login.keychain-db \
+              -T /usr/bin/productsign \
+              -P "${{ secrets.INSTALLER_P12_PASSWORD }}" || true
+            echo "✓ Installer p12 证书已导入"
+            echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
+          fi
+      
       - name: Build client (Apple Silicon)
         if: steps.check_build.outputs.should_build == 'true'
         env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
+          APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
+          APPLICATION_P12_PASSWORD: ${{ secrets.APPLICATION_P12_PASSWORD }}
+          INSTALLER_P12_PATH: ${{ env.INSTALLER_P12_PATH }}
+          INSTALLER_P12_PASSWORD: ${{ secrets.INSTALLER_P12_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
@@ -110,6 +145,8 @@ jobs:
           architecture: 'x64'
       
       - name: Install dependencies
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
           python3 -m pip install --upgrade pip
           pip3 install -r requirements.txt
@@ -126,10 +163,46 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
       
+      - name: Import certificates from p12
+        if: steps.check_build.outputs.should_build == 'true'
+        id: import_certs
+        run: |
+          # 创建证书目录
+          mkdir -p certs
+          
+          # 如果有 Application p12 证书文件，导入到 Keychain
+          if [ -n "${{ secrets.APPLICATION_P12_BASE64 }}" ]; then
+            echo "${{ secrets.APPLICATION_P12_BASE64 }}" | base64 -d > certs/developerID_application.p12
+            security import certs/developerID_application.p12 \
+              -k ~/Library/Keychains/login.keychain-db \
+              -T /usr/bin/codesign \
+              -T /usr/bin/productsign \
+              -P "${{ secrets.APPLICATION_P12_PASSWORD }}" || true
+            echo "✓ Application p12 证书已导入"
+            echo "APPLICATION_P12_PATH=certs/developerID_application.p12" >> $GITHUB_ENV
+          fi
+          
+          # 如果有 Installer p12 证书文件，导入到 Keychain
+          if [ -n "${{ secrets.INSTALLER_P12_BASE64 }}" ]; then
+            echo "${{ secrets.INSTALLER_P12_BASE64 }}" | base64 -d > certs/developerID_installer.p12
+            security import certs/developerID_installer.p12 \
+              -k ~/Library/Keychains/login.keychain-db \
+              -T /usr/bin/productsign \
+              -P "${{ secrets.INSTALLER_P12_PASSWORD }}" || true
+            echo "✓ Installer p12 证书已导入"
+            echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
+          fi
+      
       - name: Build client (Intel)
         if: steps.check_build.outputs.should_build == 'true'
         env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
+          APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
+          APPLICATION_P12_PASSWORD: ${{ secrets.APPLICATION_P12_PASSWORD }}
+          INSTALLER_P12_PATH: ${{ env.INSTALLER_P12_PATH }}
+          INSTALLER_P12_PASSWORD: ${{ secrets.INSTALLER_P12_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}

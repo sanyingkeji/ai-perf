@@ -16,6 +16,8 @@ import re
 import subprocess
 import os
 import sys
+import zipfile
+import io
 
 # Markdown 渲染库（可选，如果未安装则使用回退实现）
 try:
@@ -32,7 +34,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QFrame, QTabWidget, QHeaderView, QAbstractItemView,
     QFileDialog, QMessageBox, QLineEdit, QCheckBox, QTextEdit, QPlainTextEdit,
-    QSplitter, QFileDialog, QComboBox
+    QSplitter, QComboBox, QProgressDialog, QDialog, QListWidget,
+    QListWidgetItem
 )
 from PySide6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QTimer, QProcess
@@ -41,6 +44,9 @@ from utils.config_manager import ConfigManager
 from utils.ssh_client import SSHClient
 from utils.theme_manager import ThemeManager
 from widgets.toast import Toast
+from utils.api_client import AdminApiClient
+import httpx
+import webbrowser
 
 
 class _CronJobListWorkerSignals(QObject):
@@ -413,7 +419,20 @@ class DatabaseBackupTab(QWidget):
         # 上次刷新时间标签
         self.last_refresh_label = QLabel("数据刷新于: --")
         self.last_refresh_label.setFont(QFont("Arial", 9))
-        self.last_refresh_label.setStyleSheet("color: #666;")
+        # 使用主题颜色，暗色模式下使用更亮的灰色
+        from utils.theme_manager import ThemeManager
+        from utils.config_manager import ConfigManager
+        cfg = ConfigManager.load()
+        theme_pref = cfg.get("theme", "auto")
+        if theme_pref == "auto":
+            current_theme = ThemeManager.detect_system_theme()
+        else:
+            current_theme = theme_pref
+        
+        if current_theme == "dark":
+            self.last_refresh_label.setStyleSheet("color: #9AA0A6;")  # 暗色模式下的灰色
+        else:
+            self.last_refresh_label.setStyleSheet("color: #666;")  # 亮色模式下的灰色
         header_layout.addWidget(self.last_refresh_label)
         
         refresh_btn = QPushButton("刷新")
@@ -962,7 +981,20 @@ class SystemSettingsTab(QWidget):
         # 上次刷新时间标签
         self.last_refresh_label = QLabel("数据刷新于: --")
         self.last_refresh_label.setFont(QFont("Arial", 9))
-        self.last_refresh_label.setStyleSheet("color: #666;")
+        # 使用主题颜色，暗色模式下使用更亮的灰色
+        from utils.theme_manager import ThemeManager
+        from utils.config_manager import ConfigManager
+        cfg = ConfigManager.load()
+        theme_pref = cfg.get("theme", "auto")
+        if theme_pref == "auto":
+            current_theme = ThemeManager.detect_system_theme()
+        else:
+            current_theme = theme_pref
+        
+        if current_theme == "dark":
+            self.last_refresh_label.setStyleSheet("color: #9AA0A6;")  # 暗色模式下的灰色
+        else:
+            self.last_refresh_label.setStyleSheet("color: #666;")  # 亮色模式下的灰色
         header_layout.addWidget(self.last_refresh_label)
         
         refresh_btn = QPushButton("手动刷新")
@@ -2738,7 +2770,6 @@ class ScriptExecutionTab(QWidget):
         else:
             style_name = 'friendly'  # 默认样式
         
-        print(f"[DEBUG] 使用样式: {style_name}")
         
         # 获取 formatter（使用内联样式，QTextEdit 支持更好）
         try:
@@ -2778,13 +2809,10 @@ class ScriptExecutionTab(QWidget):
         md.reset()
         
         # 替换占位符为高亮的代码块
-        print(f"[DEBUG] 找到 {len(code_blocks)} 个代码块需要处理")
         for idx, (lang, code) in enumerate(code_blocks):
             placeholder = f'<!-- CODE_BLOCK_PLACEHOLDER_{idx} -->'
-            print(f"[DEBUG] 处理代码块 {idx}: lang={lang}, placeholder={placeholder}")
             
             if placeholder not in html:
-                print(f"[DEBUG] 警告: 占位符 {placeholder} 在 HTML 中未找到！")
                 continue
             
             if lang:
@@ -2799,10 +2827,7 @@ class ScriptExecutionTab(QWidget):
                     lang_label = f'<div class="code-lang-label">{lang.upper()}</div>'
                     replacement = lang_label + highlighted
                     html = html.replace(placeholder, replacement)
-                    print(f"[DEBUG] 代码块 {idx} 替换成功，HTML 长度: {len(replacement)}")
-                    print(f"[DEBUG] 代码块 {idx} 背景色检查: {'background-color' in highlighted}")
                 except Exception as e:
-                    print(f"[DEBUG] 代码块 {idx} 高亮失败: {e}")
                     # 如果高亮失败，使用转义
                     from html import escape
                     escaped_code = escape(code)
@@ -2817,7 +2842,7 @@ class ScriptExecutionTab(QWidget):
         # 检查是否还有未替换的占位符
         remaining_placeholders = [f'<!-- CODE_BLOCK_PLACEHOLDER_{i} -->' for i in range(len(code_blocks)) if f'<!-- CODE_BLOCK_PLACEHOLDER_{i} -->' in html]
         if remaining_placeholders:
-            print(f"[DEBUG] 警告: 还有未替换的占位符: {remaining_placeholders}")
+            pass  # 占位符未替换的情况已处理
         
         # 内联样式模式下，不需要额外的 CSS（样式已经内联在 HTML 中）
         # 包装在美观的容器中，并添加自定义样式
@@ -3498,6 +3523,10 @@ class MaintenanceView(QWidget):
         self.script_execution_tab = ScriptExecutionTab(self)
         self.tabs.addTab(self.script_execution_tab, "脚本执行")
         
+        # 打包 TAB
+        self.package_tab = PackageTab(self)
+        self.tabs.addTab(self.package_tab, "打包")
+        
         # 设置TAB组件的大小策略，让它填充剩余空间
         from PySide6.QtWidgets import QSizePolicy
         self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -3542,6 +3571,10 @@ class MaintenanceView(QWidget):
         elif index == 4:
             # 脚本执行 TAB（不需要加载数据，用户点击执行按钮时才执行）
             pass
+        elif index == 5:
+            # 打包 TAB（首次加载时获取版本列表）
+            if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
+                self.package_tab.reload_versions()
     
     def reload(self):
         """重新加载数据（供外部调用）"""
@@ -3557,4 +3590,1509 @@ class MaintenanceView(QWidget):
         elif self.tabs.currentIndex() == 2:
             if hasattr(self, "log_view_tab") and hasattr(self.log_view_tab, "reload_from_ssh"):
                 self.log_view_tab.reload_from_ssh()
+        # 如果当前选中的是打包 TAB，刷新版本列表
+        elif self.tabs.currentIndex() == 5:
+            if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
+                self.package_tab.reload_versions()
+
+
+# ==================== 打包 TAB ====================
+
+class _VersionListWorkerSignals(QObject):
+    """版本列表加载信号"""
+    finished = Signal(list)  # List[Dict]
+    error = Signal(str)
+
+
+class _VersionListWorker(QRunnable):
+    """后台线程：从 GitHub Releases 获取版本列表"""
+    def __init__(self, repo_owner: str = None, repo_name: str = None):
+        super().__init__()
+        self.signals = _VersionListWorkerSignals()
+        self._repo_owner = repo_owner
+        self._repo_name = repo_name
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            # 从配置读取打包专用的 GitHub API 信息和仓库信息（与第三方平台配置完全独立）
+            cfg = ConfigManager.load()
+            api_url = cfg.get("packaging_github_api_url", "https://api.github.com").rstrip("/")
+            api_key = cfg.get("packaging_github_api_key", "")
+            
+            # 从配置读取仓库信息，如果没有则使用默认值
+            repo_owner = self._repo_owner or cfg.get("packaging_github_repo_owner", "sanyingkeji")
+            repo_name = self._repo_name or cfg.get("packaging_github_repo_name", "ai-perf")
+            
+            # 私有仓库必须使用 API Key
+            if not api_key:
+                self.signals.error.emit("请先在设置页面 → 打包配置 中配置 GitHub API Key（私有仓库需要授权）")
+                return
+            
+            # 构建 GitHub API URL
+            url = f"{api_url}/repos/{repo_owner}/{repo_name}/releases"
+            
+            # 构建请求头
+            headers = {
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "aiperf-admin-client/1.0",
+                "Authorization": f"token {api_key}"
+            }
+            
+            # 调用 GitHub API
+            response = httpx.get(url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                releases = response.json()
+                # 转换为统一的格式
+                items = []
+                for release in releases:
+                    # 解析 assets
+                    assets = release.get("assets", [])
+                    download_urls = {}
+                    for asset in assets:
+                        asset_name = asset.get("name", "")
+                        asset_url = asset.get("browser_download_url", "")
+                        # 根据文件名判断平台
+                        if any(ext in asset_name.lower() for ext in [".dmg", ".pkg"]):
+                            platform = "darwin"
+                        elif any(ext in asset_name.lower() for ext in [".exe", ".msi"]):
+                            platform = "windows"
+                        elif any(ext in asset_name.lower() for ext in [".deb", ".rpm"]):
+                            platform = "linux"
+                        else:
+                            continue
+                        
+                        if platform not in download_urls:
+                            download_urls[platform] = []
+                        download_urls[platform].append({
+                            "name": asset_name,
+                            "url": asset_url,
+                            "size": asset.get("size", 0),
+                        })
+                    
+                    items.append({
+                        "id": release.get("id"),
+                        "version": release.get("tag_name", "").lstrip("v"),  # 移除 v 前缀
+                        "tag_name": release.get("tag_name", ""),
+                        "name": release.get("name", ""),
+                        "body": release.get("body", ""),
+                        "published_at": release.get("published_at", ""),
+                        "prerelease": release.get("prerelease", False),
+                        "draft": release.get("draft", False),
+                        "download_urls": download_urls,
+                        "assets": assets,
+                    })
+                
+                self.signals.finished.emit(items)
+            elif response.status_code == 404:
+                self.signals.error.emit(f"仓库不存在：{repo_owner}/{repo_name}，或没有访问权限（请检查 API Key）")
+            elif response.status_code == 401:
+                self.signals.error.emit("GitHub API 认证失败，请检查 GitHub API Key 是否正确")
+            else:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("message", f"HTTP {response.status_code}")
+                except:
+                    error_msg = f"HTTP {response.status_code}: {response.text[:100]}"
+                self.signals.error.emit(f"获取 GitHub Releases 失败：{error_msg}")
+        except httpx.TimeoutException:
+            self.signals.error.emit("请求超时，请检查网络连接")
+        except Exception as e:
+            self.signals.error.emit(f"加载版本列表失败：{type(e).__name__}: {e}")
+
+
+class _UploadFileWorkerSignals(QObject):
+    """文件上传信号"""
+    finished = Signal(str)  # download_url
+    error = Signal(str)
+    progress = Signal(int, int)  # 已上传字节数, 总字节数
+
+
+class _UploadFileWorker(QRunnable):
+    """后台线程：上传文件"""
+    def __init__(self, file_path: str, platform: str, version: str, upload_api_url: str):
+        super().__init__()
+        self.signals = _UploadFileWorkerSignals()
+        self._file_path = file_path
+        self._platform = platform
+        self._version = version
+        self._upload_api_url = upload_api_url
+        self._should_stop = False
+    
+    def stop(self):
+        """停止上传"""
+        self._should_stop = True
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self._should_stop:
+                return
+            
+            # 读取文件并上传
+            with open(self._file_path, "rb") as f:
+                files = {"file": (os.path.basename(self._file_path), f, "application/octet-stream")}
+                data = {
+                    "platform": self._platform,
+                    "version": self._version
+                }
+                
+                # 使用httpx上传（multipart/form-data）
+                response = httpx.post(
+                    self._upload_api_url,
+                    files=files,
+                    data=data,
+                    timeout=300.0
+                )
+                
+                if self._should_stop:
+                    return
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("status") == "success":
+                        download_url = result.get("url")
+                        if download_url:
+                            self.signals.finished.emit(download_url)
+                        else:
+                            self.signals.error.emit("上传成功但未返回URL")
+                    else:
+                        error_msg = result.get("message", "上传失败")
+                        self.signals.error.emit(error_msg)
+                else:
+                    try:
+                        error_text = response.text
+                    except:
+                        error_text = "无法读取错误信息"
+                    error_msg = f"HTTP {response.status_code}: {error_text}"
+                    self.signals.error.emit(error_msg)
+        
+        except httpx.TimeoutException:
+            self.signals.error.emit("上传超时，请检查网络连接或文件大小")
+        except Exception as e:
+            self.signals.error.emit(f"上传失败：{type(e).__name__}: {e}")
+
+
+class PackageTab(QWidget):
+    """打包 TAB：Git Push 和版本管理"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._is_running = False
+        self._process = None
+        self._upload_worker = None
+        self._upload_progress = None
+        self._progress_timer = None
+        self._progress_value = 0
+        self._versions = []  # 存储版本列表
+        self._push_step = None  # 跟踪 git push 的执行步骤：'check', 'add', 'commit', 'push'
+        self._git_status_output = ""  # 存储 git status 的输出
+        
+        # 获取项目根目录
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent.parent
+        self._project_root = str(project_root.resolve())
+        
+        # 获取当前版本号
+        self._current_version = self._get_version_from_spec()
+        
+        self._init_ui()
+    
+    def _get_version_from_spec(self) -> str:
+        """从 build_macos.spec 文件中读取版本号"""
+        try:
+            # 尝试从 admin_ui_client/build_macos.spec 读取
+            spec_file = Path(self._project_root) / "admin_ui_client" / "build_macos.spec"
+            if not spec_file.exists():
+                # 如果不存在，尝试从 ui_client/build_macos.spec 读取
+                spec_file = Path(self._project_root) / "ui_client" / "build_macos.spec"
+            
+            if spec_file.exists():
+                with open(spec_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # 查找 version='...' 或 version="..."
+                    match = re.search(r"version\s*=\s*['\"]([^'\"]+)['\"]", content)
+                    if match:
+                        return match.group(1)
+                    # 也查找 CFBundleShortVersionString
+                    match = re.search(r"['\"]CFBundleShortVersionString['\"]:\s*['\"]([^'\"]+)['\"]", content)
+                    if match:
+                        return match.group(1)
+        except Exception as e:
+            print(f"读取版本号失败: {e}")
+        
+        return "1.0.1"  # 默认版本号
+    
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        
+        # 获取项目根目录
+        current_file = Path(__file__).resolve()
+        # admin_ui_client/windows/maintenance_view.py -> admin_ui_client -> 项目根目录
+        project_root = current_file.parent.parent.parent
+        self._project_root = str(project_root.resolve())
+        
+        # 头部：显示本地目录地址和 git push 按钮
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+        
+        # 显示本地目录地址
+        dir_label = QLabel(f"本地目录：{self._project_root}")
+        dir_label.setFont(QFont("Arial", 10))
+        dir_label.setStyleSheet("color: #666; font-family: 'Courier New', monospace;")
+        header_layout.addWidget(dir_label)
+        header_layout.addStretch()
+        
+        # git push 按钮
+        self.push_btn = QPushButton("git push")
+        self.push_btn.setFixedWidth(120)
+        self.push_btn.setFixedHeight(28)
+        self.push_btn.clicked.connect(self._on_push_clicked)
+        header_layout.addWidget(self.push_btn)
+        
+        # Release 按钮（动态获取版本号，已在 __init__ 中获取）
+        self.release_btn = QPushButton(f"Release V{self._current_version}")
+        self.release_btn.setFixedWidth(180)
+        self.release_btn.setFixedHeight(28)
+        self.release_btn.clicked.connect(self._on_release_clicked)
+        header_layout.addWidget(self.release_btn)
+        
+        # Check Actions 按钮
+        self.actions_btn = QPushButton("Check Actions")
+        self.actions_btn.setFixedWidth(150)
+        self.actions_btn.setFixedHeight(28)
+        self.actions_btn.clicked.connect(self._on_check_actions_clicked)
+        header_layout.addWidget(self.actions_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # 使用 QSplitter 实现左右分栏
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # 左侧：版本列表
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
+        
+        # 标题
+        title_label = QLabel("版本列表")
+        title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        left_layout.addWidget(title_label)
+        
+        # 版本列表表格
+        self.version_table = QTableWidget()
+        self.version_table.setColumnCount(5)
+        self.version_table.setHorizontalHeaderLabels(["版本号", "发布时间", "Assets", "状态", "操作"])
+        self.version_table.horizontalHeader().setStretchLastSection(True)
+        self.version_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.version_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.version_table.setAlternatingRowColors(True)
+        self.version_table.setShowGrid(True)
+        
+        # 设置列宽
+        header = self.version_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 版本号
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 发布时间
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Assets
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 状态
+        header.setSectionResizeMode(4, QHeaderView.Stretch)  # 操作
+        
+        left_layout.addWidget(self.version_table, 1)
+        
+        splitter.addWidget(left_widget)
+        
+        # 右侧：命令行输出
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(8)
+        
+        # 标题
+        output_title = QLabel("Git Push 输出")
+        output_title.setFont(QFont("Arial", 14, QFont.Bold))
+        right_layout.addWidget(output_title)
+        
+        # 输出区域（继承发布/脚本执行的样式）
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        
+        # 设置苹果终端 Basic 主题的字体
+        font_families = ["Menlo", "Monaco", "Courier New"]
+        font_size = 12
+        font = None
+        for font_family in font_families:
+            font = QFont(font_family, font_size)
+            font.setStyleHint(QFont.StyleHint.Monospace)
+            font.setFixedPitch(True)
+            if QFont(font_family).exactMatch() or font_family == "Courier New":
+                break
+        
+        if font:
+            self.output_text.setFont(font)
+        
+        # 设置 tab 宽度
+        self.output_text.setTabStopDistance(4 * self.output_text.fontMetrics().averageCharWidth())
+        
+        # 苹果终端 Basic 主题默认样式（完全匹配发布TAB）
+        self.output_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #000000;
+                color: #FFFFFF;
+                border: none;
+                padding: 10px;
+                selection-background-color: #0066CC;
+                selection-color: #FFFFFF;
+                font-family: "Menlo", "Monaco", "Courier New", monospace;
+                font-size: 12pt;
+                line-height: 1.2;
+            }
+        """)
+        
+        # 默认文本格式
+        self._default_format = QTextCharFormat()
+        self._default_format.setForeground(QColor("#FFFFFF"))
+        if font:
+            self._default_format.setFont(font)
+        self.output_text.setPlaceholderText("点击\"git push\"按钮开始推送...")
+        right_layout.addWidget(self.output_text, 1)
+        
+        splitter.addWidget(right_widget)
+        
+        # 设置分割比例（左侧30%，右侧70%）
+        splitter.setSizes([300, 700])
+        
+        layout.addWidget(splitter, 1)
+    
+    def reload_versions(self):
+        """重新加载版本列表（从 GitHub Releases）"""
+        # 检查是否配置了打包专用的 GitHub API Key（私有仓库需要）
+        cfg = ConfigManager.load()
+        api_key = cfg.get("packaging_github_api_key", "")
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "需要配置",
+                "私有仓库需要 GitHub API Key 才能访问。\n\n"
+                "请在 设置 → 打包配置 中配置 GitHub API Key。"
+            )
+            return
+        
+        # 从配置读取仓库信息（可选，默认使用 sanyingkeji/ai-perf）
+        repo_owner = cfg.get("packaging_github_repo_owner", "sanyingkeji")
+        repo_name = cfg.get("packaging_github_repo_name", "ai-perf")
+        
+        worker = _VersionListWorker(repo_owner=repo_owner, repo_name=repo_name)
+        worker.signals.finished.connect(self._on_versions_loaded)
+        worker.signals.error.connect(self._show_versions_error)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_versions_loaded(self, items: List[Dict[str, Any]]):
+        """版本列表加载完成"""
+        self._versions = items
+        self._update_version_table()
+    
+    def _show_versions_error(self, error_msg: str):
+        """显示版本列表加载错误"""
+        QMessageBox.warning(self, "错误", f"加载版本列表失败：{error_msg}")
+        self._versions = []
+        self._update_version_table()
+    
+    def _update_version_table(self):
+        """更新版本列表表格"""
+        self.version_table.setRowCount(len(self._versions))
+        
+        for row, release_data in enumerate(self._versions):
+            # 版本号
+            tag_name = release_data.get("tag_name", "")
+            version = release_data.get("version", tag_name)
+            version_item = QTableWidgetItem(version)
+            self.version_table.setItem(row, 0, version_item)
+            
+            # 发布时间
+            published_at = release_data.get("published_at", "")
+            if published_at:
+                try:
+                    # 解析 ISO 8601 格式的时间
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                    # 格式化为本地时间
+                    published_str = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    published_str = published_at[:10]  # 只显示日期部分
+            else:
+                published_str = "未发布"
+            published_item = QTableWidgetItem(published_str)
+            self.version_table.setItem(row, 1, published_item)
+            
+            # Assets 数量
+            assets = release_data.get("assets", [])
+            download_urls = release_data.get("download_urls", {})
+            assets_info = []
+            if download_urls.get("darwin"):
+                assets_info.append(f"macOS({len(download_urls['darwin'])})")
+            if download_urls.get("windows"):
+                assets_info.append(f"Windows({len(download_urls['windows'])})")
+            if download_urls.get("linux"):
+                assets_info.append(f"Linux({len(download_urls['linux'])})")
+            assets_text = ", ".join(assets_info) if assets_info else f"{len(assets)} 个文件"
+            assets_item = QTableWidgetItem(assets_text)
+            self.version_table.setItem(row, 2, assets_item)
+            
+            # 状态
+            is_prerelease = release_data.get("prerelease", False)
+            is_draft = release_data.get("draft", False)
+            if is_draft:
+                status_text = "草稿"
+            elif is_prerelease:
+                status_text = "预发布"
+            else:
+                status_text = "正式版"
+            status_item = QTableWidgetItem(status_text)
+            self.version_table.setItem(row, 3, status_item)
+            
+            # 操作按钮（上传）
+            upload_btn = QPushButton("上传")
+            upload_btn.setFixedWidth(60)
+            upload_btn.setFixedHeight(28)
+            # 存储版本数据到按钮的属性中
+            upload_btn.setProperty("version_data", release_data)
+            upload_btn.clicked.connect(self._on_upload_clicked)
+            self.version_table.setCellWidget(row, 4, upload_btn)
+    
+    def _on_upload_clicked(self):
+        """上传按钮点击事件"""
+        btn = self.sender()
+        if not btn:
+            return
+        
+        version_data = btn.property("version_data")
+        if not version_data:
+            return
+        
+        # 使用 tag_name 或 version（tag_name 可能包含 v 前缀）
+        version = version_data.get("tag_name", version_data.get("version", ""))
+        if not version:
+            QMessageBox.warning(self, "错误", "版本号为空")
+            return
+        
+        # 移除 v 前缀（如果有）
+        version = version.lstrip("v")
+        
+        # 选择文件
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"选择安装包文件（版本：{version}）",
+            "",
+            "所有文件 (*.*);;DMG文件 (*.dmg);;EXE文件 (*.exe);;MSI文件 (*.msi);;DEB文件 (*.deb);;RPM文件 (*.rpm);;ZIP文件 (*.zip);;TAR文件 (*.tar.gz)"
+        )
+        
+        if not file_path:
+            return
+        
+        # 根据文件扩展名判断平台
+        file_ext = os.path.splitext(file_path)[1].lower()
+        platform_map = {
+            ".dmg": "darwin",
+            ".pkg": "darwin",
+            ".exe": "windows",
+            ".msi": "windows",
+            ".deb": "linux",
+            ".rpm": "linux",
+        }
+        platform = platform_map.get(file_ext, "unknown")
+        
+        if platform == "unknown":
+            QMessageBox.warning(self, "错误", f"无法识别文件类型：{file_ext}")
+            return
+        
+        # 获取文件大小
+        try:
+            file_size = os.path.getsize(file_path)
+            file_size_mb = file_size / (1024 * 1024)
+            file_name = os.path.basename(file_path)
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"无法读取文件信息：{e}")
+            return
+        
+        # 创建进度对话框
+        self._upload_progress = QProgressDialog(
+            f"正在上传文件：{file_name}\n大小：{file_size_mb:.2f} MB",
+            "取消",
+            0,
+            100,
+            self
+        )
+        self._upload_progress.setWindowTitle("文件上传")
+        self._upload_progress.setWindowModality(Qt.WindowModal)
+        self._upload_progress.setMinimumDuration(0)
+        self._upload_progress.setValue(0)
+        self._upload_progress.setAutoClose(False)
+        self._upload_progress.setAutoReset(False)
+        
+        # 从配置读取上传API地址
+        cfg = ConfigManager.load()
+        upload_api_url = cfg.get("upload_api_url", "http://127.0.0.1:8882/api/upload")
+        
+        # 创建上传Worker
+        self._upload_worker = _UploadFileWorker(file_path, platform, version, upload_api_url)
+        
+        # 连接信号
+        self._upload_worker.signals.finished.connect(self._on_upload_finished)
+        self._upload_worker.signals.error.connect(self._on_upload_error)
+        self._upload_progress.canceled.connect(self._on_upload_canceled)
+        
+        # 启动上传
+        QThreadPool.globalInstance().start(self._upload_worker)
+        
+        # 启动进度更新定时器
+        self._progress_timer = QTimer(self)
+        self._progress_timer.timeout.connect(self._update_upload_progress)
+        self._progress_timer.start(100)
+        self._progress_value = 0
+    
+    def _update_upload_progress(self):
+        """更新上传进度（模拟）"""
+        if self._upload_progress and not self._upload_progress.wasCanceled():
+            if self._progress_value < 90:
+                self._progress_value += 2
+                self._upload_progress.setValue(self._progress_value)
+            else:
+                self._progress_timer.stop()
+    
+    def _on_upload_finished(self, download_url: str):
+        """上传完成"""
+        if self._progress_timer:
+            self._progress_timer.stop()
+        
+        if self._upload_progress:
+            self._upload_progress.setValue(100)
+            self._upload_progress.close()
+            self._upload_progress = None
+        
+        QMessageBox.information(self, "上传成功", f"文件上传成功！\n\n下载URL：\n{download_url}")
+        
+        self._upload_worker = None
+        # 重新加载版本列表
+        self.reload_versions()
+    
+    def _on_upload_error(self, error_msg: str):
+        """上传错误"""
+        if self._progress_timer:
+            self._progress_timer.stop()
+        
+        if self._upload_progress:
+            self._upload_progress.close()
+            self._upload_progress = None
+        
+        QMessageBox.warning(self, "上传失败", f"文件上传失败：{error_msg}")
+        
+        self._upload_worker = None
+    
+    def _on_upload_canceled(self):
+        """上传取消"""
+        if self._upload_worker:
+            self._upload_worker.stop()
+        
+        if self._progress_timer:
+            self._progress_timer.stop()
+        
+        if self._upload_progress:
+            self._upload_progress.close()
+            self._upload_progress = None
+        
+        self._upload_worker = None
+    
+    def _on_push_clicked(self):
+        """git push 按钮点击事件"""
+        if self._is_running:
+            # 如果正在执行，显示停止确认
+            reply = QMessageBox.question(
+                self,
+                "确认停止",
+                "Git push 正在执行中，确定要停止吗？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self._stop_push()
+            return
+        
+        # 检查是否在 Git 仓库中
+        git_dir = os.path.join(self._project_root, ".git")
+        if not os.path.exists(git_dir):
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"当前目录不是 Git 仓库：\n{self._project_root}"
+            )
+            return
+        
+        # 清空输出
+        self.output_text.clear()
+        
+        # 显示头部信息
+        header_text = f"$ cd {self._project_root}\n"
+        header_text += "=" * 80 + "\n\n"
+        self._append_output(header_text)
+        
+        # 开始执行
+        self._is_running = True
+        self.push_btn.setText("停止")
+        self.push_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        self.release_btn.setEnabled(False)
+        self.actions_btn.setEnabled(False)
+        
+        # 使用 QProcess 执行 git 命令
+        self._process = QProcess(self)
+        self._process.setWorkingDirectory(self._project_root)
+        
+        # 连接信号
+        self._process.readyReadStandardOutput.connect(self._on_ready_read_output)
+        self._process.readyReadStandardError.connect(self._on_ready_read_error)
+        self._process.finished.connect(self._on_process_finished)
+        self._process.errorOccurred.connect(self._on_process_error)
+        
+        # 第一步：检查是否有未提交的更改
+        self._push_step = 'check'
+        self._append_output("$ git status --porcelain\n")
+        self._process.start("git", ["status", "--porcelain"])
+    
+    def _stop_push(self):
+        """停止 git push"""
+        if self._process and self._process.state() == QProcess.ProcessState.Running:
+            self._process.kill()
+            self._process.waitForFinished(3000)
+        self._is_running = False
+        self.push_btn.setText("git push")
+        self.push_btn.setStyleSheet("")
+        self.release_btn.setEnabled(True)
+        self.actions_btn.setEnabled(True)
+        self._push_step = None
+        self._git_status_output = ""
+        self._append_output("\n[已停止] 用户手动停止执行\n")
+    
+    def _on_push_clicked_old(self):
+        """git push 按钮点击事件（旧版本，已废弃）"""
+        if self._is_running:
+            # 如果正在执行，显示停止确认
+            reply = QMessageBox.question(
+                self,
+                "确认停止",
+                "Git push 正在执行中，确定要停止吗？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self._stop_push()
+            return
+        
+        # 检查是否在 Git 仓库中
+        git_dir = os.path.join(self._project_root, ".git")
+        if not os.path.exists(git_dir):
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"当前目录不是 Git 仓库：\n{self._project_root}"
+            )
+            return
+        
+        # 清空输出
+        self.output_text.clear()
+        
+        # 显示头部信息
+        header_text = f"$ cd {self._project_root}\n"
+        header_text += f"$ git push\n"
+        header_text += "=" * 80 + "\n\n"
+        self._append_output(header_text)
+        
+        # 开始执行
+        self._is_running = True
+        self.push_btn.setText("停止")
+        self.push_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        
+        # 使用 QProcess 执行 git push
+        self._process = QProcess(self)
+        self._process.setWorkingDirectory(self._project_root)
+        
+        # 连接信号
+        self._process.readyReadStandardOutput.connect(self._on_ready_read_output)
+        self._process.readyReadStandardError.connect(self._on_ready_read_error)
+        self._process.finished.connect(self._on_process_finished)
+        self._process.errorOccurred.connect(self._on_process_error)
+        
+        # 执行 git push
+        self._process.start("git", ["push"])
+    
+    def _stop_push(self):
+        """停止 git push"""
+        if self._process and self._process.state() == QProcess.ProcessState.Running:
+            self._process.kill()
+            self._process.waitForFinished(3000)
+        self._is_running = False
+        self.push_btn.setText("git push")
+        self.push_btn.setStyleSheet("")
+        self._append_output("\n[已停止] 用户手动停止执行\n")
+    
+    def _parse_ansi_color(self, code: str) -> QColor:
+        """解析 ANSI 颜色代码"""
+        ansi_colors = {
+            '30': QColor("#000000"),  # Black
+            '31': QColor("#CD3131"),  # Red
+            '32': QColor("#0DBC79"),  # Green
+            '33': QColor("#E5E510"),  # Yellow
+            '34': QColor("#2472C8"),  # Blue
+            '35': QColor("#BC3FBC"),  # Magenta
+            '36': QColor("#11A8CD"),  # Cyan
+            '37': QColor("#E5E5E5"),  # White
+            '90': QColor("#767676"),  # Bright Black
+            '91': QColor("#F14C4C"),  # Bright Red
+            '92': QColor("#23D18B"),  # Bright Green
+            '93': QColor("#F5F543"),  # Bright Yellow
+            '94': QColor("#3B8EEA"),  # Bright Blue
+            '95': QColor("#D670D6"),  # Bright Magenta
+            '96': QColor("#29B8DB"),  # Bright Cyan
+            '97': QColor("#FFFFFF"),  # Bright White
+        }
+        return ansi_colors.get(code, QColor("#FFFFFF"))
+    
+    def _append_output_with_ansi(self, text: str):
+        """追加输出文本，支持 ANSI 颜色代码"""
+        cursor = self.output_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        current_format = QTextCharFormat(self._default_format)
+        
+        # 解析 ANSI 转义序列
+        ansi_pattern = re.compile(r'\033\[([0-9;]+)m|\x1b\[([0-9;]+)m')
+        
+        last_pos = 0
+        for match in ansi_pattern.finditer(text):
+            if match.start() > last_pos:
+                plain_text = text[last_pos:match.start()]
+                cursor.setCharFormat(current_format)
+                cursor.insertText(plain_text)
+            
+            code_str = match.group(1) or match.group(2)
+            codes = code_str.split(';')
+            
+            for code in codes:
+                code = code.strip()
+                if not code or code == '0':
+                    current_format = QTextCharFormat(self._default_format)
+                elif code == '1':
+                    current_format.setFontWeight(QFont.Weight.Bold)
+                elif code == '22':
+                    current_format.setFontWeight(QFont.Weight.Normal)
+                elif code in ['30', '31', '32', '33', '34', '35', '36', '37',
+                             '90', '91', '92', '93', '94', '95', '96', '97']:
+                    current_format.setForeground(self._parse_ansi_color(code))
+                elif code in ['40', '41', '42', '43', '44', '45', '46', '47',
+                             '100', '101', '102', '103', '104', '105', '106', '107']:
+                    bg_code = str(int(code) - 10)
+                    if bg_code in ['30', '31', '32', '33', '34', '35', '36', '37',
+                                  '90', '91', '92', '93', '94', '95', '96', '97']:
+                        bg_color = self._parse_ansi_color(bg_code)
+                        bg_color = QColor(
+                            max(0, bg_color.red() - 50),
+                            max(0, bg_color.green() - 50),
+                            max(0, bg_color.blue() - 50)
+                        )
+                        current_format.setBackground(bg_color)
+            
+            last_pos = match.end()
+        
+        if last_pos < len(text):
+            plain_text = text[last_pos:]
+            cursor.setCharFormat(current_format)
+            cursor.insertText(plain_text)
+        
+        scrollbar = self.output_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def _append_output(self, text: str):
+        """追加输出文本"""
+        cursor = self.output_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.setCharFormat(self._default_format)
+        cursor.insertText(text)
+        
+        scrollbar = self.output_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def _on_ready_read_output(self):
+        """读取标准输出"""
+        if self._process:
+            data = self._process.readAllStandardOutput()
+            if data:
+                try:
+                    text = data.data().decode('utf-8', errors='replace')
+                    # 如果是检查状态步骤，保存输出用于判断
+                    if self._push_step == 'check':
+                        self._git_status_output += text
+                    self._append_output_with_ansi(text)
+                except Exception:
+                    text = data.data().decode('latin-1', errors='replace')
+                    # 如果是检查状态步骤，保存输出用于判断
+                    if self._push_step == 'check':
+                        self._git_status_output += text
+                    self._append_output_with_ansi(text)
+    
+    def _on_ready_read_error(self):
+        """读取标准错误"""
+        if self._process:
+            data = self._process.readAllStandardError()
+            if data:
+                try:
+                    text = data.data().decode('utf-8', errors='replace')
+                    self._append_output_with_ansi(text)
+                except Exception:
+                    text = data.data().decode('latin-1', errors='replace')
+                    self._append_output_with_ansi(text)
+    
+    def _on_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus):
+        """进程执行完成"""
+        if exit_code != 0 and self._push_step:
+            # 如果命令执行失败，停止整个流程
+            self._is_running = False
+            self.push_btn.setText("git push")
+            self.push_btn.setStyleSheet("")
+            self.release_btn.setEnabled(True)
+            self.actions_btn.setEnabled(True)
+            self._append_output("\n" + "=" * 80 + "\n")
+            self._append_output(f"[错误] 命令执行失败，退出码: {exit_code}\n")
+            self._push_step = None
+            self._git_status_output = ""
+            self._process = None
+            return
+        
+        # 根据当前步骤执行下一步
+        if self._push_step == 'check':
+            # 检查是否有未提交的更改
+            has_changes = bool(self._git_status_output.strip())
+            if has_changes:
+                # 有更改，执行 git add
+                self._push_step = 'add'
+                self._append_output("\n$ git add .\n")
+                self._process.start("git", ["add", "."])
+            else:
+                # 没有更改，直接执行 git push
+                self._push_step = 'push'
+                self._append_output("\n$ git push\n")
+                self._process.start("git", ["push"])
+        
+        elif self._push_step == 'add':
+            # git add 完成，执行 git commit
+            self._push_step = 'commit'
+            self._append_output("\n$ git commit -m \"更新代码\"\n")
+            self._process.start("git", ["commit", "-m", "更新代码"])
+        
+        elif self._push_step == 'commit':
+            # git commit 完成，执行 git push
+            self._push_step = 'push'
+            self._append_output("\n$ git push\n")
+            self._process.start("git", ["push"])
+        
+        elif self._push_step == 'push':
+            # git push 完成，整个流程结束
+            self._is_running = False
+            self.push_btn.setText("git push")
+            self.push_btn.setStyleSheet("")
+            self.release_btn.setEnabled(True)
+            self.actions_btn.setEnabled(True)
+            self._append_output("\n" + "=" * 80 + "\n")
+            self._append_output("[完成] Git push 执行成功\n")
+            self._push_step = None
+            self._git_status_output = ""
+            self._process = None
+        
+        else:
+            # 未知步骤，直接结束
+            self._is_running = False
+            self.push_btn.setText("git push")
+            self.push_btn.setStyleSheet("")
+            self.release_btn.setEnabled(True)
+            self.actions_btn.setEnabled(True)
+            self._append_output("\n" + "=" * 80 + "\n")
+            self._append_output("[完成] 执行完成\n")
+            self._push_step = None
+            self._git_status_output = ""
+            self._process = None
+    
+    def _on_process_error(self, error: QProcess.ProcessError):
+        """进程执行错误"""
+        self._is_running = False
+        self.push_btn.setText("git push")
+        self.push_btn.setStyleSheet("")
+        self.release_btn.setEnabled(True)
+        self.actions_btn.setEnabled(True)
+        
+        error_msg = {
+            QProcess.ProcessError.FailedToStart: "进程启动失败",
+            QProcess.ProcessError.Crashed: "进程崩溃",
+            QProcess.ProcessError.Timedout: "进程超时",
+            QProcess.ProcessError.WriteError: "写入错误",
+            QProcess.ProcessError.ReadError: "读取错误",
+            QProcess.ProcessError.UnknownError: "未知错误"
+        }.get(error, "未知错误")
+        
+        self._append_output(f"\n[错误] {error_msg}\n")
+        
+        self._process = None
+    
+    def _on_release_clicked(self):
+        """Release 按钮点击事件：创建 tag 并触发构建"""
+        if self._is_running:
+            QMessageBox.warning(self, "警告", "已有操作正在执行中，请等待完成")
+            return
+        
+        # 确认操作
+        reply = QMessageBox.question(
+            self,
+            "确认发布",
+            f"确定要创建 Release V{self._current_version} 吗？\n\n"
+            f"这将执行以下操作：\n"
+            f"1. 创建 git tag: v{self._current_version}\n"
+            f"2. 推送 tag 到远程仓库\n"
+            f"3. 触发 GitHub Actions 自动构建",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 清空输出
+        self.output_text.clear()
+        
+        # 显示头部信息
+        header_text = f"$ cd {self._project_root}\n"
+        header_text += f"$ git tag -a v{self._current_version} -m \"Release version {self._current_version}\"\n"
+        header_text += f"$ git push origin v{self._current_version}\n"
+        header_text += "=" * 80 + "\n\n"
+        self._append_output(header_text)
+        
+        # 开始执行
+        self._is_running = True
+        self.release_btn.setText("执行中...")
+        self.release_btn.setEnabled(False)
+        self.push_btn.setEnabled(False)
+        self.actions_btn.setEnabled(False)
+        
+        # 执行 git tag
+        self._append_output(f"[开始] 创建 git tag: v{self._current_version}\n")
+        tag_process = QProcess(self)
+        tag_process.setWorkingDirectory(self._project_root)
+        tag_process.readyReadStandardOutput.connect(
+            lambda: self._append_output_with_ansi(tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+        )
+        tag_process.readyReadStandardError.connect(
+            lambda: self._append_output_with_ansi(tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
+        )
+        
+        def on_tag_finished(exit_code, exit_status):
+            if exit_code == 0:
+                self._append_output(f"[完成] Git tag 创建成功\n\n")
+                # 推送 tag
+                self._append_output(f"[开始] 推送 tag 到远程仓库\n")
+                push_tag_process = QProcess(self)
+                push_tag_process.setWorkingDirectory(self._project_root)
+                push_tag_process.readyReadStandardOutput.connect(
+                    lambda: self._append_output_with_ansi(push_tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+                )
+                push_tag_process.readyReadStandardError.connect(
+                    lambda: self._append_output_with_ansi(push_tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
+                )
+                
+                def on_push_tag_finished(exit_code, exit_status):
+                    self._is_running = False
+                    self.release_btn.setText(f"Release V{self._current_version}")
+                    self.release_btn.setEnabled(True)
+                    self.push_btn.setEnabled(True)
+                    self.actions_btn.setEnabled(True)
+                    
+                    self._append_output("\n" + "=" * 80 + "\n")
+                    if exit_code == 0:
+                        self._append_output(f"[完成] Tag 推送成功，GitHub Actions 将自动开始构建\n")
+                        QMessageBox.information(
+                            self,
+                            "发布成功",
+                            f"Release V{self._current_version} 已创建并推送！\n\n"
+                            f"GitHub Actions 将自动开始构建。\n"
+                            f"你可以点击 \"Check Actions\" 按钮查看构建进度。"
+                        )
+                    else:
+                        self._append_output(f"[错误] Tag 推送失败，退出码: {exit_code}\n")
+                        QMessageBox.warning(self, "错误", f"Tag 推送失败，退出码: {exit_code}")
+                
+                push_tag_process.finished.connect(on_push_tag_finished)
+                push_tag_process.start("git", ["push", "origin", f"v{self._current_version}"])
+            else:
+                self._is_running = False
+                self.release_btn.setText(f"Release V{self._current_version}")
+                self.release_btn.setEnabled(True)
+                self.push_btn.setEnabled(True)
+                self.actions_btn.setEnabled(True)
+                self._append_output(f"\n[错误] Git tag 创建失败，退出码: {exit_code}\n")
+                QMessageBox.warning(self, "错误", f"Git tag 创建失败，退出码: {exit_code}")
+        
+        tag_process.finished.connect(on_tag_finished)
+        tag_process.start("git", ["tag", "-a", f"v{self._current_version}", "-m", f"Release version {self._current_version}"])
+    
+    def _on_check_actions_clicked(self):
+        """Check Actions 按钮点击事件：显示 workflows 运行状态"""
+        # 从配置读取打包专用的 GitHub 信息
+        cfg = ConfigManager.load()
+        api_url = cfg.get("packaging_github_api_url", "https://api.github.com").rstrip("/")
+        api_key = cfg.get("packaging_github_api_key", "")
+        repo_owner = cfg.get("packaging_github_repo_owner", "sanyingkeji")
+        repo_name = cfg.get("packaging_github_repo_name", "ai-perf")
+        
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "需要配置",
+                "请先在 设置 → 打包配置 中配置 GitHub API Key。"
+            )
+            return
+        
+        # 获取 GitHub 仓库信息（用于浏览器链接）
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=self._project_root,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            remote_url = result.stdout.strip()
+            
+            if "github.com" in remote_url:
+                if remote_url.startswith("git@"):
+                    repo_part = remote_url.split(":")[1].replace(".git", "")
+                else:
+                    repo_part = remote_url.split("github.com/")[1].replace(".git", "")
+                
+                parsed_owner, parsed_name = repo_part.split("/", 1)
+                github_url = f"https://github.com/{parsed_owner}/{parsed_name}"
+                actions_url = f"{github_url}/actions"
+            else:
+                github_url = f"https://github.com/{repo_owner}/{repo_name}"
+                actions_url = f"{github_url}/actions"
+        except Exception:
+            github_url = f"https://github.com/{repo_owner}/{repo_name}"
+            actions_url = f"{github_url}/actions"
+        
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("GitHub Actions")
+        dialog.resize(900, 600)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        # 标题和刷新按钮
+        header_layout = QHBoxLayout()
+        title = QLabel("All Workflows")
+        title.setFont(QFont("Arial", 14, QFont.Bold))
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.setFixedWidth(80)
+        header_layout.addWidget(refresh_btn)
+        layout.addLayout(header_layout)
+        
+        # 工作流运行状态表格
+        table = QTableWidget()
+        table.setColumnCount(6)  # 增加一列用于操作按钮
+        table.setHorizontalHeaderLabels(["工作流", "状态", "触发事件", "分支/Tag", "时间", "操作"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        # 时间列设置为固定宽度，确保完整显示
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        table.setColumnWidth(4, 280)  # 设置时间列最小宽度，确保完整显示
+        table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        table.setColumnWidth(5, 100)  # 操作列宽度
+        # 启用交替行颜色（已在主题文件中配置适配暗色模式的颜色）
+        table.setAlternatingRowColors(True)
+        # 设置表格不可选中、不可编辑
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(table, 1)
+        
+        # 加载状态标签
+        status_label = QLabel("正在加载...")
+        status_label.setStyleSheet("color: #666; font-size: 10px;")
+        layout.addWidget(status_label)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        # 打开浏览器按钮
+        open_browser_btn = QPushButton("在浏览器中打开")
+        open_browser_btn.setFixedWidth(150)
+        open_browser_btn.clicked.connect(lambda: webbrowser.open(actions_url))
+        btn_layout.addWidget(open_browser_btn)
+        
+        # 关闭按钮
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(dialog.close)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # 加载工作流运行数据
+        def load_workflow_runs():
+            status_label.setText("正在加载工作流运行状态...")
+            table.setRowCount(0)
+            
+            class _WorkflowRunsWorkerSignals(QObject):
+                finished = Signal(list)
+                error = Signal(str)
+            
+            class _WorkflowRunsWorker(QRunnable):
+                def __init__(self):
+                    super().__init__()
+                    self.signals = _WorkflowRunsWorkerSignals()
+                
+                @Slot()
+                def run(self):
+                    try:
+                        # 获取工作流运行列表
+                        url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs"
+                        headers = {
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "aiperf-admin-client/1.0",
+                            "Authorization": f"token {api_key}"
+                        }
+                        
+                        response = httpx.get(url, headers=headers, params={"per_page": 20}, timeout=30)
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            runs = data.get("workflow_runs", [])
+                            self.signals.finished.emit(runs)
+                        elif response.status_code == 401:
+                            self.signals.error.emit("GitHub API 认证失败，请检查 API Key")
+                        elif response.status_code == 404:
+                            self.signals.error.emit(f"仓库不存在或无权访问：{repo_owner}/{repo_name}")
+                        else:
+                            self.signals.error.emit(f"获取工作流运行失败：HTTP {response.status_code}")
+                    except Exception as e:
+                        self.signals.error.emit(f"获取工作流运行失败：{e}")
+            
+            def on_loaded(runs):
+                table.setRowCount(len(runs))
+                
+                for row, run in enumerate(runs):
+                    # 工作流名称
+                    workflow_name = run.get("name", "Unknown")
+                    name_item = QTableWidgetItem(workflow_name)
+                    name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                    table.setItem(row, 0, name_item)
+                    
+                    # 状态
+                    status = run.get("status", "unknown")
+                    conclusion = run.get("conclusion", "")
+                    
+                    if status == "completed":
+                        if conclusion == "success":
+                            status_text = "✓ 成功"
+                            status_color = QColor("#0DBC79")
+                        elif conclusion == "failure":
+                            status_text = "✗ 失败"
+                            status_color = QColor("#CD3131")
+                        elif conclusion == "cancelled":
+                            status_text = "⊘ 已取消"
+                            status_color = QColor("#767676")
+                        else:
+                            status_text = f"完成 ({conclusion})"
+                            status_color = QColor("#E5E510")
+                    elif status == "in_progress":
+                        status_text = "⟳ 运行中"
+                        status_color = QColor("#2472C8")
+                    elif status == "queued":
+                        status_text = "⏳ 排队中"
+                        status_color = QColor("#E5E510")
+                    else:
+                        status_text = status
+                        status_color = QColor("#767676")
+                    
+                    status_item = QTableWidgetItem(status_text)
+                    status_item.setForeground(status_color)
+                    status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                    table.setItem(row, 1, status_item)
+                    
+                    # 触发事件
+                    event = run.get("event", "unknown")
+                    event_item = QTableWidgetItem(event)
+                    event_item.setFlags(event_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                    table.setItem(row, 2, event_item)
+                    
+                    # 分支/Tag
+                    head_branch = run.get("head_branch", "")
+                    head_branch_item = QTableWidgetItem(head_branch or "N/A")
+                    head_branch_item.setFlags(head_branch_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                    table.setItem(row, 3, head_branch_item)
+                    
+                    # 时间
+                    created_at = run.get("created_at", "")
+                    updated_at = run.get("updated_at", "")
+                    if created_at:
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            # 如果已完成，显示运行时长
+                            if status == "completed" and updated_at:
+                                end_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                duration = end_dt - dt
+                                total_seconds = int(duration.total_seconds())
+                                hours = total_seconds // 3600
+                                minutes = (total_seconds % 3600) // 60
+                                seconds = total_seconds % 60
+                                
+                                if hours > 0:
+                                    duration_str = f"{hours}小时{minutes}分钟{seconds}秒"
+                                elif minutes > 0:
+                                    duration_str = f"{minutes}分钟{seconds}秒"
+                                else:
+                                    duration_str = f"{seconds}秒"
+                                
+                                time_str += f" (运行 {duration_str})"
+                        except:
+                            time_str = created_at[:19] if len(created_at) >= 19 else created_at
+                    else:
+                        time_str = "N/A"
+                    
+                    time_item = QTableWidgetItem(time_str)
+                    time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                    table.setItem(row, 4, time_item)
+                    
+                    # 操作按钮（查看日志）
+                    view_logs_btn = QPushButton("查看日志")
+                    view_logs_btn.setFixedWidth(90)
+                    run_id = run.get("id")
+                    run_url = run.get("html_url", "")
+                    view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
+                    table.setCellWidget(row, 5, view_logs_btn)
+                
+                status_label.setText(f"已加载 {len(runs)} 个工作流运行")
+            
+            def on_error(error_msg):
+                status_label.setText(f"错误: {error_msg}")
+                QMessageBox.warning(dialog, "错误", error_msg)
+            
+            worker = _WorkflowRunsWorker()
+            worker.signals.finished.connect(on_loaded)
+            worker.signals.error.connect(on_error)
+            QThreadPool.globalInstance().start(worker)
+        
+        # 刷新按钮
+        refresh_btn.clicked.connect(load_workflow_runs)
+        
+        # 初始加载
+        load_workflow_runs()
+        
+        dialog.exec()
+    
+    def _view_workflow_logs(self, run_id: int, run_url: str, api_url: str, api_key: str, repo_owner: str, repo_name: str):
+        """查看工作流运行的日志"""
+        # 创建日志查看对话框
+        log_dialog = QDialog(self)
+        log_dialog.setWindowTitle(f"工作流运行日志 - #{run_id}")
+        log_dialog.resize(1000, 700)
+        
+        layout = QVBoxLayout(log_dialog)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        # 标题和按钮
+        header_layout = QHBoxLayout()
+        title = QLabel(f"工作流运行 #{run_id} 日志")
+        title.setFont(QFont("Arial", 12, QFont.Bold))
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        
+        # 在浏览器中打开按钮
+        open_browser_btn = QPushButton("在浏览器中打开")
+        open_browser_btn.setFixedWidth(150)
+        open_browser_btn.clicked.connect(lambda: webbrowser.open(run_url))
+        header_layout.addWidget(open_browser_btn)
+        
+        # 刷新按钮
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.setFixedWidth(80)
+        header_layout.addWidget(refresh_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # 日志显示区域
+        log_text = QTextEdit()
+        log_text.setReadOnly(True)
+        log_text.setFont(QFont("Monaco", 10) if sys.platform == "darwin" else QFont("Consolas", 10))
+        log_text.setPlaceholderText("正在加载日志...")
+        layout.addWidget(log_text, 1)
+        
+        # 状态标签
+        status_label = QLabel("正在加载日志...")
+        status_label.setStyleSheet("color: #666; font-size: 10px;")
+        layout.addWidget(status_label)
+        
+        # 关闭按钮
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(log_dialog.close)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+        
+        def load_logs():
+            status_label.setText("正在下载日志...")
+            log_text.clear()
+            log_text.setPlaceholderText("正在下载日志...")
+            
+            class _LogsWorkerSignals(QObject):
+                finished = Signal(str)
+                error = Signal(str)
+            
+            class _LogsWorker(QRunnable):
+                def __init__(self):
+                    super().__init__()
+                    self.signals = _LogsWorkerSignals()
+                
+                @Slot()
+                def run(self):
+                    try:
+                        # 获取日志下载 URL
+                        logs_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/logs"
+                        headers = {
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "aiperf-admin-client/1.0",
+                            "Authorization": f"token {api_key}"
+                        }
+                        
+                        # 下载日志 ZIP 文件（GitHub API 会返回重定向）
+                        response = httpx.get(logs_url, headers=headers, follow_redirects=True, timeout=60)
+                        
+                        if response.status_code == 404:
+                            self.signals.error.emit("日志不存在或已过期（GitHub 日志通常保留 90 天）")
+                            return
+                        elif response.status_code != 200:
+                            self.signals.error.emit(f"下载日志失败：HTTP {response.status_code}")
+                            return
+                        
+                        # 检查是否是 ZIP 文件
+                        content_type = response.headers.get("content-type", "")
+                        if "zip" not in content_type.lower() and not response.content.startswith(b"PK"):
+                            # 如果不是 ZIP，可能是纯文本日志
+                            log_content = response.text
+                            self.signals.finished.emit(log_content)
+                            return
+                        
+                        # 解压 ZIP 文件
+                        zip_data = io.BytesIO(response.content)
+                        with zipfile.ZipFile(zip_data, 'r') as zip_ref:
+                            # 获取所有文件列表
+                            file_list = zip_ref.namelist()
+                            
+                            # 按文件名排序（通常是按 job 名称和时间）
+                            file_list.sort()
+                            
+                            # 合并所有日志文件
+                            all_logs = []
+                            for file_name in file_list:
+                                if file_name.endswith('.txt') or not '.' in file_name.split('/')[-1]:
+                                    # 读取日志文件内容
+                                    try:
+                                        content = zip_ref.read(file_name).decode('utf-8', errors='replace')
+                                        # 添加文件头
+                                        all_logs.append(f"\n{'='*80}\n")
+                                        all_logs.append(f"文件: {file_name}\n")
+                                        all_logs.append(f"{'='*80}\n\n")
+                                        all_logs.append(content)
+                                        if not content.endswith('\n'):
+                                            all_logs.append('\n')
+                                    except Exception as e:
+                                        all_logs.append(f"\n{'='*80}\n")
+                                        all_logs.append(f"文件: {file_name} (读取失败: {e})\n")
+                                        all_logs.append(f"{'='*80}\n\n")
+                            
+                            if all_logs:
+                                log_content = ''.join(all_logs)
+                            else:
+                                log_content = "日志文件为空或格式不正确"
+                            
+                            self.signals.finished.emit(log_content)
+                    
+                    except httpx.HTTPError as e:
+                        self.signals.error.emit(f"网络错误：{e}")
+                    except zipfile.BadZipFile:
+                        # 如果不是 ZIP 文件，尝试作为文本处理
+                        try:
+                            if 'response' in locals():
+                                log_content = response.text
+                                self.signals.finished.emit(log_content)
+                            else:
+                                self.signals.error.emit("日志格式错误：无法解析 ZIP 文件")
+                        except:
+                            self.signals.error.emit("日志格式错误：无法解析 ZIP 文件")
+                    except Exception as e:
+                        self.signals.error.emit(f"加载日志失败：{e}")
+            
+            def on_logs_loaded(log_content):
+                log_text.setPlainText(log_content)
+                status_label.setText(f"日志已加载（{len(log_content)} 字符）")
+                # 滚动到底部（显示最新的日志）
+                cursor = log_text.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                log_text.setTextCursor(cursor)
+            
+            def on_logs_error(error_msg):
+                status_label.setText(f"错误: {error_msg}")
+                log_text.setPlainText(f"错误: {error_msg}\n\n请检查：\n1. GitHub API Key 是否有足够权限\n2. 日志是否已过期（GitHub 日志通常保留 90 天）\n3. 网络连接是否正常")
+                QMessageBox.warning(log_dialog, "加载日志失败", error_msg)
+            
+            worker = _LogsWorker()
+            worker.signals.finished.connect(on_logs_loaded)
+            worker.signals.error.connect(on_logs_error)
+            QThreadPool.globalInstance().start(worker)
+        
+        # 刷新按钮
+        refresh_btn.clicked.connect(load_logs)
+        
+        # 初始加载
+        load_logs()
+        
+        log_dialog.exec()
 
