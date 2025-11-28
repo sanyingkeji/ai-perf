@@ -3884,10 +3884,12 @@ class PackageTab(QWidget):
         title_layout.addWidget(title_label)
         title_layout.addStretch()
         
-        refresh_versions_btn = QPushButton("刷新")
-        refresh_versions_btn.setFixedWidth(80)
-        refresh_versions_btn.clicked.connect(self.reload_versions)
-        title_layout.addWidget(refresh_versions_btn)
+        # 刷新按钮（更明显的样式）
+        self.refresh_versions_btn = QPushButton("🔄 刷新")
+        self.refresh_versions_btn.setFixedWidth(100)
+        self.refresh_versions_btn.setToolTip("刷新 GitHub Releases 版本列表")
+        self.refresh_versions_btn.clicked.connect(self.reload_versions)
+        title_layout.addWidget(self.refresh_versions_btn)
         
         left_layout.addLayout(title_layout)
         
@@ -5028,6 +5030,14 @@ class PackageTab(QWidget):
                         view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
                         btn_layout.addWidget(view_logs_btn)
                         
+                        # Cancel-run 按钮（只有正在运行的工作流才能取消）
+                        if status == "in_progress":
+                            cancel_btn = QPushButton("Cancel-run")
+                            cancel_btn.setFixedSize(75, 22)  # mini 按钮样式，与健康检查一致
+                            cancel_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
+                            cancel_btn.clicked.connect(lambda checked, rid=run_id: self._cancel_workflow(rid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
+                            btn_layout.addWidget(cancel_btn)
+                        
                         # Re-run 按钮（只有已完成的工作流才能重新运行）
                         if status == "completed":
                             rerun_btn = QPushButton("Re-run")
@@ -5357,5 +5367,80 @@ class PackageTab(QWidget):
         
         worker = _RerunWorker()
         worker.signals.finished.connect(on_rerun_finished)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _cancel_workflow(self, run_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None):
+        """取消正在运行的工作流"""
+        # 确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认取消",
+            f"确定要取消工作流运行 #{run_id} 吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 显示进度提示
+        progress = QProgressDialog("正在取消工作流...", "取消", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)  # 不允许取消
+        progress.show()
+        
+        class _CancelWorkerSignals(QObject):
+            finished = Signal(bool, str)  # success, message
+        
+        class _CancelWorker(QRunnable):
+            def __init__(self):
+                super().__init__()
+                self.signals = _CancelWorkerSignals()
+            
+            @Slot()
+            def run(self):
+                try:
+                    cancel_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/cancel"
+                    headers = {
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "aiperf-admin-client/1.0",
+                        "Authorization": f"token {api_key}"
+                    }
+                    
+                    # POST 请求取消运行
+                    response = httpx.post(cancel_url, headers=headers, timeout=30)
+                    
+                    if response.status_code == 202:
+                        self.signals.finished.emit(True, "工作流已成功取消")
+                    elif response.status_code == 403:
+                        self.signals.finished.emit(False, "权限不足，无法取消工作流。请检查 API Key 权限。")
+                    elif response.status_code == 409:
+                        self.signals.finished.emit(False, "工作流已完成或已取消，无法再次取消。")
+                    else:
+                        error_msg = f"取消失败：HTTP {response.status_code}"
+                        try:
+                            error_data = response.json()
+                            if "message" in error_data:
+                                error_msg += f" - {error_data['message']}"
+                        except:
+                            pass
+                        self.signals.finished.emit(False, error_msg)
+                except httpx.HTTPError as e:
+                    self.signals.finished.emit(False, f"网络错误：{e}")
+                except Exception as e:
+                    self.signals.finished.emit(False, f"取消失败：{e}")
+        
+        def on_cancel_finished(success: bool, message: str):
+            progress.close()
+            if success:
+                QMessageBox.information(self, "成功", message)
+                # 刷新工作流列表
+                if refresh_callback:
+                    refresh_callback()
+            else:
+                QMessageBox.warning(self, "失败", message)
+        
+        worker = _CancelWorker()
+        worker.signals.finished.connect(on_cancel_finished)
         QThreadPool.globalInstance().start(worker)
 

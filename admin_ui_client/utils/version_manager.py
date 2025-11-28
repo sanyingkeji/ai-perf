@@ -72,7 +72,17 @@ class VersionManager:
         for key, spec_path in self.VERSION_FILES.items():
             spec_file = self.project_root / spec_path
             if spec_file.exists():
-                versions[key] = self._read_version_from_spec(spec_file)
+                version = self._read_version_from_spec(spec_file)
+                # 如果 Windows/Linux 的 build.spec 中没有版本号，尝试从对应的 macOS spec 文件读取
+                if not version and key in ["employee_windows_linux", "admin_windows_linux"]:
+                    # 尝试从对应的 macOS spec 文件读取
+                    macos_key = "employee_macos" if key == "employee_windows_linux" else "admin_macos"
+                    macos_spec_path = self.VERSION_FILES.get(macos_key)
+                    if macos_spec_path:
+                        macos_spec_file = self.project_root / macos_spec_path
+                        if macos_spec_file.exists():
+                            version = self._read_version_from_spec(macos_spec_file)
+                versions[key] = version
             else:
                 versions[key] = None
         return versions
@@ -111,7 +121,74 @@ class VersionManager:
                 print(f"更新 {spec_path} 失败: {e}")
                 results[key] = False
         
+        # 同时更新 config.json 文件中的 client_version
+        config_results = self._update_config_json_versions(new_version)
+        results.update(config_results)
+        
         return results
+    
+    def _update_config_json_versions(self, new_version: str) -> Dict[str, bool]:
+        """
+        更新 config.json 文件中的 client_version
+        
+        Args:
+            new_version: 新版本号
+        
+        Returns:
+            字典，键为配置文件路径，值为是否更新成功
+        """
+        results = {}
+        
+        # 更新员工端的 config.json
+        employee_config = self.project_root / "ui_client" / "config.json"
+        if employee_config.exists():
+            try:
+                results["employee_config"] = self._update_config_json_version(employee_config, new_version)
+            except Exception as e:
+                print(f"更新 {employee_config} 失败: {e}")
+                results["employee_config"] = False
+        else:
+            results["employee_config"] = False
+        
+        # 更新管理端的 config.json
+        admin_config = self.project_root / "admin_ui_client" / "config.json"
+        if admin_config.exists():
+            try:
+                results["admin_config"] = self._update_config_json_version(admin_config, new_version)
+            except Exception as e:
+                print(f"更新 {admin_config} 失败: {e}")
+                results["admin_config"] = False
+        else:
+            results["admin_config"] = False
+        
+        return results
+    
+    def _update_config_json_version(self, config_file: Path, new_version: str) -> bool:
+        """
+        更新单个 config.json 文件中的 client_version
+        
+        Args:
+            config_file: config.json 文件路径
+            new_version: 新版本号
+        
+        Returns:
+            是否更新成功
+        """
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # 更新 client_version
+            config["client_version"] = new_version
+            
+            # 写回文件
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False, sort_keys=True)
+            
+            return True
+        except Exception as e:
+            print(f"更新 {config_file} 中的版本号失败: {e}")
+            return False
     
     def _read_version_from_spec(self, spec_file: Path) -> Optional[str]:
         """
@@ -136,6 +213,13 @@ class VersionManager:
             match = re.search(r"['\"]CFBundleShortVersionString['\"]:\s*['\"]([^'\"]+)['\"]", content)
             if match:
                 return match.group(1)
+            
+            # 对于 Windows/Linux 的 build.spec，查找注释形式的版本号
+            # 格式: # version: x.x.x
+            if spec_file.name == "build.spec":
+                match = re.search(r"^#\s*version:\s*([^\n]+)", content, re.MULTILINE)
+                if match:
+                    return match.group(1).strip()
         except Exception as e:
             print(f"读取版本号失败: {e}")
         
@@ -179,6 +263,25 @@ class VersionManager:
                 content
             )
             
+            # 对于 Windows/Linux 的 build.spec 文件，如果没有版本号字段，添加注释形式的版本号
+            # 检查是否是 build.spec（不是 build_macos.spec）
+            if spec_file.name == "build.spec" and "version=" not in content:
+                # 在文件开头添加版本号注释
+                if not content.startswith(f"# version: {new_version}\n"):
+                    # 检查是否已有版本号注释
+                    version_comment_pattern = r"^#\s*version:\s*[^\n]+\n"
+                    if re.search(version_comment_pattern, content, re.MULTILINE):
+                        # 更新现有注释
+                        content = re.sub(
+                            version_comment_pattern,
+                            f"# version: {new_version}\n",
+                            content,
+                            flags=re.MULTILINE
+                        )
+                    else:
+                        # 添加新注释（在文件开头）
+                        content = f"# version: {new_version}\n{content}"
+            
             # 如果内容有变化，写回文件
             if content != original_content:
                 with open(spec_file, 'w', encoding='utf-8') as f:
@@ -214,6 +317,10 @@ class VersionManager:
         current_version = self.get_current_version()
         all_versions = self.get_all_versions()
         
+        # 获取 config.json 中的版本号
+        config_versions = self._get_config_json_versions()
+        all_versions.update(config_versions)
+        
         # 检查版本是否一致
         unique_versions = set(v for v in all_versions.values() if v is not None)
         is_consistent = len(unique_versions) <= 1
@@ -224,4 +331,39 @@ class VersionManager:
             "is_consistent": is_consistent,
             "unique_versions": list(unique_versions) if unique_versions else []
         }
+    
+    def _get_config_json_versions(self) -> Dict[str, Optional[str]]:
+        """
+        获取 config.json 文件中的版本号
+        
+        Returns:
+            字典，键为配置文件标识，值为版本号
+        """
+        versions = {}
+        
+        # 读取员工端的 config.json
+        employee_config = self.project_root / "ui_client" / "config.json"
+        if employee_config.exists():
+            try:
+                with open(employee_config, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                versions["employee_config"] = config.get("client_version")
+            except Exception:
+                versions["employee_config"] = None
+        else:
+            versions["employee_config"] = None
+        
+        # 读取管理端的 config.json
+        admin_config = self.project_root / "admin_ui_client" / "config.json"
+        if admin_config.exists():
+            try:
+                with open(admin_config, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                versions["admin_config"] = config.get("client_version")
+            except Exception:
+                versions["admin_config"] = None
+        else:
+            versions["admin_config"] = None
+        
+        return versions
 

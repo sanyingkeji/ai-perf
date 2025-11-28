@@ -48,8 +48,8 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r requirements.txt
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r requirements.txt --break-system-packages
       
       - name: Verify PyInstaller installation
         run: |
@@ -232,8 +232,8 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r requirements.txt
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r requirements.txt --break-system-packages
       
       - name: Verify PyInstaller installation
         run: |
@@ -342,6 +342,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Windows 上通常不需要 --break-system-packages，但为了保险起见，如果遇到错误可以添加
       
       - name: Verify PyInstaller installation
         run: |
@@ -433,8 +434,8 @@ jobs:
       
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r requirements.txt
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r requirements.txt --break-system-packages
       
       - name: Verify PyInstaller installation
         run: |

@@ -858,7 +858,8 @@ class WorkdayView(QWidget):
 
     def _on_workdays_error(self, message: str):
         """工作日列表加载失败"""
-        QMessageBox.warning(self, "错误", f"获取工作日列表失败：{message}")
+        # 使用 Toast 提示，而不是弹窗
+        Toast.show_message(self, f"获取工作日列表失败：{message}")
         # 即使加载失败，也尝试更新按钮状态（可能部分数据已加载）
         self._update_navigation_buttons()
 

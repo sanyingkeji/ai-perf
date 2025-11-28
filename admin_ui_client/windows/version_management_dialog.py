@@ -121,6 +121,8 @@ class VersionManagementDialog(QDialog):
             "employee_windows_linux": "员工端 (Windows/Linux)",
             "admin_macos": "管理端 (macOS)",
             "admin_windows_linux": "管理端 (Windows/Linux)",
+            "employee_config": "员工端 config.json",
+            "admin_config": "管理端 config.json",
         }
         
         # 更新表格
@@ -133,7 +135,14 @@ class VersionManagementDialog(QDialog):
             self.version_table.setItem(row, 0, type_item)
             
             # 文件路径
-            spec_path = self.version_manager.VERSION_FILES.get(key, "")
+            if key in self.version_manager.VERSION_FILES:
+                spec_path = self.version_manager.VERSION_FILES.get(key, "")
+            elif key == "employee_config":
+                spec_path = "ui_client/config.json"
+            elif key == "admin_config":
+                spec_path = "admin_ui_client/config.json"
+            else:
+                spec_path = ""
             path_item = QTableWidgetItem(spec_path)
             self.version_table.setItem(row, 1, path_item)
             
@@ -189,7 +198,9 @@ class VersionManagementDialog(QDialog):
             f"- ui_client/build_macos.spec\n"
             f"- ui_client/build.spec\n"
             f"- admin_ui_client/build_macos.spec\n"
-            f"- admin_ui_client/build.spec",
+            f"- admin_ui_client/build.spec\n"
+            f"- ui_client/config.json (client_version)\n"
+            f"- admin_ui_client/config.json (client_version)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
