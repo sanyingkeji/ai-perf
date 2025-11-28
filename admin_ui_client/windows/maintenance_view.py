@@ -4898,13 +4898,32 @@ class PackageTab(QWidget):
                     time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
                     table.setItem(row, 4, time_item)
                     
-                    # 操作按钮（查看日志）
-                    view_logs_btn = QPushButton("查看日志")
-                    view_logs_btn.setFixedWidth(90)
+                    # 操作按钮（查看日志和 Re-run）
                     run_id = run.get("id")
                     run_url = run.get("html_url", "")
+                    workflow_id = run.get("workflow_id")
+                    
+                    # 创建按钮容器
+                    btn_widget = QWidget()
+                    btn_layout = QHBoxLayout(btn_widget)
+                    btn_layout.setContentsMargins(2, 2, 2, 2)
+                    btn_layout.setSpacing(4)
+                    
+                    # 查看日志按钮
+                    view_logs_btn = QPushButton("查看日志")
+                    view_logs_btn.setFixedWidth(80)
                     view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
-                    table.setCellWidget(row, 5, view_logs_btn)
+                    btn_layout.addWidget(view_logs_btn)
+                    
+                    # Re-run 按钮（只有已完成的工作流才能重新运行）
+                    if status == "completed":
+                        rerun_btn = QPushButton("Re-run")
+                        rerun_btn.setFixedWidth(70)
+                        rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
+                        btn_layout.addWidget(rerun_btn)
+                    
+                    btn_layout.addStretch()
+                    table.setCellWidget(row, 5, btn_widget)
                 
                 status_label.setText(f"已加载 {len(runs)} 个工作流运行")
             
@@ -5095,4 +5114,80 @@ class PackageTab(QWidget):
         load_logs()
         
         log_dialog.exec()
+    
+    def _rerun_workflow(self, run_id: int, workflow_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None):
+        """重新运行工作流"""
+        # 确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认重新运行",
+            f"确定要重新运行工作流运行 #{run_id} 吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 显示进度提示
+        progress = QProgressDialog("正在重新运行工作流...", "取消", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)  # 不允许取消
+        progress.show()
+        
+        class _RerunWorkerSignals(QObject):
+            finished = Signal(bool, str)  # success, message
+        
+        class _RerunWorker(QRunnable):
+            def __init__(self):
+                super().__init__()
+                self.signals = _RerunWorkerSignals()
+            
+            @Slot()
+            def run(self):
+                try:
+                    # 调用 GitHub API 重新运行工作流
+                    rerun_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/rerun"
+                    headers = {
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "aiperf-admin-client/1.0",
+                        "Authorization": f"token {api_key}"
+                    }
+                    
+                    # POST 请求重新运行
+                    response = httpx.post(rerun_url, headers=headers, timeout=30)
+                    
+                    if response.status_code == 201:
+                        self.signals.finished.emit(True, "工作流已成功重新运行")
+                    elif response.status_code == 403:
+                        self.signals.finished.emit(False, "权限不足，无法重新运行工作流。请检查 API Key 权限。")
+                    elif response.status_code == 409:
+                        self.signals.finished.emit(False, "工作流正在运行中，无法重新运行。")
+                    else:
+                        error_msg = f"重新运行失败：HTTP {response.status_code}"
+                        try:
+                            error_data = response.json()
+                            if "message" in error_data:
+                                error_msg += f" - {error_data['message']}"
+                        except:
+                            pass
+                        self.signals.finished.emit(False, error_msg)
+                except httpx.HTTPError as e:
+                    self.signals.finished.emit(False, f"网络错误：{e}")
+                except Exception as e:
+                    self.signals.finished.emit(False, f"重新运行失败：{e}")
+        
+        def on_rerun_finished(success: bool, message: str):
+            progress.close()
+            if success:
+                QMessageBox.information(self, "成功", message)
+                # 刷新工作流列表
+                if refresh_callback:
+                    refresh_callback()
+            else:
+                QMessageBox.warning(self, "失败", message)
+        
+        worker = _RerunWorker()
+        worker.signals.finished.connect(on_rerun_finished)
+        QThreadPool.globalInstance().start(worker)
 

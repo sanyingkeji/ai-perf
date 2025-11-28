@@ -107,6 +107,7 @@ def main():
     config_file = Path("config.json")
     config_backup = Path("config.json.bak")
     config_modified = False
+    config_existed_before = config_file.exists()  # 记录原始文件是否存在
     
     # 从 spec 文件中读取版本号
     version = None
@@ -143,6 +144,52 @@ def main():
     if not version:
         version = "1.0.1"  # 默认版本号
         log_warn(f"未找到版本号，使用默认值: {version}")
+    
+    # 如果 config.json 不存在，创建默认配置
+    if not config_file.exists():
+        log_warn("config.json 不存在，创建默认配置...")
+        import json
+        # 根据客户端类型创建不同的默认配置
+        if client_type == "admin":
+            default_config = {
+                "api_base": "http://127.0.0.1:8880",
+                "google_id_token": "",
+                "session_token": "",
+                "user_id": "",
+                "user_name": "",
+                "user_email": "",
+                "theme": "auto",
+                "auto_refresh": True,
+                "notifications": True,
+                "client_version": version,
+                "update_dialog_dismissed_date": "",
+                "ssh_host": "",
+                "ssh_port": 22,
+                "ssh_username": "",
+                "ssh_password": "",
+                "ssh_key_path": "",
+                "upload_api_url": "http://127.0.0.1:8882/api/upload",
+                "openai_session_key": "",
+            }
+        else:  # employee
+            default_config = {
+                "api_base": "http://127.0.0.1:8000",
+                "google_id_token": "",
+                "session_token": "",
+                "user_id": "",
+                "user_name": "",
+                "user_email": "",
+                "theme": "auto",
+                "auto_refresh": True,
+                "notifications": True,
+                "client_version": version,
+                "update_dialog_dismissed_date": "",
+            }
+        
+        # 创建默认配置文件
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(default_config, f, indent=2, ensure_ascii=False, sort_keys=True)
+        log_info("✓ 已创建默认 config.json")
     
     if config_file.exists():
         log_warn("备份并修改 config.json...")
@@ -189,8 +236,12 @@ def main():
         # 修改 api_base
         config["api_base"] = "https://api-perf.sanying.site"
         
-        # 设置 upload_api_url
-        config["upload_api_url"] = "https://file.sanying.site/api/upload"
+        # 设置 upload_api_url（管理端必须设置）
+        if client_type == "admin":
+            config["upload_api_url"] = "https://file.sanying.site/api/upload"
+        elif "upload_api_url" in config:
+            # 员工端如果存在这个字段，也更新它
+            config["upload_api_url"] = "https://file.sanying.site/api/upload"
         
         # 更新版本号（如果从 spec 文件中读取到了版本号）
         if version:
@@ -2347,8 +2398,16 @@ chmod 755 %{{buildroot}}/usr/bin/{exe_name}
     # 恢复 config.json（如果之前修改过）
     if config_modified and config_backup.exists():
         log_warn("恢复 config.json...")
-        shutil.move(config_backup, config_file)
-        log_info("✓ config.json 已恢复")
+        if config_existed_before:
+            # 如果原来有文件，恢复备份
+            shutil.move(config_backup, config_file)
+            log_info("✓ config.json 已恢复")
+        else:
+            # 如果原来没有文件，删除创建的文件和备份
+            if config_file.exists():
+                config_file.unlink()
+            config_backup.unlink()
+            log_info("✓ 已删除临时创建的 config.json")
     
     elapsed_time = time.time() - start_time
     print()
