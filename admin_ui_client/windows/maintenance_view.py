@@ -5002,16 +5002,18 @@ class PackageTab(QWidget):
                         btn_layout.setContentsMargins(2, 2, 2, 2)
                         btn_layout.setSpacing(4)
                         
-                        # 查看日志按钮
+                        # 查看日志按钮（mini 按钮样式，与健康检查一致）
                         view_logs_btn = QPushButton("查看日志")
-                        view_logs_btn.setFixedWidth(80)
+                        view_logs_btn.setFixedSize(70, 22)  # 宽度稍大以适应"查看日志"文本
+                        view_logs_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
                         view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
                         btn_layout.addWidget(view_logs_btn)
                         
                         # Re-run 按钮（只有已完成的工作流才能重新运行）
                         if status == "completed":
                             rerun_btn = QPushButton("Re-run")
-                            rerun_btn.setFixedWidth(70)
+                            rerun_btn.setFixedSize(60, 22)  # mini 按钮样式，与健康检查一致
+                            rerun_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
                             rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
                             btn_layout.addWidget(rerun_btn)
                         

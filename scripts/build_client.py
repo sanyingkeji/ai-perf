@@ -191,6 +191,69 @@ def main():
             json.dump(default_config, f, indent=2, ensure_ascii=False, sort_keys=True)
         log_info("✓ 已创建默认 config.json")
     
+    # 检查并创建 google_client_secret.json（如果不存在）
+    google_secret_file = Path("google_client_secret.json")
+    google_secret_backup = Path("google_client_secret.json.bak")
+    google_secret_modified = False
+    google_secret_existed_before = google_secret_file.exists()
+    google_secret_from_env = None  # 标记是否从环境变量创建
+    
+    # 优先从环境变量读取 Google OAuth 凭据（用于 CI/CD）
+    google_secret_env_value = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
+    
+    if google_secret_env_value:
+        # 从环境变量读取（Base64 编码或直接 JSON 字符串）
+        log_warn("从环境变量读取 Google OAuth 凭据...")
+        try:
+            import base64
+            # 尝试 Base64 解码
+            try:
+                decoded = base64.b64decode(google_secret_env_value).decode('utf-8')
+                google_secret_data = json.loads(decoded)
+            except:
+                # 如果不是 Base64，尝试直接解析 JSON
+                google_secret_data = json.loads(google_secret_env_value)
+            
+            # 如果文件存在，先备份
+            if google_secret_file.exists():
+                shutil.copy2(google_secret_file, google_secret_backup)
+            
+            # 写入从环境变量读取的凭据
+            with open(google_secret_file, 'w', encoding='utf-8') as f:
+                json.dump(google_secret_data, f, indent=2, ensure_ascii=False)
+            log_info("✓ 已从环境变量创建 google_client_secret.json（包含真实凭据）")
+            google_secret_modified = True
+            google_secret_from_env = True  # 标记为从环境变量创建
+        except Exception as e:
+            log_warn(f"从环境变量读取 Google OAuth 凭据失败: {e}，将使用占位文件")
+            google_secret_from_env = False
+    
+    if not google_secret_from_env:
+        # 如果没有从环境变量读取，使用本地文件或创建占位文件
+        if not google_secret_file.exists():
+            log_warn("google_client_secret.json 不存在，创建占位文件...")
+            # 创建一个空的占位 JSON 文件（用于打包，实际使用时需要用户配置）
+            placeholder_google_secret = {
+                "installed": {
+                    "client_id": "",
+                    "project_id": "",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_secret": "",
+                    "redirect_uris": ["http://localhost"]
+                }
+            }
+            with open(google_secret_file, 'w', encoding='utf-8') as f:
+                json.dump(placeholder_google_secret, f, indent=2, ensure_ascii=False)
+            log_info("✓ 已创建占位 google_client_secret.json（打包用，实际使用时需要用户配置）")
+            google_secret_modified = True
+        else:
+            # 如果文件存在，备份它（打包时使用原文件，不替换）
+            log_warn("使用现有的 google_client_secret.json...")
+            # 不备份，直接使用现有文件
+            google_secret_modified = False  # 文件已存在，不需要恢复
+    
     if config_file.exists():
         log_warn("备份并修改 config.json...")
         # 备份原始文件
@@ -2408,6 +2471,24 @@ chmod 755 %{{buildroot}}/usr/bin/{exe_name}
                 config_file.unlink()
             config_backup.unlink()
             log_info("✓ 已删除临时创建的 config.json")
+    
+    # 恢复 google_client_secret.json（如果之前修改过）
+    # 注意：如果是从环境变量创建的，且原来没有文件，不删除（因为这是打包需要的）
+    if google_secret_modified:
+        if google_secret_backup.exists():
+            # 如果原来有文件，恢复备份
+            log_warn("恢复 google_client_secret.json...")
+            if google_secret_file.exists():
+                google_secret_file.unlink()
+            shutil.move(google_secret_backup, google_secret_file)
+            log_info("✓ google_client_secret.json 已恢复")
+        elif not google_secret_existed_before and not google_secret_from_env:
+            # 如果原来没有文件，且不是从环境变量创建的，删除创建的占位文件
+            log_warn("删除临时创建的 google_client_secret.json...")
+            if google_secret_file.exists():
+                google_secret_file.unlink()
+            log_info("✓ 已删除临时创建的 google_client_secret.json")
+        # 如果是从环境变量创建的，且原来没有文件，保留文件（因为这是打包需要的）
     
     elapsed_time = time.time() - start_time
     print()

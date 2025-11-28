@@ -112,6 +112,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python3 ../scripts/build_client.py ${{ matrix.client }} macos
@@ -218,6 +219,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           # 在 Apple Silicon 上使用 Rosetta 运行 x86_64 Python
@@ -295,6 +297,8 @@ jobs:
       
       - name: Build client (Windows)
         if: steps.check_build.outputs.should_build == 'true'
+        env:
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python ../scripts/build_client.py ${{ matrix.client }} windows
@@ -371,6 +375,8 @@ jobs:
       
       - name: Build client (Linux)
         if: steps.check_build.outputs.should_build == 'true'
+        env:
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python3 ../scripts/build_client.py ${{ matrix.client }} linux
