@@ -4818,10 +4818,8 @@ class PackageTab(QWidget):
         
         # 加载工作流运行数据
         def load_workflow_runs():
-            # 检查对话框是否仍然存在
-            if not dialog.isVisible():
-                return
-            
+            # 注意：对话框可能还没显示，但不影响加载数据
+            # 在对话框显示后，数据会自动填充到表格中
             status_label.setText("正在加载工作流运行状态...")
             table.setRowCount(0)
             
@@ -5064,8 +5062,10 @@ class PackageTab(QWidget):
         
         dialog.finished.connect(on_dialog_finished)
         
-        # 初始加载
-        load_workflow_runs()
+        # 在对话框显示后立即加载数据
+        # 使用 QTimer.singleShot 确保对话框完全显示后再加载
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, load_workflow_runs)
         
         dialog.exec()
     

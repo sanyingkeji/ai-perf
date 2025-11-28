@@ -145,11 +145,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Install gettext (required for Python x86_64)
+        run: |
+          # 安装 gettext 依赖，解决 Python x86_64 安装时的 libintl.8.dylib 缺失问题
+          # GitHub Actions macOS runner 通常已经安装了 Homebrew
+          echo "安装 gettext..."
+          brew install gettext || echo "警告: gettext 安装失败，继续执行"
+          
+          # 创建符号链接（如果 gettext 安装在非标准路径）
+          if [ -d "/opt/homebrew/opt/gettext" ]; then
+            # Apple Silicon Homebrew 路径（在 Rosetta 下可能不可用，但尝试创建链接）
+            echo "检测到 Apple Silicon Homebrew 路径"
+            sudo mkdir -p /usr/local/opt/gettext/lib 2>/dev/null || mkdir -p /usr/local/opt/gettext/lib 2>/dev/null || true
+            sudo ln -sf /opt/homebrew/opt/gettext/lib/libintl.8.dylib /usr/local/opt/gettext/lib/libintl.8.dylib 2>/dev/null || \
+            ln -sf /opt/homebrew/opt/gettext/lib/libintl.8.dylib /usr/local/opt/gettext/lib/libintl.8.dylib 2>/dev/null || true
+          elif [ -d "/usr/local/opt/gettext" ]; then
+            # Intel Homebrew 路径（已存在）
+            echo "gettext 已安装在 /usr/local/opt/gettext"
+          else
+            echo "警告: gettext 未找到，但继续执行（可能使用系统版本）"
+          fi
+      
       - name: Set up Python (x86_64 via Rosetta)
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           architecture: 'x64'
+          # 如果 setup-python 失败，可以尝试使用系统 Python
+          # 但先尝试使用 setup-python，因为它提供了更好的版本控制
       
       - name: Install dependencies
         env:
@@ -339,16 +362,20 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
+          # 安装 DEB 打包工具
           sudo apt-get install -y \
             dpkg-dev \
             fakeroot \
-            rpm \
-            rpmbuild \
             build-essential \
             libgl1-mesa-glx \
             libxkbcommon-x11-0 \
             libxcb-xinerama0 \
             libxcb-cursor0
+          # 安装 RPM 打包工具（rpmbuild 包含在 rpm 包中）
+          # 在 Ubuntu 上，rpm 包提供了 rpmbuild 工具
+          sudo apt-get install -y rpm || echo "警告: rpm 包安装失败，RPM 打包将不可用"
+          # 验证 rpmbuild 是否可用
+          which rpmbuild || echo "警告: rpmbuild 未找到，RPM 打包将不可用"
       
       - name: Install Python dependencies
         run: |

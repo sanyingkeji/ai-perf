@@ -14,10 +14,27 @@ from datetime import datetime
 import time
 import uuid
 
+# Windows 编码修复：设置 UTF-8 编码
+if sys.platform == "win32":
+    # 设置标准输出和错误输出为 UTF-8
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except:
+            pass
+    if hasattr(sys.stderr, 'reconfigure'):
+        try:
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except:
+            pass
+    # 设置环境变量
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 # 颜色输出（Windows 兼容）
 try:
     from colorama import init, Fore, Style
-    init()
+    # Windows 上初始化 colorama，设置 strip=False 以保留 ANSI 代码
+    init(autoreset=False, strip=False)
     GREEN = Fore.GREEN
     YELLOW = Fore.YELLOW
     RED = Fore.RED
