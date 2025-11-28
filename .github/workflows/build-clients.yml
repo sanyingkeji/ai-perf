@@ -30,6 +30,7 @@ jobs:
   build-macos-arm64:
     name: Build macOS (Apple Silicon)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
+    timeout-minutes: 180  # 3小时超时
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
       matrix:
@@ -137,6 +138,7 @@ jobs:
   build-macos-intel:
     name: Build macOS (Intel)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
+    timeout-minutes: 180  # 3小时超时
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
       matrix:
@@ -324,6 +326,7 @@ jobs:
   build-windows:
     name: Build Windows
     runs-on: windows-latest
+    timeout-minutes: 120  # 2小时超时
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''
     strategy:
       matrix:
@@ -401,6 +404,7 @@ jobs:
   build-linux-ubuntu:
     name: Build Linux (Ubuntu/Debian)
     runs-on: ubuntu-22.04
+    timeout-minutes: 120  # 2小时超时
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''
     strategy:
       matrix:

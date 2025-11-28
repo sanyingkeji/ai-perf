@@ -480,7 +480,10 @@ def main():
                 "--clean",
                 "--noconfirm",
                 f"--log-level={log_level}"
-            ], check=True, env=pyinstaller_env, capture_output=True, text=True)
+            ], check=True, env=pyinstaller_env, capture_output=True, text=True, timeout=3600)  # 1小时超时
+        except subprocess.TimeoutExpired:
+            log_error("PyInstaller 执行超时（超过1小时）")
+            raise
         except subprocess.CalledProcessError as e:
             log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
             if e.stdout:
@@ -498,7 +501,7 @@ def main():
                     "--clean",
                     "--noconfirm",
                     f"--log-level={log_level}"
-                ], env=pyinstaller_env)
+                ], env=pyinstaller_env, timeout=3600)  # 1小时超时
             raise
         
         # 恢复 spec 文件（如果修改过）
@@ -1287,15 +1290,108 @@ def main():
                                 self.stderr = ""
                         result = NotaryResult(result_output)
                     else:
-                        log_warn("  ⚠ 无法获取提交 ID，使用 --wait 模式...")
-                        # 回退到 --wait 模式
-                        result = subprocess.run([
+                        log_warn("  ⚠ 无法获取提交 ID，使用轮询模式代替 --wait...")
+                        # 使用轮询模式代替 --wait，以便更好地控制超时和日志输出
+                        max_wait_time = 1800  # 30分钟
+                        poll_interval = 30  # 每30秒检查一次
+                        start_time = time.time()
+                        status = None
+                        result_output = ""
+                        
+                        # 先提交（不使用 --wait）
+                        submit_result = subprocess.run([
                             "xcrun", "notarytool", "submit", str(dmg_path),
                             "--apple-id", apple_id,
                             "--team-id", team_id,
-                            "--password", notary_password,
-                            "--wait"
-                        ], check=True, capture_output=True, text=True, timeout=1800)  # 30分钟超时
+                            "--password", notary_password
+                        ], capture_output=True, text=True, timeout=600, check=False)
+                        
+                        if submit_result.returncode != 0:
+                            log_error(f"  提交失败: {submit_result.stderr or submit_result.stdout}")
+                            raise subprocess.CalledProcessError(submit_result.returncode, "notarytool submit")
+                        
+                        # 尝试从输出中提取提交 ID
+                        submission_id = None
+                        for line in submit_result.stdout.split('\n'):
+                            if 'id:' in line.lower() or 'submission id:' in line.lower():
+                                submission_id = line.split(':')[-1].strip().strip('"')
+                                break
+                        
+                        if not submission_id:
+                            # 如果无法提取 ID，尝试从历史记录中获取最新的
+                            log_warn("  无法从输出中提取提交 ID，尝试从历史记录获取...")
+                            try:
+                                history_result = subprocess.run([
+                                    "xcrun", "notarytool", "history",
+                                    "--apple-id", apple_id,
+                                    "--team-id", team_id,
+                                    "--password", notary_password
+                                ], capture_output=True, text=True, timeout=30, check=False)
+                                if history_result.returncode == 0:
+                                    # 解析历史记录获取最新的提交 ID
+                                    import json
+                                    try:
+                                        history_data = json.loads(history_result.stdout)
+                                        if isinstance(history_data, list) and len(history_data) > 0:
+                                            submission_id = history_data[0].get("id", "")
+                                    except:
+                                        pass
+                            except:
+                                pass
+                        
+                        if submission_id:
+                            log_info(f"  ✓ 提交成功，ID: {submission_id}")
+                            log_info("  等待 Apple 处理公证（轮询模式）...")
+                            
+                            while time.time() - start_time < max_wait_time:
+                                try:
+                                    status_result = subprocess.run([
+                                        "xcrun", "notarytool", "log", submission_id,
+                                        "--apple-id", apple_id,
+                                        "--team-id", team_id,
+                                        "--password", notary_password
+                                    ], capture_output=True, text=True, timeout=30, check=False)
+                                    
+                                    if status_result.returncode == 0 and status_result.stdout:
+                                        import json
+                                        try:
+                                            log_data = json.loads(status_result.stdout)
+                                            status = log_data.get("status", "").lower()
+                                            
+                                            if status in ['accepted', 'success']:
+                                                log_info("  ✓ 公证成功！")
+                                                result_output = status_result.stdout
+                                                break
+                                            elif status in ['invalid', 'rejected', 'failed']:
+                                                log_error(f"  ✗ 公证失败，状态: {status}")
+                                                result_output = status_result.stdout
+                                                break
+                                            elif status == 'in progress':
+                                                elapsed = int(time.time() - start_time)
+                                                log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
+                                        except json.JSONDecodeError:
+                                            if "not yet available" in status_result.stdout.lower():
+                                                elapsed = int(time.time() - start_time)
+                                                log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
+                                
+                                except Exception as e:
+                                    log_warn(f"  查询状态时出错: {e}")
+                                
+                                time.sleep(poll_interval)
+                            
+                            if time.time() - start_time >= max_wait_time:
+                                log_error("  ✗ 公证等待超时（30分钟）")
+                                raise subprocess.TimeoutExpired("notarytool", max_wait_time)
+                            
+                            # 创建结果对象
+                            class NotaryResult:
+                                def __init__(self, stdout):
+                                    self.stdout = stdout
+                                    self.stderr = ""
+                            result = NotaryResult(result_output)
+                        else:
+                            log_error("  ✗ 无法获取提交 ID，无法使用轮询模式")
+                            raise RuntimeError("无法获取公证提交 ID")
                     # 检查公证结果
                     if result.stdout:
                         print(result.stdout)
@@ -1897,6 +1993,31 @@ def main():
                             
                             time.sleep(poll_interval)
                         
+                        # 检查是否超时
+                        if time.time() - start_time >= max_wait_time:
+                            log_error("  ✗ PKG 公证等待超时（30分钟）")
+                            # 尝试最后一次查询
+                            try:
+                                final_result = subprocess.run([
+                                    "xcrun", "notarytool", "log", submission_id,
+                                    "--apple-id", apple_id,
+                                    "--team-id", team_id,
+                                    "--password", notary_password
+                                ], capture_output=True, text=True, timeout=30, check=False)
+                                if final_result.returncode == 0:
+                                    result_output = final_result.stdout
+                                    import json
+                                    try:
+                                        log_data = json.loads(final_result.stdout)
+                                        status = log_data.get("status", "").lower()
+                                    except:
+                                        pass
+                            except:
+                                pass
+                            
+                            if not status or status not in ['accepted', 'success']:
+                                raise subprocess.TimeoutExpired("notarytool", max_wait_time)
+                        
                         # 解析公证状态
                         import json
                         try:
@@ -2057,7 +2178,10 @@ def main():
                 "--clean",
                 "--noconfirm",
                 f"--log-level={log_level}"
-            ], check=True, capture_output=True, text=True)
+            ], check=True, capture_output=True, text=True, timeout=3600)  # 1小时超时
+        except subprocess.TimeoutExpired:
+            log_error("PyInstaller 执行超时（超过1小时）")
+            raise
         except subprocess.CalledProcessError as e:
             log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
             if e.stdout:
@@ -2075,7 +2199,7 @@ def main():
                     "--clean",
                     "--noconfirm",
                     f"--log-level={log_level}"
-                ])
+                ], timeout=3600)  # 1小时超时
             raise
         
         exe_path = Path("dist") / f"{app_name}.exe"
@@ -2299,7 +2423,10 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
                 "--clean",
                 "--noconfirm",
                 f"--log-level={log_level}"
-            ], check=True, capture_output=True, text=True)
+            ], check=True, capture_output=True, text=True, timeout=3600)  # 1小时超时
+        except subprocess.TimeoutExpired:
+            log_error("PyInstaller 执行超时（超过1小时）")
+            raise
         except subprocess.CalledProcessError as e:
             log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
             if e.stdout:
@@ -2317,7 +2444,7 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
                     "--clean",
                     "--noconfirm",
                     f"--log-level={log_level}"
-                ])
+                ], timeout=3600)  # 1小时超时
             raise
         
         # 查找生成的可执行文件
