@@ -453,12 +453,13 @@ def login_and_get_id_token(callback_received_callback=None) -> str:
                 _login_in_progress = False
             raise GoogleLoginError(f"后端登录失败：HTTP {resp.status_code} - {detail}")
 
-            try:
-                data = resp.json()
-            except Exception as e:
-                with _login_lock:
-                    _login_in_progress = False
-                raise GoogleLoginError(f"解析后端登录响应失败：{e}") from e
+        # 解析响应（当状态码为 200 时）
+        try:
+            data = resp.json()
+        except Exception as e:
+            with _login_lock:
+                _login_in_progress = False
+            raise GoogleLoginError(f"解析后端登录响应失败：{e}") from e
 
         session_token = data.get("session_token") or ""
         user_id = data.get("user_id") or ""
@@ -470,12 +471,12 @@ def login_and_get_id_token(callback_received_callback=None) -> str:
                 _login_in_progress = False
             raise GoogleLoginError("后端登录响应中缺少 session_token。")
 
-            cfg["session_token"] = session_token
-            cfg["user_id"] = user_id
-            cfg["user_name"] = user_name
-            cfg["user_email"] = user_email
+        cfg["session_token"] = session_token
+        cfg["user_id"] = user_id
+        cfg["user_name"] = user_name
+        cfg["user_email"] = user_email
 
-            ConfigManager.save(cfg)
+        ConfigManager.save(cfg)
     
         # 登录成功，释放锁
         with _login_lock:

@@ -145,34 +145,88 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Install gettext (required for Python x86_64)
+      - name: Install gettext (x86_64) for Python x86_64
         run: |
-          # 安装 gettext 依赖，解决 Python x86_64 安装时的 libintl.8.dylib 缺失问题
-          # GitHub Actions macOS runner 通常已经安装了 Homebrew
-          echo "安装 gettext..."
-          brew install gettext || echo "警告: gettext 安装失败，继续执行"
+          # 在 Rosetta 环境下安装 x86_64 版本的 gettext
+          # 因为 Python x86_64 需要 x86_64 架构的 gettext 库
+          # GitHub Actions macOS runner 在 Apple Silicon 上，需要安装 x86_64 版本的 gettext
+          echo "在 Rosetta 环境下安装 x86_64 版本的 gettext..."
           
-          # 创建符号链接（如果 gettext 安装在非标准路径）
-          if [ -d "/opt/homebrew/opt/gettext" ]; then
-            # Apple Silicon Homebrew 路径（在 Rosetta 下可能不可用，但尝试创建链接）
-            echo "检测到 Apple Silicon Homebrew 路径"
-            sudo mkdir -p /usr/local/opt/gettext/lib 2>/dev/null || mkdir -p /usr/local/opt/gettext/lib 2>/dev/null || true
-            sudo ln -sf /opt/homebrew/opt/gettext/lib/libintl.8.dylib /usr/local/opt/gettext/lib/libintl.8.dylib 2>/dev/null || \
-            ln -sf /opt/homebrew/opt/gettext/lib/libintl.8.dylib /usr/local/opt/gettext/lib/libintl.8.dylib 2>/dev/null || true
-          elif [ -d "/usr/local/opt/gettext" ]; then
-            # Intel Homebrew 路径（已存在）
-            echo "gettext 已安装在 /usr/local/opt/gettext"
+          # 检查现有的 gettext（可能是 arm64 版本）
+          if [ -f "/usr/local/opt/gettext/lib/libintl.8.dylib" ]; then
+            echo "检测到现有的 gettext，检查架构..."
+            file /usr/local/opt/gettext/lib/libintl.8.dylib || true
+            # 如果是 arm64 版本，需要安装 x86_64 版本
+            if file /usr/local/opt/gettext/lib/libintl.8.dylib 2>/dev/null | grep -q "arm64"; then
+              echo "检测到 arm64 版本的 gettext，需要安装 x86_64 版本"
+            fi
+          fi
+          
+          # 在 Rosetta 环境下使用 Homebrew 安装 x86_64 版本的 gettext
+          # 首先检查 Intel Homebrew 是否存在
+          if [ -f "/usr/local/bin/brew" ]; then
+            echo "使用 Intel Homebrew (/usr/local/bin/brew) 安装 gettext..."
+            arch -x86_64 /usr/local/bin/brew install gettext 2>&1 || {
+              echo "尝试重新安装 gettext..."
+              arch -x86_64 /usr/local/bin/brew reinstall gettext 2>&1 || echo "警告: gettext 安装/重装失败"
+            }
+          elif [ -f "/usr/local/Homebrew/bin/brew" ]; then
+            echo "使用 Intel Homebrew (/usr/local/Homebrew/bin/brew) 安装 gettext..."
+            arch -x86_64 /usr/local/Homebrew/bin/brew install gettext 2>&1 || {
+              echo "尝试重新安装 gettext..."
+              arch -x86_64 /usr/local/Homebrew/bin/brew reinstall gettext 2>&1 || echo "警告: gettext 安装/重装失败"
+            }
           else
-            echo "警告: gettext 未找到，但继续执行（可能使用系统版本）"
+            # 如果没有 Intel Homebrew，尝试安装（这可能需要较长时间）
+            echo "未找到 Intel Homebrew，尝试安装..."
+            echo "注意：这可能需要几分钟时间..."
+            arch -x86_64 /bin/bash -c 'CI=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' || echo "警告: Homebrew 安装失败"
+            # 然后安装 gettext
+            if [ -f "/usr/local/bin/brew" ]; then
+              arch -x86_64 /usr/local/bin/brew install gettext || echo "警告: gettext 安装失败"
+            fi
+          fi
+          
+          # 验证 gettext 是否安装成功且是 x86_64 架构
+          if [ -f "/usr/local/opt/gettext/lib/libintl.8.dylib" ]; then
+            echo "✓ gettext 已安装，检查架构..."
+            file /usr/local/opt/gettext/lib/libintl.8.dylib
+            # 检查是否是 x86_64 架构
+            if file /usr/local/opt/gettext/lib/libintl.8.dylib 2>/dev/null | grep -q "x86_64"; then
+              echo "✓ gettext 是 x86_64 架构，可以使用"
+            else
+              echo "警告: gettext 可能不是 x86_64 架构"
+            fi
+          else
+            echo "警告: gettext 未找到，但继续执行"
           fi
       
       - name: Set up Python (x86_64 via Rosetta)
+        id: setup-python
+        continue-on-error: true
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           architecture: 'x64'
-          # 如果 setup-python 失败，可以尝试使用系统 Python
-          # 但先尝试使用 setup-python，因为它提供了更好的版本控制
+      
+      - name: Verify Python installation
+        run: |
+          # 检查 Python 是否安装成功
+          if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
+            echo "✓ Python 已通过 setup-python 安装"
+            ${{ steps.setup-python.outputs.python-path }} --version
+          else
+            echo "警告: setup-python 可能失败，检查系统 Python..."
+            # 尝试使用系统 Python（如果可用）
+            if command -v python3 &> /dev/null; then
+              echo "使用系统 Python:"
+              python3 --version
+              arch -x86_64 python3 --version || echo "系统 Python 不是 x86_64 架构"
+            else
+              echo "错误: 未找到 Python"
+              exit 1
+            fi
+          fi
       
       - name: Install dependencies
         env:

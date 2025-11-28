@@ -45,6 +45,7 @@ from utils.ssh_client import SSHClient
 from utils.theme_manager import ThemeManager
 from widgets.toast import Toast
 from utils.api_client import AdminApiClient
+from utils.version_manager import VersionManager
 import httpx
 import webbrowser
 
@@ -3523,6 +3524,11 @@ class MaintenanceView(QWidget):
         self.script_execution_tab = ScriptExecutionTab(self)
         self.tabs.addTab(self.script_execution_tab, "脚本执行")
         
+        # 版本管理 TAB（从 version_view 导入）
+        from windows.version_view import VersionView
+        self.version_management_tab = VersionView()
+        self.tabs.addTab(self.version_management_tab, "版本管理")
+        
         # 打包 TAB
         self.package_tab = PackageTab(self)
         self.tabs.addTab(self.package_tab, "打包")
@@ -3572,6 +3578,10 @@ class MaintenanceView(QWidget):
             # 脚本执行 TAB（不需要加载数据，用户点击执行按钮时才执行）
             pass
         elif index == 5:
+            # 版本管理 TAB（首次加载时刷新版本信息）
+            if hasattr(self, "version_management_tab") and hasattr(self.version_management_tab, "reload"):
+                self.version_management_tab.reload()
+        elif index == 6:
             # 打包 TAB（首次加载时获取版本列表）
             if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
                 self.package_tab.reload_versions()
@@ -3590,8 +3600,12 @@ class MaintenanceView(QWidget):
         elif self.tabs.currentIndex() == 2:
             if hasattr(self, "log_view_tab") and hasattr(self.log_view_tab, "reload_from_ssh"):
                 self.log_view_tab.reload_from_ssh()
-        # 如果当前选中的是打包 TAB，刷新版本列表
+        # 如果当前选中的是版本管理 TAB，刷新版本信息
         elif self.tabs.currentIndex() == 5:
+            if hasattr(self, "version_management_tab") and hasattr(self.version_management_tab, "reload"):
+                self.version_management_tab.reload()
+        # 如果当前选中的是打包 TAB，刷新版本列表
+        elif self.tabs.currentIndex() == 6:
             if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
                 self.package_tab.reload_versions()
 
@@ -3793,35 +3807,13 @@ class PackageTab(QWidget):
         project_root = current_file.parent.parent.parent
         self._project_root = str(project_root.resolve())
         
+        # 使用 VersionManager 统一管理版本号
+        self._version_manager = VersionManager(Path(self._project_root))
+        
         # 获取当前版本号
-        self._current_version = self._get_version_from_spec()
+        self._current_version = self._version_manager.get_current_version() or "1.0.1"
         
         self._init_ui()
-    
-    def _get_version_from_spec(self) -> str:
-        """从 build_macos.spec 文件中读取版本号"""
-        try:
-            # 尝试从 admin_ui_client/build_macos.spec 读取
-            spec_file = Path(self._project_root) / "admin_ui_client" / "build_macos.spec"
-            if not spec_file.exists():
-                # 如果不存在，尝试从 ui_client/build_macos.spec 读取
-                spec_file = Path(self._project_root) / "ui_client" / "build_macos.spec"
-            
-            if spec_file.exists():
-                with open(spec_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    # 查找 version='...' 或 version="..."
-                    match = re.search(r"version\s*=\s*['\"]([^'\"]+)['\"]", content)
-                    if match:
-                        return match.group(1)
-                    # 也查找 CFBundleShortVersionString
-                    match = re.search(r"['\"]CFBundleShortVersionString['\"]:\s*['\"]([^'\"]+)['\"]", content)
-                    if match:
-                        return match.group(1)
-        except Exception as e:
-            print(f"读取版本号失败: {e}")
-        
-        return "1.0.1"  # 默认版本号
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -3852,12 +3844,20 @@ class PackageTab(QWidget):
         self.push_btn.clicked.connect(self._on_push_clicked)
         header_layout.addWidget(self.push_btn)
         
-        # Release 按钮（动态获取版本号，已在 __init__ 中获取）
+        # Release 按钮（动态获取版本号，使用 VersionManager）
         self.release_btn = QPushButton(f"Release V{self._current_version}")
         self.release_btn.setFixedWidth(180)
         self.release_btn.setFixedHeight(28)
         self.release_btn.clicked.connect(self._on_release_clicked)
         header_layout.addWidget(self.release_btn)
+        
+        # 版本管理按钮（统一管理版本号）
+        version_mgmt_btn = QPushButton("版本管理")
+        version_mgmt_btn.setFixedWidth(100)
+        version_mgmt_btn.setFixedHeight(28)
+        version_mgmt_btn.setToolTip("统一管理所有客户端的版本号")
+        version_mgmt_btn.clicked.connect(self._on_version_management_clicked)
+        header_layout.addWidget(version_mgmt_btn)
         
         # Check Actions 按钮
         self.actions_btn = QPushButton("Check Actions")
@@ -3877,10 +3877,19 @@ class PackageTab(QWidget):
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(8)
         
-        # 标题
+        # 标题和刷新按钮
+        title_layout = QHBoxLayout()
         title_label = QLabel("版本列表")
         title_label.setFont(QFont("Arial", 14, QFont.Bold))
-        left_layout.addWidget(title_label)
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        
+        refresh_versions_btn = QPushButton("刷新")
+        refresh_versions_btn.setFixedWidth(80)
+        refresh_versions_btn.clicked.connect(self.reload_versions)
+        title_layout.addWidget(refresh_versions_btn)
+        
+        left_layout.addLayout(title_layout)
         
         # 版本列表表格
         self.version_table = QTableWidget()
@@ -3993,12 +4002,18 @@ class PackageTab(QWidget):
         """版本列表加载完成"""
         self._versions = items
         self._update_version_table()
+        # 恢复刷新按钮状态
+        self.refresh_versions_btn.setEnabled(True)
+        self.refresh_versions_btn.setText("🔄 刷新")
     
     def _show_versions_error(self, error_msg: str):
         """显示版本列表加载错误"""
         QMessageBox.warning(self, "错误", f"加载版本列表失败：{error_msg}")
         self._versions = []
         self._update_version_table()
+        # 恢复刷新按钮状态
+        self.refresh_versions_btn.setEnabled(True)
+        self.refresh_versions_btn.setText("🔄 刷新")
     
     def _update_version_table(self):
         """更新版本列表表格"""
@@ -4666,7 +4681,9 @@ class PackageTab(QWidget):
                         
                         def on_push_tag_finished(exit_code, exit_status):
                             self._is_running = False
-                            self.release_btn.setText(f"Release V{self._current_version}")
+                            # 更新版本号显示（从 VersionManager 重新读取）
+                            self._current_version = self._version_manager.get_current_version() or "1.0.1"
+                            self._update_release_button_text()
                             self.release_btn.setEnabled(True)
                             self.push_btn.setEnabled(True)
                             self.actions_btn.setEnabled(True)
@@ -4681,6 +4698,8 @@ class PackageTab(QWidget):
                                     f"GitHub Actions 将自动开始构建。\n"
                                     f"你可以点击 \"Check Actions\" 按钮查看构建进度。"
                                 )
+                                # 自动刷新版本列表
+                                self.reload_versions()
                             else:
                                 self._append_output(f"[错误] Tag 推送失败，退出码: {exit_code}\n")
                                 QMessageBox.warning(self, "错误", f"Tag 推送失败，退出码: {exit_code}")
@@ -4689,7 +4708,9 @@ class PackageTab(QWidget):
                         push_tag_process.start("git", ["push", "origin", f"v{self._current_version}"])
                     else:
                         self._is_running = False
-                        self.release_btn.setText(f"Release V{self._current_version}")
+                        # 更新版本号显示
+                        self._current_version = self._version_manager.get_current_version() or "1.0.1"
+                        self._update_release_button_text()
                         self.release_btn.setEnabled(True)
                         self.push_btn.setEnabled(True)
                         self.actions_btn.setEnabled(True)
@@ -5068,6 +5089,28 @@ class PackageTab(QWidget):
         QTimer.singleShot(0, load_workflow_runs)
         
         dialog.exec()
+    
+    def _update_release_button_text(self):
+        """更新 Release 按钮文本（使用 VersionManager 获取最新版本号）"""
+        if not hasattr(self, 'release_btn'):
+            return
+        self._current_version = self._version_manager.get_current_version() or "1.0.1"
+        self.release_btn.setText(f"Release V{self._current_version}")
+    
+    def _on_version_management_clicked(self):
+        """版本管理按钮点击事件：打开版本号统一管理对话框"""
+        from windows.version_management_dialog import VersionManagementDialog
+        
+        dialog = VersionManagementDialog(self, self._version_manager)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 如果版本号已更新，刷新 Release 按钮文本
+            self._update_release_button_text()
+            QMessageBox.information(
+                self,
+                "版本更新成功",
+                "版本号已统一更新到所有相关文件。\n\n"
+                "请重新运行打包流程以使用新版本号。"
+            )
     
     def _view_workflow_logs(self, run_id: int, run_url: str, api_url: str, api_key: str, repo_owner: str, repo_name: str):
         """查看工作流运行的日志"""
