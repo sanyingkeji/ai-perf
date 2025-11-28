@@ -4700,7 +4700,7 @@ class PackageTab(QWidget):
                 tag_process.start("git", ["tag", "-a", f"v{self._current_version}", "-m", f"Release version {self._current_version}"])
             
             delete_remote_tag_process.finished.connect(on_delete_remote_tag_finished)
-            delete_remote_tag_process.start("git", ["push", "origin", ":refs/tags/v{self._current_version}"])
+            delete_remote_tag_process.start("git", ["push", "origin", f":refs/tags/v{self._current_version}"])
         
         delete_local_tag_process.finished.connect(on_delete_local_tag_finished)
         delete_local_tag_process.start("git", ["tag", "-d", f"v{self._current_version}"])
