@@ -4710,6 +4710,9 @@ class PackageTab(QWidget):
         dialog.setWindowTitle("GitHub Actions")
         dialog.resize(900, 600)
         
+        # 存储 worker 引用，防止被垃圾回收，并在对话框关闭时清理
+        dialog._workers = []
+        
         layout = QVBoxLayout(dialog)
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -4771,6 +4774,10 @@ class PackageTab(QWidget):
         
         # 加载工作流运行数据
         def load_workflow_runs():
+            # 检查对话框是否仍然存在
+            if not dialog.isVisible():
+                return
+            
             status_label.setText("正在加载工作流运行状态...")
             table.setRowCount(0)
             
@@ -4782,10 +4789,15 @@ class PackageTab(QWidget):
                 def __init__(self):
                     super().__init__()
                     self.signals = _WorkflowRunsWorkerSignals()
+                    self._dialog = dialog  # 保存对话框引用
                 
                 @Slot()
                 def run(self):
                     try:
+                        # 检查对话框是否仍然存在
+                        if not hasattr(self._dialog, 'isVisible') or not self._dialog.isVisible():
+                            return
+                        
                         # 获取工作流运行列表
                         url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs"
                         headers = {
@@ -4796,148 +4808,215 @@ class PackageTab(QWidget):
                         
                         response = httpx.get(url, headers=headers, params={"per_page": 20}, timeout=30)
                         
+                        # 再次检查对话框是否仍然存在
+                        if not hasattr(self._dialog, 'isVisible') or not self._dialog.isVisible():
+                            return
+                        
                         if response.status_code == 200:
                             data = response.json()
                             runs = data.get("workflow_runs", [])
-                            self.signals.finished.emit(runs)
+                            # 再次检查对话框是否仍然存在
+                            try:
+                                if self._dialog.isVisible():
+                                    self.signals.finished.emit(runs)
+                            except RuntimeError:
+                                # 对话框已被删除，不发送信号
+                                return
                         elif response.status_code == 401:
-                            self.signals.error.emit("GitHub API 认证失败，请检查 API Key")
+                            try:
+                                if self._dialog.isVisible():
+                                    self.signals.error.emit("GitHub API 认证失败，请检查 API Key")
+                            except RuntimeError:
+                                return
                         elif response.status_code == 404:
-                            self.signals.error.emit(f"仓库不存在或无权访问：{repo_owner}/{repo_name}")
+                            try:
+                                if self._dialog.isVisible():
+                                    self.signals.error.emit(f"仓库不存在或无权访问：{repo_owner}/{repo_name}")
+                            except RuntimeError:
+                                return
                         else:
-                            self.signals.error.emit(f"获取工作流运行失败：HTTP {response.status_code}")
+                            try:
+                                if self._dialog.isVisible():
+                                    self.signals.error.emit(f"获取工作流运行失败：HTTP {response.status_code}")
+                            except RuntimeError:
+                                return
                     except Exception as e:
-                        self.signals.error.emit(f"获取工作流运行失败：{e}")
+                        # 检查对话框是否仍然存在
+                        try:
+                            if hasattr(self._dialog, 'isVisible') and self._dialog.isVisible():
+                                self.signals.error.emit(f"获取工作流运行失败：{e}")
+                        except RuntimeError:
+                            # 对话框已被删除，不发送信号
+                            pass
             
             def on_loaded(runs):
-                table.setRowCount(len(runs))
+                # 检查对话框是否仍然存在
+                try:
+                    if not dialog.isVisible():
+                        return
+                except RuntimeError:
+                    # 对话框已被删除
+                    return
                 
-                for row, run in enumerate(runs):
-                    # 工作流名称
-                    workflow_name = run.get("name", "Unknown")
-                    name_item = QTableWidgetItem(workflow_name)
-                    name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    table.setItem(row, 0, name_item)
+                try:
+                    table.setRowCount(len(runs))
                     
-                    # 状态
-                    status = run.get("status", "unknown")
-                    conclusion = run.get("conclusion", "")
-                    
-                    if status == "completed":
-                        if conclusion == "success":
-                            status_text = "✓ 成功"
-                            status_color = QColor("#0DBC79")
-                        elif conclusion == "failure":
-                            status_text = "✗ 失败"
-                            status_color = QColor("#CD3131")
-                        elif conclusion == "cancelled":
-                            status_text = "⊘ 已取消"
-                            status_color = QColor("#767676")
-                        else:
-                            status_text = f"完成 ({conclusion})"
+                    for row, run in enumerate(runs):
+                        # 工作流名称
+                        workflow_name = run.get("name", "Unknown")
+                        name_item = QTableWidgetItem(workflow_name)
+                        name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                        table.setItem(row, 0, name_item)
+                        
+                        # 状态
+                        status = run.get("status", "unknown")
+                        conclusion = run.get("conclusion", "")
+                        
+                        if status == "completed":
+                            if conclusion == "success":
+                                status_text = "✓ 成功"
+                                status_color = QColor("#0DBC79")
+                            elif conclusion == "failure":
+                                status_text = "✗ 失败"
+                                status_color = QColor("#CD3131")
+                            elif conclusion == "cancelled":
+                                status_text = "⊘ 已取消"
+                                status_color = QColor("#767676")
+                            else:
+                                status_text = f"完成 ({conclusion})"
+                                status_color = QColor("#E5E510")
+                        elif status == "in_progress":
+                            status_text = "⟳ 运行中"
+                            status_color = QColor("#2472C8")
+                        elif status == "queued":
+                            status_text = "⏳ 排队中"
                             status_color = QColor("#E5E510")
-                    elif status == "in_progress":
-                        status_text = "⟳ 运行中"
-                        status_color = QColor("#2472C8")
-                    elif status == "queued":
-                        status_text = "⏳ 排队中"
-                        status_color = QColor("#E5E510")
-                    else:
-                        status_text = status
-                        status_color = QColor("#767676")
-                    
-                    status_item = QTableWidgetItem(status_text)
-                    status_item.setForeground(status_color)
-                    status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    table.setItem(row, 1, status_item)
-                    
-                    # 触发事件
-                    event = run.get("event", "unknown")
-                    event_item = QTableWidgetItem(event)
-                    event_item.setFlags(event_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    table.setItem(row, 2, event_item)
-                    
-                    # 分支/Tag
-                    head_branch = run.get("head_branch", "")
-                    head_branch_item = QTableWidgetItem(head_branch or "N/A")
-                    head_branch_item.setFlags(head_branch_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    table.setItem(row, 3, head_branch_item)
-                    
-                    # 时间
-                    created_at = run.get("created_at", "")
-                    updated_at = run.get("updated_at", "")
-                    if created_at:
-                        try:
-                            from datetime import datetime
-                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                            
-                            # 如果已完成，显示运行时长
-                            if status == "completed" and updated_at:
-                                end_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-                                duration = end_dt - dt
-                                total_seconds = int(duration.total_seconds())
-                                hours = total_seconds // 3600
-                                minutes = (total_seconds % 3600) // 60
-                                seconds = total_seconds % 60
+                        else:
+                            status_text = status
+                            status_color = QColor("#767676")
+                        
+                        status_item = QTableWidgetItem(status_text)
+                        status_item.setForeground(status_color)
+                        status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                        table.setItem(row, 1, status_item)
+                        
+                        # 触发事件
+                        event = run.get("event", "unknown")
+                        event_item = QTableWidgetItem(event)
+                        event_item.setFlags(event_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                        table.setItem(row, 2, event_item)
+                        
+                        # 分支/Tag
+                        head_branch = run.get("head_branch", "")
+                        head_branch_item = QTableWidgetItem(head_branch or "N/A")
+                        head_branch_item.setFlags(head_branch_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                        table.setItem(row, 3, head_branch_item)
+                        
+                        # 时间
+                        created_at = run.get("created_at", "")
+                        updated_at = run.get("updated_at", "")
+                        if created_at:
+                            try:
+                                from datetime import datetime
+                                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
                                 
-                                if hours > 0:
-                                    duration_str = f"{hours}小时{minutes}分钟{seconds}秒"
-                                elif minutes > 0:
-                                    duration_str = f"{minutes}分钟{seconds}秒"
-                                else:
-                                    duration_str = f"{seconds}秒"
-                                
-                                time_str += f" (运行 {duration_str})"
-                        except:
-                            time_str = created_at[:19] if len(created_at) >= 19 else created_at
-                    else:
-                        time_str = "N/A"
+                                # 如果已完成，显示运行时长
+                                if status == "completed" and updated_at:
+                                    end_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                    duration = end_dt - dt
+                                    total_seconds = int(duration.total_seconds())
+                                    hours = total_seconds // 3600
+                                    minutes = (total_seconds % 3600) // 60
+                                    seconds = total_seconds % 60
+                                    
+                                    if hours > 0:
+                                        duration_str = f"{hours}小时{minutes}分钟{seconds}秒"
+                                    elif minutes > 0:
+                                        duration_str = f"{minutes}分钟{seconds}秒"
+                                    else:
+                                        duration_str = f"{seconds}秒"
+                                    
+                                    time_str += f" (运行 {duration_str})"
+                            except:
+                                time_str = created_at[:19] if len(created_at) >= 19 else created_at
+                        else:
+                            time_str = "N/A"
+                        
+                        time_item = QTableWidgetItem(time_str)
+                        time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
+                        table.setItem(row, 4, time_item)
+                        
+                        # 操作按钮（查看日志和 Re-run）
+                        run_id = run.get("id")
+                        run_url = run.get("html_url", "")
+                        workflow_id = run.get("workflow_id")
+                        
+                        # 创建按钮容器
+                        btn_widget = QWidget()
+                        btn_layout = QHBoxLayout(btn_widget)
+                        btn_layout.setContentsMargins(2, 2, 2, 2)
+                        btn_layout.setSpacing(4)
+                        
+                        # 查看日志按钮
+                        view_logs_btn = QPushButton("查看日志")
+                        view_logs_btn.setFixedWidth(80)
+                        view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
+                        btn_layout.addWidget(view_logs_btn)
+                        
+                        # Re-run 按钮（只有已完成的工作流才能重新运行）
+                        if status == "completed":
+                            rerun_btn = QPushButton("Re-run")
+                            rerun_btn.setFixedWidth(70)
+                            rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
+                            btn_layout.addWidget(rerun_btn)
+                        
+                        btn_layout.addStretch()
+                        table.setCellWidget(row, 5, btn_widget)
                     
-                    time_item = QTableWidgetItem(time_str)
-                    time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    table.setItem(row, 4, time_item)
-                    
-                    # 操作按钮（查看日志和 Re-run）
-                    run_id = run.get("id")
-                    run_url = run.get("html_url", "")
-                    workflow_id = run.get("workflow_id")
-                    
-                    # 创建按钮容器
-                    btn_widget = QWidget()
-                    btn_layout = QHBoxLayout(btn_widget)
-                    btn_layout.setContentsMargins(2, 2, 2, 2)
-                    btn_layout.setSpacing(4)
-                    
-                    # 查看日志按钮
-                    view_logs_btn = QPushButton("查看日志")
-                    view_logs_btn.setFixedWidth(80)
-                    view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
-                    btn_layout.addWidget(view_logs_btn)
-                    
-                    # Re-run 按钮（只有已完成的工作流才能重新运行）
-                    if status == "completed":
-                        rerun_btn = QPushButton("Re-run")
-                        rerun_btn.setFixedWidth(70)
-                        rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
-                        btn_layout.addWidget(rerun_btn)
-                    
-                    btn_layout.addStretch()
-                    table.setCellWidget(row, 5, btn_widget)
-                
-                status_label.setText(f"已加载 {len(runs)} 个工作流运行")
+                    try:
+                        status_label.setText(f"已加载 {len(runs)} 个工作流运行")
+                    except RuntimeError:
+                        # 对话框已被删除，忽略
+                        pass
+                except RuntimeError:
+                    # 对话框已被删除，忽略
+                    return
             
             def on_error(error_msg):
-                status_label.setText(f"错误: {error_msg}")
-                QMessageBox.warning(dialog, "错误", error_msg)
+                # 检查对话框是否仍然存在
+                try:
+                    if not dialog.isVisible():
+                        return
+                    status_label.setText(f"错误: {error_msg}")
+                    QMessageBox.warning(dialog, "错误", error_msg)
+                except RuntimeError:
+                    # 对话框已被删除，忽略
+                    pass
             
             worker = _WorkflowRunsWorker()
             worker.signals.finished.connect(on_loaded)
             worker.signals.error.connect(on_error)
+            # 保存 worker 引用，防止被垃圾回收
+            dialog._workers.append(worker)
             QThreadPool.globalInstance().start(worker)
         
         # 刷新按钮
         refresh_btn.clicked.connect(load_workflow_runs)
+        
+        # 对话框关闭时清理 worker
+        def on_dialog_finished():
+            # 断开所有 worker 的信号连接
+            for worker in dialog._workers:
+                try:
+                    if hasattr(worker, 'signals'):
+                        worker.signals.finished.disconnect()
+                        worker.signals.error.disconnect()
+                except:
+                    pass
+            dialog._workers.clear()
+        
+        dialog.finished.connect(on_dialog_finished)
         
         # 初始加载
         load_workflow_runs()
