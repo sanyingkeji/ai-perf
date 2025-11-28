@@ -51,6 +51,12 @@ jobs:
           python3 -m pip install --upgrade pip
           pip3 install -r requirements.txt
       
+      - name: Verify PyInstaller installation
+        run: |
+          echo "验证 PyInstaller 安装..."
+          python3 -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          pip3 list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+      
       - name: Check if should build
         id: check_build
         run: |
@@ -150,6 +156,12 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip3 install -r requirements.txt
+      
+      - name: Verify PyInstaller installation
+        run: |
+          echo "验证 PyInstaller 安装..."
+          python3 -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          pip3 list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
       
       - name: Check if should build
         id: check_build
@@ -252,6 +264,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
+      - name: Verify PyInstaller installation
+        run: |
+          echo "验证 PyInstaller 安装..."
+          python -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          pip list | findstr /i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+      
       - name: Install Inno Setup
         run: |
           choco install innosetup -y
@@ -332,6 +350,12 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip3 install -r requirements.txt
+      
+      - name: Verify PyInstaller installation
+        run: |
+          echo "验证 PyInstaller 安装..."
+          python3 -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          pip3 list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
       
       - name: Check if should build
         id: check_build

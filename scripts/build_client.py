@@ -108,6 +108,42 @@ def main():
     config_backup = Path("config.json.bak")
     config_modified = False
     
+    # 从 spec 文件中读取版本号
+    version = None
+    # 优先从 build_macos.spec 读取（如果存在），因为版本号应该是统一的
+    spec_files_to_try = []
+    if platform == "macos":
+        spec_files_to_try = [Path("build_macos.spec")]
+    else:
+        # Windows 和 Linux 也尝试从 build_macos.spec 读取（如果存在）
+        spec_files_to_try = [Path("build_macos.spec"), Path("build.spec")]
+    
+    for spec_file in spec_files_to_try:
+        if spec_file.exists():
+            try:
+                import re
+                with open(spec_file, 'r', encoding='utf-8') as f:
+                    spec_content = f.read()
+                # 查找 version='...' 或 version="..."
+                version_match = re.search(r"version\s*=\s*['\"]([^'\"]+)['\"]", spec_content)
+                if version_match:
+                    version = version_match.group(1)
+                    log_info(f"从 {spec_file} 读取版本号: {version}")
+                    break
+            except Exception as e:
+                log_warn(f"无法从 {spec_file} 读取版本号: {e}")
+    
+    # 如果从 spec 文件读取失败，尝试从环境变量读取
+    if not version:
+        version = os.environ.get("CLIENT_VERSION")
+        if version:
+            log_info(f"从环境变量 CLIENT_VERSION 读取版本号: {version}")
+    
+    # 如果还是没有，使用默认值
+    if not version:
+        version = "1.0.1"  # 默认版本号
+        log_warn(f"未找到版本号，使用默认值: {version}")
+    
     if config_file.exists():
         log_warn("备份并修改 config.json...")
         # 备份原始文件
@@ -156,11 +192,17 @@ def main():
         # 设置 upload_api_url
         config["upload_api_url"] = "https://file.sanying.site/api/upload"
         
+        # 更新版本号（如果从 spec 文件中读取到了版本号）
+        if version:
+            config["client_version"] = version
+            log_info(f"✓ 更新 client_version 为: {version}")
+        
         # 保存修改后的配置（确保对齐）
         with open(config_file, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False, sort_keys=True)
         
-        log_info("✓ config.json 已修改（清空隐私数据，设置 api_base 和 upload_api_url，已对齐）")
+        version_info = f"，版本号: {version}" if version else ""
+        log_info(f"✓ config.json 已修改（清空隐私数据，设置 api_base 和 upload_api_url{version_info}，已对齐）")
     
     if platform == "macos":
         # macOS 打包
@@ -297,13 +339,36 @@ def main():
         pyinstaller_env = os.environ.copy()
         pyinstaller_env["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
         
-        subprocess.run([
-            sys.executable, "-m", "PyInstaller",
-            spec_file,
-            "--clean",
-            "--noconfirm",
-            "--log-level=ERROR"
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=pyinstaller_env)
+        # 获取日志级别（默认为 INFO，可以通过环境变量覆盖）
+        log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
+        
+        try:
+            result = subprocess.run([
+                sys.executable, "-m", "PyInstaller",
+                spec_file,
+                "--clean",
+                "--noconfirm",
+                f"--log-level={log_level}"
+            ], check=True, env=pyinstaller_env, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
+            if e.stdout:
+                log_error("PyInstaller 标准输出:")
+                print(e.stdout)
+            if e.stderr:
+                log_error("PyInstaller 标准错误:")
+                print(e.stderr)
+            # 如果没有输出，尝试直接运行一次以显示实时输出
+            if not e.stdout and not e.stderr:
+                log_warn("重新运行 PyInstaller 以显示实时输出...")
+                subprocess.run([
+                    sys.executable, "-m", "PyInstaller",
+                    spec_file,
+                    "--clean",
+                    "--noconfirm",
+                    f"--log-level={log_level}"
+                ], env=pyinstaller_env)
+            raise
         
         # 恢复 spec 文件（如果修改过）
         if spec_backup and spec_backup.exists():
@@ -1851,13 +1916,36 @@ def main():
         
         # 打包
         log_warn("执行 PyInstaller 打包...")
-        subprocess.run([
-            sys.executable, "-m", "PyInstaller",
-            spec_file,
-            "--clean",
-            "--noconfirm",
-            "--log-level=ERROR"
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 获取日志级别（默认为 INFO，可以通过环境变量覆盖）
+        log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
+        
+        try:
+            result = subprocess.run([
+                sys.executable, "-m", "PyInstaller",
+                spec_file,
+                "--clean",
+                "--noconfirm",
+                f"--log-level={log_level}"
+            ], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
+            if e.stdout:
+                log_error("PyInstaller 标准输出:")
+                print(e.stdout)
+            if e.stderr:
+                log_error("PyInstaller 标准错误:")
+                print(e.stderr)
+            # 如果没有输出，尝试直接运行一次以显示实时输出
+            if not e.stdout and not e.stderr:
+                log_warn("重新运行 PyInstaller 以显示实时输出...")
+                subprocess.run([
+                    sys.executable, "-m", "PyInstaller",
+                    spec_file,
+                    "--clean",
+                    "--noconfirm",
+                    f"--log-level={log_level}"
+                ])
+            raise
         
         exe_path = Path("dist") / f"{app_name}.exe"
         
@@ -2070,13 +2158,36 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
         
         # 打包
         log_warn("执行 PyInstaller 打包...")
-        subprocess.run([
-            sys.executable, "-m", "PyInstaller",
-            spec_file,
-            "--clean",
-            "--noconfirm",
-            "--log-level=ERROR"
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 获取日志级别（默认为 INFO，可以通过环境变量覆盖）
+        log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
+        
+        try:
+            result = subprocess.run([
+                sys.executable, "-m", "PyInstaller",
+                spec_file,
+                "--clean",
+                "--noconfirm",
+                f"--log-level={log_level}"
+            ], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
+            if e.stdout:
+                log_error("PyInstaller 标准输出:")
+                print(e.stdout)
+            if e.stderr:
+                log_error("PyInstaller 标准错误:")
+                print(e.stderr)
+            # 如果没有输出，尝试直接运行一次以显示实时输出
+            if not e.stdout and not e.stderr:
+                log_warn("重新运行 PyInstaller 以显示实时输出...")
+                subprocess.run([
+                    sys.executable, "-m", "PyInstaller",
+                    spec_file,
+                    "--clean",
+                    "--noconfirm",
+                    f"--log-level={log_level}"
+                ])
+            raise
         
         # 查找生成的可执行文件
         exe_name = app_name.replace(" ", "_")

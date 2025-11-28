@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Ai 绩效管理端 v1.0")
+        self.setWindowTitle("Ai 绩效管理端")
         self.resize(1400, 900)
         
         # 设置窗口图标（如果应用图标未设置，这里会使用应用图标）
