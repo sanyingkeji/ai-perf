@@ -4589,6 +4589,8 @@ class PackageTab(QWidget):
         
         # 显示头部信息
         header_text = f"$ cd {self._project_root}\n"
+        header_text += f"$ git tag -d v{self._current_version}  # 删除本地 tag（如果存在）\n"
+        header_text += f"$ git push origin :refs/tags/v{self._current_version}  # 删除远程 tag（如果存在）\n"
         header_text += f"$ git tag -a v{self._current_version} -m \"Release version {self._current_version}\"\n"
         header_text += f"$ git push origin v{self._current_version}\n"
         header_text += "=" * 80 + "\n\n"
@@ -4601,65 +4603,107 @@ class PackageTab(QWidget):
         self.push_btn.setEnabled(False)
         self.actions_btn.setEnabled(False)
         
-        # 执行 git tag
-        self._append_output(f"[开始] 创建 git tag: v{self._current_version}\n")
-        tag_process = QProcess(self)
-        tag_process.setWorkingDirectory(self._project_root)
-        tag_process.readyReadStandardOutput.connect(
-            lambda: self._append_output_with_ansi(tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+        # 步骤 1: 删除本地 tag（如果存在）
+        self._append_output(f"[步骤 1/4] 删除本地 tag（如果存在）: v{self._current_version}\n")
+        delete_local_tag_process = QProcess(self)
+        delete_local_tag_process.setWorkingDirectory(self._project_root)
+        delete_local_tag_process.readyReadStandardOutput.connect(
+            lambda: self._append_output_with_ansi(delete_local_tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
         )
-        tag_process.readyReadStandardError.connect(
-            lambda: self._append_output_with_ansi(tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
+        delete_local_tag_process.readyReadStandardError.connect(
+            lambda: self._append_output_with_ansi(delete_local_tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
         )
         
-        def on_tag_finished(exit_code, exit_status):
+        def on_delete_local_tag_finished(exit_code, exit_status):
+            # 无论成功或失败都继续（tag 可能不存在）
             if exit_code == 0:
-                self._append_output(f"[完成] Git tag 创建成功\n\n")
-                # 推送 tag
-                self._append_output(f"[开始] 推送 tag 到远程仓库\n")
-                push_tag_process = QProcess(self)
-                push_tag_process.setWorkingDirectory(self._project_root)
-                push_tag_process.readyReadStandardOutput.connect(
-                    lambda: self._append_output_with_ansi(push_tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
-                )
-                push_tag_process.readyReadStandardError.connect(
-                    lambda: self._append_output_with_ansi(push_tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
-                )
-                
-                def on_push_tag_finished(exit_code, exit_status):
-                    self._is_running = False
-                    self.release_btn.setText(f"Release V{self._current_version}")
-                    self.release_btn.setEnabled(True)
-                    self.push_btn.setEnabled(True)
-                    self.actions_btn.setEnabled(True)
-                    
-                    self._append_output("\n" + "=" * 80 + "\n")
-                    if exit_code == 0:
-                        self._append_output(f"[完成] Tag 推送成功，GitHub Actions 将自动开始构建\n")
-                        QMessageBox.information(
-                            self,
-                            "发布成功",
-                            f"Release V{self._current_version} 已创建并推送！\n\n"
-                            f"GitHub Actions 将自动开始构建。\n"
-                            f"你可以点击 \"Check Actions\" 按钮查看构建进度。"
-                        )
-                    else:
-                        self._append_output(f"[错误] Tag 推送失败，退出码: {exit_code}\n")
-                        QMessageBox.warning(self, "错误", f"Tag 推送失败，退出码: {exit_code}")
-                
-                push_tag_process.finished.connect(on_push_tag_finished)
-                push_tag_process.start("git", ["push", "origin", f"v{self._current_version}"])
+                self._append_output(f"[完成] 本地 tag 已删除\n\n")
             else:
-                self._is_running = False
-                self.release_btn.setText(f"Release V{self._current_version}")
-                self.release_btn.setEnabled(True)
-                self.push_btn.setEnabled(True)
-                self.actions_btn.setEnabled(True)
-                self._append_output(f"\n[错误] Git tag 创建失败，退出码: {exit_code}\n")
-                QMessageBox.warning(self, "错误", f"Git tag 创建失败，退出码: {exit_code}")
+                self._append_output(f"[提示] 本地 tag 不存在或已删除（继续执行）\n\n")
+            
+            # 步骤 2: 删除远程 tag（如果存在）
+            self._append_output(f"[步骤 2/4] 删除远程 tag（如果存在）: v{self._current_version}\n")
+            delete_remote_tag_process = QProcess(self)
+            delete_remote_tag_process.setWorkingDirectory(self._project_root)
+            delete_remote_tag_process.readyReadStandardOutput.connect(
+                lambda: self._append_output_with_ansi(delete_remote_tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+            )
+            delete_remote_tag_process.readyReadStandardError.connect(
+                lambda: self._append_output_with_ansi(delete_remote_tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
+            )
+            
+            def on_delete_remote_tag_finished(exit_code, exit_status):
+                # 无论成功或失败都继续（tag 可能不存在）
+                if exit_code == 0:
+                    self._append_output(f"[完成] 远程 tag 已删除\n\n")
+                else:
+                    self._append_output(f"[提示] 远程 tag 不存在或已删除（继续执行）\n\n")
+                
+                # 步骤 3: 创建新的 tag
+                self._append_output(f"[步骤 3/4] 创建新的 git tag: v{self._current_version}\n")
+                tag_process = QProcess(self)
+                tag_process.setWorkingDirectory(self._project_root)
+                tag_process.readyReadStandardOutput.connect(
+                    lambda: self._append_output_with_ansi(tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+                )
+                tag_process.readyReadStandardError.connect(
+                    lambda: self._append_output_with_ansi(tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
+                )
+                
+                def on_tag_finished(exit_code, exit_status):
+                    if exit_code == 0:
+                        self._append_output(f"[完成] Git tag 创建成功\n\n")
+                        # 步骤 4: 推送 tag
+                        self._append_output(f"[步骤 4/4] 推送 tag 到远程仓库\n")
+                        push_tag_process = QProcess(self)
+                        push_tag_process.setWorkingDirectory(self._project_root)
+                        push_tag_process.readyReadStandardOutput.connect(
+                            lambda: self._append_output_with_ansi(push_tag_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+                        )
+                        push_tag_process.readyReadStandardError.connect(
+                            lambda: self._append_output_with_ansi(push_tag_process.readAllStandardError().data().decode('utf-8', errors='replace'))
+                        )
+                        
+                        def on_push_tag_finished(exit_code, exit_status):
+                            self._is_running = False
+                            self.release_btn.setText(f"Release V{self._current_version}")
+                            self.release_btn.setEnabled(True)
+                            self.push_btn.setEnabled(True)
+                            self.actions_btn.setEnabled(True)
+                            
+                            self._append_output("\n" + "=" * 80 + "\n")
+                            if exit_code == 0:
+                                self._append_output(f"[完成] Tag 推送成功，GitHub Actions 将自动开始构建\n")
+                                QMessageBox.information(
+                                    self,
+                                    "发布成功",
+                                    f"Release V{self._current_version} 已创建并推送！\n\n"
+                                    f"GitHub Actions 将自动开始构建。\n"
+                                    f"你可以点击 \"Check Actions\" 按钮查看构建进度。"
+                                )
+                            else:
+                                self._append_output(f"[错误] Tag 推送失败，退出码: {exit_code}\n")
+                                QMessageBox.warning(self, "错误", f"Tag 推送失败，退出码: {exit_code}")
+                        
+                        push_tag_process.finished.connect(on_push_tag_finished)
+                        push_tag_process.start("git", ["push", "origin", f"v{self._current_version}"])
+                    else:
+                        self._is_running = False
+                        self.release_btn.setText(f"Release V{self._current_version}")
+                        self.release_btn.setEnabled(True)
+                        self.push_btn.setEnabled(True)
+                        self.actions_btn.setEnabled(True)
+                        self._append_output(f"\n[错误] Git tag 创建失败，退出码: {exit_code}\n")
+                        QMessageBox.warning(self, "错误", f"Git tag 创建失败，退出码: {exit_code}")
+                
+                tag_process.finished.connect(on_tag_finished)
+                tag_process.start("git", ["tag", "-a", f"v{self._current_version}", "-m", f"Release version {self._current_version}"])
+            
+            delete_remote_tag_process.finished.connect(on_delete_remote_tag_finished)
+            delete_remote_tag_process.start("git", ["push", "origin", ":refs/tags/v{self._current_version}"])
         
-        tag_process.finished.connect(on_tag_finished)
-        tag_process.start("git", ["tag", "-a", f"v{self._current_version}", "-m", f"Release version {self._current_version}"])
+        delete_local_tag_process.finished.connect(on_delete_local_tag_finished)
+        delete_local_tag_process.start("git", ["tag", "-d", f"v{self._current_version}"])
     
     def _on_check_actions_clicked(self):
         """Check Actions 按钮点击事件：显示 workflows 运行状态"""
