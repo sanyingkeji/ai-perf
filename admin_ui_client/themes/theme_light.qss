@@ -1,0 +1,109 @@
+/* ---- Light Theme ---- */
+
+* {
+    font-family: "PingFang SC", "Microsoft YaHei", Arial;
+    font-size: 14px;
+}
+
+QWidget {
+    background-color: #F7F9FC;
+    color: #222;
+}
+
+/* 主窗口标题栏（macOS/Windows） */
+QMainWindow {
+    background-color: #F7F9FC;
+    color: #222;
+}
+
+/* 卡片 */
+.card {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E5E5;
+    border-radius: 10px;
+    padding: 14px;
+}
+
+/* 标题 */
+.title {
+    font-size: 20px;
+    font-weight: bold;
+    color: #222;
+}
+
+/* 按钮 */
+QPushButton {
+    background-color: #3A7AFE;
+    color: white;
+    border-radius: 6px;
+    padding: 8px 16px;
+}
+QPushButton:hover {
+    background-color: #1E63FF;
+}
+QPushButton:pressed {
+    background-color: #004DE0;
+}
+
+/* 输入框 */
+QLineEdit, QTextEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #D0D3D9;
+    border-radius: 6px;
+    padding: 6px;
+}
+
+/* 表格 */
+QTableWidget {
+    background: #FFFFFF;
+    gridline-color: #E5E5E5;
+}
+QHeaderView::section {
+    background: #F1F3F5;
+    font-weight: bold;
+    border: none;
+    padding: 6px;
+}
+
+/* 左侧导航栏 */
+QListWidget {
+    background: #FFFFFF;
+}
+QListWidget::item {
+    padding: 10px 14px;
+    border-radius: 4px;
+}
+QListWidget::item:selected {
+    background-color: #E8F0FF;
+    color: #3A7AFE;
+    border-left: 3px solid #3A7AFE;
+}
+
+/* Tab 组件 */
+QTabWidget::pane {
+    border: 1px solid #D0D3D9;
+    background-color: #FFFFFF;
+    border-radius: 6px;
+}
+
+QTabBar::tab {
+    background-color: #F1F3F5;
+    color: #666;
+    border: 1px solid #D0D3D9;
+    border-bottom: none;
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+
+QTabBar::tab:selected {
+    background-color: #FFFFFF;
+    color: #222;
+    border-bottom: 2px solid #3A7AFE;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #E8F0FF;
+    color: #3A7AFE;
+}

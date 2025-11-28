@@ -1,0 +1,68 @@
+# Ai Perf 项目依赖包
+# Python 3.10+
+
+# ==================== 后端依赖（API服务器）====================
+
+# Web 框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# 认证和授权
+google-auth>=2.23.0
+google-auth-oauthlib>=1.0.0  # Google OAuth 登录（客户端需要）
+PyJWT>=2.8.0
+
+# 数据库
+pymysql>=1.0.0
+
+# AI 服务
+openai>=1.0.0
+tiktoken>=0.5.0  # Token 计算
+
+# PDF 生成（用于将 JSON 转换为 PDF 以支持长上下文）
+weasyprint>=60.0  # 需要系统依赖：libpango, libcairo 等
+
+# HTTP 客户端
+httpx>=0.25.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# 数据验证（fastapi 依赖，但明确列出）
+pydantic>=2.0.0
+
+# 文件上传（FastAPI 文件上传需要）
+python-multipart>=0.0.6
+
+# 重试机制
+tenacity>=8.2.0
+
+# 日期处理
+python-dateutil>=2.8.0
+
+# 图片处理（图标转换脚本需要）
+Pillow>=10.0.0
+
+# SSH 连接（服务管理需要）
+paramiko>=3.0.0
+
+# ==================== 客户端依赖（管理端和员工端）====================
+
+# GUI 框架
+PySide6>=6.5.0
+
+# Markdown 渲染（管理端脚本执行页面需要）
+markdown>=3.4.0
+pygments>=2.14.0
+
+# ==================== 打包工具（客户端打包需要）====================
+pyinstaller>=6.0.0
+
+# ==================== 可选依赖（按需安装）====================
+
+# Windows 系统通知（仅 Windows 客户端需要，可选）
+# win10toast>=0.9
+
+# macOS 系统通知和原生功能（macOS 客户端推荐安装）
+pyobjc>=10.0; sys_platform == "darwin"  # macOS 原生功能：隐藏/显示 Dock 图标、窗口主题适配等
+

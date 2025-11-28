@@ -1,0 +1,15 @@
+# 系统通知功能依赖项
+# 这些依赖项是可选的，如果不可用会自动回退到命令行方案
+
+# macOS: PyObjC（用于调用 NSUserNotificationCenter）
+# 注意：系统 Python 通常已包含 PyObjC
+# 如果使用 pyenv，需要安装：pip install pyobjc
+pyobjc-framework-Cocoa>=8.0; sys_platform == "darwin"
+
+# Windows: winrt（用于调用 Windows.UI.Notifications API）
+# Windows 10+ 支持，需要安装：pip install winrt
+winrt>=1.0.0; sys_platform == "win32"
+
+# Windows 回退方案：win10toast（如果 winrt 不可用）
+win10toast>=0.9; sys_platform == "win32"
+
