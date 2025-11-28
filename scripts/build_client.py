@@ -13,6 +13,8 @@ from pathlib import Path
 from datetime import datetime
 import time
 import uuid
+import signal
+import threading
 
 # Windows 编码修复：设置 UTF-8 编码
 if sys.platform == "win32":
@@ -60,7 +62,30 @@ def log_error(message):
     """错误日志"""
     log_with_time(message, RED)
 
+# 全局取消标志
+_cancel_requested = threading.Event()
+
+def signal_handler(signum, frame):
+    """处理取消信号"""
+    global _cancel_requested
+    log_warn(f"收到取消信号 ({signum})，正在清理...")
+    _cancel_requested.set()
+    # 给子进程一些时间清理，然后退出
+    time.sleep(2)
+    sys.exit(130 if signum == signal.SIGINT else 143)
+
+def check_cancel():
+    """检查是否请求取消"""
+    if _cancel_requested.is_set():
+        raise KeyboardInterrupt("构建已取消")
+
 def main():
+    # 注册信号处理器，以便能够响应取消操作
+    # Windows 只支持 SIGINT，Unix 系统支持 SIGINT 和 SIGTERM
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     # 获取脚本所在目录
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
@@ -474,15 +499,22 @@ def main():
         log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
         
         try:
+            check_cancel()  # 检查是否请求取消
+            # 使用实时输出而不是 capture_output，以便能够看到进度并响应取消
+            log_info("开始 PyInstaller 打包（实时输出）...")
             result = subprocess.run([
                 sys.executable, "-m", "PyInstaller",
                 spec_file,
                 "--clean",
                 "--noconfirm",
                 f"--log-level={log_level}"
-            ], check=True, env=pyinstaller_env, capture_output=True, text=True, timeout=3600)  # 1小时超时
+            ], check=True, env=pyinstaller_env, timeout=3600)  # 1小时超时，实时输出
+            result = subprocess.CompletedProcess([], 0, "", "")  # 创建成功结果对象
         except subprocess.TimeoutExpired:
             log_error("PyInstaller 执行超时（超过1小时）")
+            raise
+        except KeyboardInterrupt:
+            log_warn("PyInstaller 打包被用户取消")
             raise
         except subprocess.CalledProcessError as e:
             log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
@@ -492,16 +524,7 @@ def main():
             if e.stderr:
                 log_error("PyInstaller 标准错误:")
                 print(e.stderr)
-            # 如果没有输出，尝试直接运行一次以显示实时输出
-            if not e.stdout and not e.stderr:
-                log_warn("重新运行 PyInstaller 以显示实时输出...")
-                subprocess.run([
-                    sys.executable, "-m", "PyInstaller",
-                    spec_file,
-                    "--clean",
-                    "--noconfirm",
-                    f"--log-level={log_level}"
-                ], env=pyinstaller_env, timeout=3600)  # 1小时超时
+            # 错误信息已经在实时输出中显示，直接抛出异常
             raise
         
         # 恢复 spec 文件（如果修改过）
@@ -1199,6 +1222,7 @@ def main():
                         result_output = submit_result.stdout
                         
                         while time.time() - start_time < max_wait_time:
+                            check_cancel()  # 检查是否请求取消
                             # 查询状态
                             try:
                                 status_result = subprocess.run([
@@ -1344,6 +1368,7 @@ def main():
                             log_info("  等待 Apple 处理公证（轮询模式）...")
                             
                             while time.time() - start_time < max_wait_time:
+                                check_cancel()  # 检查是否请求取消
                                 try:
                                     status_result = subprocess.run([
                                         "xcrun", "notarytool", "log", submission_id,
@@ -1913,6 +1938,7 @@ def main():
                         result_output = submit_result.stdout
                         
                         while time.time() - start_time < max_wait_time:
+                            check_cancel()  # 检查是否请求取消
                             try:
                                 status_result = subprocess.run([
                                     "xcrun", "notarytool", "log", submission_id,
@@ -2172,34 +2198,26 @@ def main():
         log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
         
         try:
+            check_cancel()  # 检查是否请求取消
+            # 使用实时输出而不是 capture_output，以便能够看到进度并响应取消
+            log_info("开始 PyInstaller 打包（实时输出）...")
             result = subprocess.run([
                 sys.executable, "-m", "PyInstaller",
                 spec_file,
                 "--clean",
                 "--noconfirm",
                 f"--log-level={log_level}"
-            ], check=True, capture_output=True, text=True, timeout=3600)  # 1小时超时
+            ], check=True, timeout=3600)  # 1小时超时，实时输出
+            result = subprocess.CompletedProcess([], 0, "", "")  # 创建成功结果对象
         except subprocess.TimeoutExpired:
             log_error("PyInstaller 执行超时（超过1小时）")
             raise
+        except KeyboardInterrupt:
+            log_warn("PyInstaller 打包被用户取消")
+            raise
         except subprocess.CalledProcessError as e:
             log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
-            if e.stdout:
-                log_error("PyInstaller 标准输出:")
-                print(e.stdout)
-            if e.stderr:
-                log_error("PyInstaller 标准错误:")
-                print(e.stderr)
-            # 如果没有输出，尝试直接运行一次以显示实时输出
-            if not e.stdout and not e.stderr:
-                log_warn("重新运行 PyInstaller 以显示实时输出...")
-                subprocess.run([
-                    sys.executable, "-m", "PyInstaller",
-                    spec_file,
-                    "--clean",
-                    "--noconfirm",
-                    f"--log-level={log_level}"
-                ], timeout=3600)  # 1小时超时
+            # 错误信息已经在实时输出中显示，直接抛出异常
             raise
         
         exe_path = Path("dist") / f"{app_name}.exe"
@@ -2417,34 +2435,26 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
         log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
         
         try:
+            check_cancel()  # 检查是否请求取消
+            # 使用实时输出而不是 capture_output，以便能够看到进度并响应取消
+            log_info("开始 PyInstaller 打包（实时输出）...")
             result = subprocess.run([
                 sys.executable, "-m", "PyInstaller",
                 spec_file,
                 "--clean",
                 "--noconfirm",
                 f"--log-level={log_level}"
-            ], check=True, capture_output=True, text=True, timeout=3600)  # 1小时超时
+            ], check=True, timeout=3600)  # 1小时超时，实时输出
+            result = subprocess.CompletedProcess([], 0, "", "")  # 创建成功结果对象
         except subprocess.TimeoutExpired:
             log_error("PyInstaller 执行超时（超过1小时）")
             raise
+        except KeyboardInterrupt:
+            log_warn("PyInstaller 打包被用户取消")
+            raise
         except subprocess.CalledProcessError as e:
             log_error(f"PyInstaller 执行失败，退出码: {e.returncode}")
-            if e.stdout:
-                log_error("PyInstaller 标准输出:")
-                print(e.stdout)
-            if e.stderr:
-                log_error("PyInstaller 标准错误:")
-                print(e.stderr)
-            # 如果没有输出，尝试直接运行一次以显示实时输出
-            if not e.stdout and not e.stderr:
-                log_warn("重新运行 PyInstaller 以显示实时输出...")
-                subprocess.run([
-                    sys.executable, "-m", "PyInstaller",
-                    spec_file,
-                    "--clean",
-                    "--noconfirm",
-                    f"--log-level={log_level}"
-                ], timeout=3600)  # 1小时超时
+            # 错误信息已经在实时输出中显示，直接抛出异常
             raise
         
         # 查找生成的可执行文件

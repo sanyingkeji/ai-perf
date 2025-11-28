@@ -22,7 +22,7 @@ class VersionManagementDialog(QDialog):
     def __init__(self, parent=None, version_manager: VersionManager = None):
         super().__init__(parent)
         self.setWindowTitle("版本号管理")
-        self.resize(700, 500)
+        self.resize(700, 600)
         
         # 使用传入的 VersionManager 或创建新的
         if version_manager is None:

@@ -1968,7 +1968,6 @@ class DeployTab(QWidget):
         font = None
         for font_family in font_families:
             font = QFont(font_family, font_size)
-            font.setStyleHint(QFont.StyleHint.Monospace)
             font.setFixedPitch(True)
             # 检查字体是否可用
             if QFont(font_family).exactMatch() or font_family == "Courier New":
@@ -1989,7 +1988,7 @@ class DeployTab(QWidget):
                 padding: 10px;
                 selection-background-color: #0066CC;
                 selection-color: #FFFFFF;
-                font-family: "Menlo", "Monaco", "Courier New", monospace;
+                font-family: "Menlo", "Monaco", "Courier New";
                 font-size: 12pt;
                 line-height: 1.2;
             }
@@ -2447,7 +2446,6 @@ class ScriptExecutionTab(QWidget):
         font = None
         for font_family in font_families:
             font = QFont(font_family, font_size)
-            font.setStyleHint(QFont.StyleHint.Monospace)
             font.setFixedPitch(True)
             if QFont(font_family).exactMatch() or font_family == "Courier New":
                 break
@@ -2467,7 +2465,7 @@ class ScriptExecutionTab(QWidget):
                 padding: 10px;
                 selection-background-color: #0066CC;
                 selection-color: #FFFFFF;
-                font-family: "Menlo", "Monaco", "Courier New", monospace;
+                font-family: "Menlo", "Monaco", "Courier New";
                 font-size: 12pt;
                 line-height: 1.2;
             }
@@ -3524,11 +3522,6 @@ class MaintenanceView(QWidget):
         self.script_execution_tab = ScriptExecutionTab(self)
         self.tabs.addTab(self.script_execution_tab, "脚本执行")
         
-        # 版本管理 TAB（从 version_view 导入）
-        from windows.version_view import VersionView
-        self.version_management_tab = VersionView()
-        self.tabs.addTab(self.version_management_tab, "版本管理")
-        
         # 打包 TAB
         self.package_tab = PackageTab(self)
         self.tabs.addTab(self.package_tab, "打包")
@@ -3578,10 +3571,6 @@ class MaintenanceView(QWidget):
             # 脚本执行 TAB（不需要加载数据，用户点击执行按钮时才执行）
             pass
         elif index == 5:
-            # 版本管理 TAB（首次加载时刷新版本信息）
-            if hasattr(self, "version_management_tab") and hasattr(self.version_management_tab, "reload"):
-                self.version_management_tab.reload()
-        elif index == 6:
             # 打包 TAB（首次加载时获取版本列表）
             if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
                 self.package_tab.reload_versions()
@@ -3600,12 +3589,8 @@ class MaintenanceView(QWidget):
         elif self.tabs.currentIndex() == 2:
             if hasattr(self, "log_view_tab") and hasattr(self.log_view_tab, "reload_from_ssh"):
                 self.log_view_tab.reload_from_ssh()
-        # 如果当前选中的是版本管理 TAB，刷新版本信息
-        elif self.tabs.currentIndex() == 5:
-            if hasattr(self, "version_management_tab") and hasattr(self.version_management_tab, "reload"):
-                self.version_management_tab.reload()
         # 如果当前选中的是打包 TAB，刷新版本列表
-        elif self.tabs.currentIndex() == 6:
+        elif self.tabs.currentIndex() == 5:
             if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
                 self.package_tab.reload_versions()
 
@@ -3852,7 +3837,7 @@ class PackageTab(QWidget):
         header_layout.addWidget(self.release_btn)
         
         # 版本管理按钮（统一管理版本号）
-        version_mgmt_btn = QPushButton("版本管理")
+        version_mgmt_btn = QPushButton("版本号管理")
         version_mgmt_btn.setFixedWidth(100)
         version_mgmt_btn.setFixedHeight(28)
         version_mgmt_btn.setToolTip("统一管理所有客户端的版本号")
@@ -3936,7 +3921,6 @@ class PackageTab(QWidget):
         font = None
         for font_family in font_families:
             font = QFont(font_family, font_size)
-            font.setStyleHint(QFont.StyleHint.Monospace)
             font.setFixedPitch(True)
             if QFont(font_family).exactMatch() or font_family == "Courier New":
                 break
@@ -3956,7 +3940,7 @@ class PackageTab(QWidget):
                 padding: 10px;
                 selection-background-color: #0066CC;
                 selection-color: #FFFFFF;
-                font-family: "Menlo", "Monaco", "Courier New", monospace;
+                font-family: "Menlo", "Monaco", "Courier New";
                 font-size: 12pt;
                 line-height: 1.2;
             }
@@ -4982,13 +4966,22 @@ class PackageTab(QWidget):
                         updated_at = run.get("updated_at", "")
                         if created_at:
                             try:
-                                from datetime import datetime
+                                from datetime import datetime, timezone
+                                # 解析 UTC 时间
                                 dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                                time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                                # 如果时区信息为空，设置为 UTC
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                # 转换为本地时间
+                                local_dt = dt.astimezone()
+                                time_str = local_dt.strftime("%Y-%m-%d %H:%M:%S")
                                 
                                 # 如果已完成，显示运行时长
                                 if status == "completed" and updated_at:
                                     end_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                    if end_dt.tzinfo is None:
+                                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                                    # 计算时长（使用 UTC 时间计算，避免时区转换问题）
                                     duration = end_dt - dt
                                     total_seconds = int(duration.total_seconds())
                                     hours = total_seconds // 3600
@@ -5003,7 +4996,8 @@ class PackageTab(QWidget):
                                         duration_str = f"{seconds}秒"
                                     
                                     time_str += f" (运行 {duration_str})"
-                            except:
+                            except Exception as e:
+                                # 如果解析失败，使用原始字符串
                                 time_str = created_at[:19] if len(created_at) >= 19 else created_at
                         else:
                             time_str = "N/A"
@@ -5034,8 +5028,20 @@ class PackageTab(QWidget):
                         if status == "in_progress":
                             cancel_btn = QPushButton("Cancel-run")
                             cancel_btn.setFixedSize(75, 22)  # mini 按钮样式，与健康检查一致
-                            cancel_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
-                            cancel_btn.clicked.connect(lambda checked, rid=run_id: self._cancel_workflow(rid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
+                            cancel_btn.setStyleSheet("""
+                                QPushButton {
+                                    background-color: #dc3545;
+                                    color: white;
+                                    border: none;
+                                    border-radius: 3px;
+                                    font-size: 9pt;
+                                    padding: 0px;
+                                }
+                                QPushButton:hover {
+                                    background-color: #c82333;
+                                }
+                            """)
+                            cancel_btn.clicked.connect(lambda checked, rid=run_id: self._cancel_workflow(rid, api_url, api_key, repo_owner, repo_name, load_workflow_runs, parent=dialog))
                             btn_layout.addWidget(cancel_btn)
                         
                         # Re-run 按钮（只有已完成的工作流才能重新运行）
@@ -5043,7 +5049,7 @@ class PackageTab(QWidget):
                             rerun_btn = QPushButton("Re-run")
                             rerun_btn.setFixedSize(60, 22)  # mini 按钮样式，与健康检查一致
                             rerun_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
-                            rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs))
+                            rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs, parent=dialog))
                             btn_layout.addWidget(rerun_btn)
                         
                         btn_layout.addStretch()
@@ -5175,9 +5181,21 @@ class PackageTab(QWidget):
         layout.addLayout(btn_layout)
         
         def load_logs():
-            status_label.setText("正在下载日志...")
-            log_text.clear()
-            log_text.setPlaceholderText("正在下载日志...")
+            # 检查对象是否仍然有效
+            try:
+                if not log_dialog.isVisible():
+                    return
+            except RuntimeError:
+                # 对话框已被删除
+                return
+            
+            try:
+                status_label.setText("正在下载日志...")
+                log_text.clear()
+                log_text.setPlaceholderText("正在下载日志...")
+            except RuntimeError:
+                # 对象已被删除
+                return
             
             class _LogsWorkerSignals(QObject):
                 finished = Signal(str)
@@ -5268,17 +5286,41 @@ class PackageTab(QWidget):
                         self.signals.error.emit(f"加载日志失败：{e}")
             
             def on_logs_loaded(log_content):
-                log_text.setPlainText(log_content)
-                status_label.setText(f"日志已加载（{len(log_content)} 字符）")
-                # 滚动到底部（显示最新的日志）
-                cursor = log_text.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                log_text.setTextCursor(cursor)
+                # 检查对象是否仍然有效
+                try:
+                    if not log_dialog.isVisible() or not hasattr(log_text, 'setPlainText'):
+                        return
+                except RuntimeError:
+                    # 对话框已被删除
+                    return
+                
+                try:
+                    log_text.setPlainText(log_content)
+                    status_label.setText(f"日志已加载（{len(log_content)} 字符）")
+                    # 滚动到底部（显示最新的日志）
+                    cursor = log_text.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    log_text.setTextCursor(cursor)
+                except RuntimeError:
+                    # 对象已被删除
+                    pass
             
             def on_logs_error(error_msg):
-                status_label.setText(f"错误: {error_msg}")
-                log_text.setPlainText(f"错误: {error_msg}\n\n请检查：\n1. GitHub API Key 是否有足够权限\n2. 日志是否已过期（GitHub 日志通常保留 90 天）\n3. 网络连接是否正常")
-                QMessageBox.warning(log_dialog, "加载日志失败", error_msg)
+                # 检查对象是否仍然有效
+                try:
+                    if not log_dialog.isVisible():
+                        return
+                except RuntimeError:
+                    # 对话框已被删除
+                    return
+                
+                try:
+                    status_label.setText(f"错误: {error_msg}")
+                    log_text.setPlainText(f"错误: {error_msg}\n\n请检查：\n1. GitHub API Key 是否有足够权限\n2. 日志是否已过期（GitHub 日志通常保留 90 天）\n3. 网络连接是否正常")
+                    QMessageBox.warning(log_dialog, "加载日志失败", error_msg)
+                except RuntimeError:
+                    # 对象已被删除
+                    pass
             
             worker = _LogsWorker()
             worker.signals.finished.connect(on_logs_loaded)
@@ -5293,11 +5335,14 @@ class PackageTab(QWidget):
         
         log_dialog.exec()
     
-    def _rerun_workflow(self, run_id: int, workflow_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None):
+    def _rerun_workflow(self, run_id: int, workflow_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None, parent=None):
         """重新运行工作流"""
+        # 使用传入的父窗口，如果没有则使用 self
+        parent_widget = parent if parent else self
+        
         # 确认对话框
         reply = QMessageBox.question(
-            self,
+            parent_widget,
             "确认重新运行",
             f"确定要重新运行工作流运行 #{run_id} 吗？",
             QMessageBox.Yes | QMessageBox.No,
@@ -5308,28 +5353,37 @@ class PackageTab(QWidget):
             return
         
         # 显示进度提示
-        progress = QProgressDialog("正在重新运行工作流...", "取消", 0, 0, self)
+        progress = QProgressDialog("正在重新运行工作流...", "取消", 0, 0, parent_widget)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setCancelButton(None)  # 不允许取消
+        progress.setMinimumDuration(0)  # 立即显示
+        progress.setAutoClose(True)  # 完成后自动关闭
+        progress.setAutoReset(True)  # 完成后自动重置
+        progress.setValue(0)
         progress.show()
         
         class _RerunWorkerSignals(QObject):
             finished = Signal(bool, str)  # success, message
         
         class _RerunWorker(QRunnable):
-            def __init__(self):
+            def __init__(self, api_url, api_key, repo_owner, repo_name, run_id):
                 super().__init__()
                 self.signals = _RerunWorkerSignals()
+                self.api_url = api_url
+                self.api_key = api_key
+                self.repo_owner = repo_owner
+                self.repo_name = repo_name
+                self.run_id = run_id
             
             @Slot()
             def run(self):
                 try:
                     # 调用 GitHub API 重新运行工作流
-                    rerun_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/rerun"
+                    rerun_url = f"{self.api_url}/repos/{self.repo_owner}/{self.repo_name}/actions/runs/{self.run_id}/rerun"
                     headers = {
                         "Accept": "application/vnd.github+json",
                         "User-Agent": "aiperf-admin-client/1.0",
-                        "Authorization": f"token {api_key}"
+                        "Authorization": f"token {self.api_key}"
                     }
                     
                     # POST 请求重新运行
@@ -5350,30 +5404,82 @@ class PackageTab(QWidget):
                         except:
                             pass
                         self.signals.finished.emit(False, error_msg)
+                except httpx.TimeoutException as e:
+                    self.signals.finished.emit(False, f"请求超时：{e}")
                 except httpx.HTTPError as e:
                     self.signals.finished.emit(False, f"网络错误：{e}")
                 except Exception as e:
-                    self.signals.finished.emit(False, f"重新运行失败：{e}")
+                    # 确保所有异常都会发送信号
+                    error_msg = f"重新运行失败：{type(e).__name__}: {str(e)}"
+                    self.signals.finished.emit(False, error_msg)
         
         def on_rerun_finished(success: bool, message: str):
-            progress.close()
-            if success:
-                QMessageBox.information(self, "成功", message)
-                # 刷新工作流列表
-                if refresh_callback:
-                    refresh_callback()
-            else:
-                QMessageBox.warning(self, "失败", message)
+            # 关闭进度条
+            try:
+                # 对于不确定进度的对话框，设置为完成状态
+                if hasattr(progress, 'setValue') and hasattr(progress, 'maximum'):
+                    max_val = progress.maximum()
+                    if max_val == 0:
+                        # 不确定进度，设置为 1 表示完成
+                        progress.setValue(1)
+                    else:
+                        progress.setValue(max_val)
+                if hasattr(progress, 'reset'):
+                    progress.reset()
+                if hasattr(progress, 'hide'):
+                    progress.hide()
+                if hasattr(progress, 'close'):
+                    progress.close()
+            except RuntimeError:
+                # progress 已被删除
+                pass
+            except Exception as e:
+                # 其他异常，尝试强制关闭
+                try:
+                    if hasattr(progress, 'close'):
+                        progress.close()
+                except:
+                    pass
+            
+            try:
+                if not hasattr(parent_widget, 'isVisible') or not parent_widget.isVisible():
+                    return
+            except RuntimeError:
+                # parent_widget 已被删除
+                return
+            
+            try:
+                if success:
+                    QMessageBox.information(parent_widget, "成功", message)
+                    # 刷新工作流列表
+                    if refresh_callback:
+                        try:
+                            refresh_callback()
+                        except RuntimeError:
+                            # 回调中的对象已被删除
+                            pass
+                else:
+                    QMessageBox.warning(parent_widget, "失败", message)
+            except RuntimeError:
+                # 对象已被删除
+                pass
         
-        worker = _RerunWorker()
+        worker = _RerunWorker(api_url, api_key, repo_owner, repo_name, run_id)
         worker.signals.finished.connect(on_rerun_finished)
+        # 保存 worker 引用，防止被垃圾回收
+        if not hasattr(parent_widget, '_rerun_workers'):
+            parent_widget._rerun_workers = []
+        parent_widget._rerun_workers.append(worker)
         QThreadPool.globalInstance().start(worker)
     
-    def _cancel_workflow(self, run_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None):
+    def _cancel_workflow(self, run_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None, parent=None):
         """取消正在运行的工作流"""
+        # 使用传入的父窗口，如果没有则使用 self
+        parent_widget = parent if parent else self
+        
         # 确认对话框
         reply = QMessageBox.question(
-            self,
+            parent_widget,
             "确认取消",
             f"确定要取消工作流运行 #{run_id} 吗？",
             QMessageBox.Yes | QMessageBox.No,
@@ -5384,27 +5490,36 @@ class PackageTab(QWidget):
             return
         
         # 显示进度提示
-        progress = QProgressDialog("正在取消工作流...", "取消", 0, 0, self)
+        progress = QProgressDialog("正在取消工作流...", "取消", 0, 0, parent_widget)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setCancelButton(None)  # 不允许取消
+        progress.setMinimumDuration(0)  # 立即显示
+        progress.setAutoClose(True)  # 完成后自动关闭
+        progress.setAutoReset(True)  # 完成后自动重置
+        progress.setValue(0)
         progress.show()
         
         class _CancelWorkerSignals(QObject):
             finished = Signal(bool, str)  # success, message
         
         class _CancelWorker(QRunnable):
-            def __init__(self):
+            def __init__(self, api_url, api_key, repo_owner, repo_name, run_id):
                 super().__init__()
                 self.signals = _CancelWorkerSignals()
+                self.api_url = api_url
+                self.api_key = api_key
+                self.repo_owner = repo_owner
+                self.repo_name = repo_name
+                self.run_id = run_id
             
             @Slot()
             def run(self):
                 try:
-                    cancel_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/cancel"
+                    cancel_url = f"{self.api_url}/repos/{self.repo_owner}/{self.repo_name}/actions/runs/{self.run_id}/cancel"
                     headers = {
                         "Accept": "application/vnd.github+json",
                         "User-Agent": "aiperf-admin-client/1.0",
-                        "Authorization": f"token {api_key}"
+                        "Authorization": f"token {self.api_key}"
                     }
                     
                     # POST 请求取消运行
@@ -5425,22 +5540,72 @@ class PackageTab(QWidget):
                         except:
                             pass
                         self.signals.finished.emit(False, error_msg)
+                except httpx.TimeoutException as e:
+                    self.signals.finished.emit(False, f"请求超时：{e}")
                 except httpx.HTTPError as e:
                     self.signals.finished.emit(False, f"网络错误：{e}")
                 except Exception as e:
-                    self.signals.finished.emit(False, f"取消失败：{e}")
+                    # 确保所有异常都会发送信号
+                    import traceback
+                    error_msg = f"取消失败：{type(e).__name__}: {str(e)}"
+                    self.signals.finished.emit(False, error_msg)
         
         def on_cancel_finished(success: bool, message: str):
-            progress.close()
-            if success:
-                QMessageBox.information(self, "成功", message)
-                # 刷新工作流列表
-                if refresh_callback:
-                    refresh_callback()
-            else:
-                QMessageBox.warning(self, "失败", message)
+            # 关闭进度条
+            try:
+                # 对于不确定进度的对话框，设置为完成状态
+                if hasattr(progress, 'setValue') and hasattr(progress, 'maximum'):
+                    max_val = progress.maximum()
+                    if max_val == 0:
+                        # 不确定进度，设置为 1 表示完成
+                        progress.setValue(1)
+                    else:
+                        progress.setValue(max_val)
+                if hasattr(progress, 'reset'):
+                    progress.reset()
+                if hasattr(progress, 'hide'):
+                    progress.hide()
+                if hasattr(progress, 'close'):
+                    progress.close()
+            except RuntimeError:
+                # progress 已被删除
+                pass
+            except Exception as e:
+                # 其他异常，尝试强制关闭
+                try:
+                    if hasattr(progress, 'close'):
+                        progress.close()
+                except:
+                    pass
+            
+            try:
+                if not hasattr(parent_widget, 'isVisible') or not parent_widget.isVisible():
+                    return
+            except RuntimeError:
+                # parent_widget 已被删除
+                return
+            
+            try:
+                if success:
+                    QMessageBox.information(parent_widget, "成功", message)
+                    # 刷新工作流列表
+                    if refresh_callback:
+                        try:
+                            refresh_callback()
+                        except RuntimeError:
+                            # 回调中的对象已被删除
+                            pass
+                else:
+                    QMessageBox.warning(parent_widget, "失败", message)
+            except RuntimeError:
+                # 对象已被删除
+                pass
         
-        worker = _CancelWorker()
+        worker = _CancelWorker(api_url, api_key, repo_owner, repo_name, run_id)
         worker.signals.finished.connect(on_cancel_finished)
+        # 保存 worker 引用，防止被垃圾回收
+        if not hasattr(parent_widget, '_cancel_workers'):
+            parent_widget._cancel_workers = []
+        parent_widget._cancel_workers.append(worker)
         QThreadPool.globalInstance().start(worker)
 

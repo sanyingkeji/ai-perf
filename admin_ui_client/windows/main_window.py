@@ -182,6 +182,9 @@ class MainWindow(QMainWindow):
         # 标记：是否正在登录中（防止重复点击登录按钮）
         self._login_in_progress = False
         
+        # 标记：是否已经请求过菜单权限（防止重复请求）
+        self._menu_permission_requested = False
+        
         # 系统托盘（在窗口初始化时设置，确保窗口关闭后图标仍然存在）
         self._tray_icon = None
         self._setup_system_tray()
@@ -206,6 +209,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1000, self._check_version_on_startup)
         
         # 应用启动时检查登录状态（延迟检查，等待窗口显示）
+        # 如果未登录，会显示登录提示弹窗
         QTimer.singleShot(1500, self._check_login_on_startup)
 
     # -------- 登录状态检查 --------
@@ -502,19 +506,39 @@ class MainWindow(QMainWindow):
             # 如果未登录，显示登录提示弹窗
             # 使用 force=False，如果已经有弹窗在显示则不会重复弹窗
             result = self.show_login_required_dialog(force=False)
-        else:
-            # 如果已登录，获取菜单权限并更新菜单显示
-            self._load_menu_permission()
+        # 注意：如果已登录，菜单权限已经在 __init__ 中立即请求了，这里不需要重复请求
     
     def _load_menu_permission(self):
-        """从服务器获取菜单权限并更新菜单显示"""
+        """从服务器获取菜单权限并更新菜单显示（异步执行）"""
+        # 标记已请求过菜单权限
+        self._menu_permission_requested = True
         # 显示加载状态提示
         self.show_loading("正在获取菜单权限...", closeable=False)
         
-        try:
-            client = AdminApiClient.from_config()
-            permission_data = client.get_menu_permission()
+        from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal, Slot
+        
+        class _MenuPermissionWorkerSignals(QObject):
+            finished = Signal(dict)  # permission_data
+            error = Signal(str)  # error message
+        
+        class _MenuPermissionWorker(QRunnable):
+            def __init__(self):
+                super().__init__()
+                self.signals = _MenuPermissionWorkerSignals()
             
+            @Slot()
+            def run(self):
+                try:
+                    client = AdminApiClient.from_config()
+                    permission_data = client.get_menu_permission()
+                    self.signals.finished.emit(permission_data)
+                except (AuthError, ApiError) as e:
+                    self.signals.error.emit(str(e))
+                except Exception as e:
+                    self.signals.error.emit(f"获取菜单权限失败：{type(e).__name__}: {e}")
+        
+        def on_permission_loaded(permission_data: dict):
+            """权限加载成功回调"""
             # 隐藏加载状态
             self.hide_loading()
             
@@ -552,7 +576,9 @@ class MainWindow(QMainWindow):
                     "allowed_menus": ["设置"],
                 }
                 self._update_menu_visibility()
-        except (AuthError, ApiError) as e:
+        
+        def on_permission_error(error_msg: str):
+            """权限加载失败回调"""
             # 隐藏加载状态
             self.hide_loading()
             # 如果获取失败（如未登录），只显示"设置"菜单
@@ -561,15 +587,12 @@ class MainWindow(QMainWindow):
                 "allowed_menus": ["设置"],
             }
             self._update_menu_visibility()
-        except Exception as e:
-            # 隐藏加载状态
-            self.hide_loading()
-            # 其他异常，也按未登录处理，只显示"设置"菜单
-            self.menu_permission = {
-                "is_admin": False,
-                "allowed_menus": ["设置"],
-            }
-            self._update_menu_visibility()
+        
+        # 创建并启动后台任务
+        worker = _MenuPermissionWorker()
+        worker.signals.finished.connect(on_permission_loaded)
+        worker.signals.error.connect(on_permission_error)
+        QThreadPool.globalInstance().start(worker)
     
     def _update_menu_visibility(self):
         """根据菜单权限更新菜单项的显示/隐藏"""
@@ -926,6 +949,18 @@ class MainWindow(QMainWindow):
         # 清理登录 worker 引用
         if hasattr(self, '_login_worker'):
             self._login_worker.clear()
+    
+    def showEvent(self, event):
+        """窗口显示事件：在窗口显示后立即请求菜单权限（如果已登录）"""
+        super().showEvent(event)
+        # 如果已登录且还没有请求过菜单权限，立即请求（最优先）
+        if not self._menu_permission_requested:
+            is_logged_in = self._ensure_logged_in()
+            if is_logged_in:
+                self._menu_permission_requested = True
+                # 使用 QTimer.singleShot(0, ...) 确保在事件循环中执行
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, self._load_menu_permission)
     
     def closeEvent(self, event):
         """窗口关闭事件"""

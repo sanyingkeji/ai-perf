@@ -234,14 +234,31 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r requirements.txt --break-system-packages
+          # 使用 setup-python 安装的 Python（如果可用）
+          if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
+            PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
+          else
+            PYTHON_CMD="arch -x86_64 python3"
+          fi
+          
+          echo "使用 Python: $PYTHON_CMD"
+          $PYTHON_CMD --version
+          
+          $PYTHON_CMD -m pip install --upgrade pip --break-system-packages
+          $PYTHON_CMD -m pip install -r requirements.txt --break-system-packages
       
       - name: Verify PyInstaller installation
         run: |
+          # 使用相同的 Python 命令
+          if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
+            PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
+          else
+            PYTHON_CMD="arch -x86_64 python3"
+          fi
+          
           echo "验证 PyInstaller 安装..."
-          python3 -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
-          pip3 list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+          $PYTHON_CMD -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          $PYTHON_CMD -m pip list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
       
       - name: Check if should build
         id: check_build
@@ -301,10 +318,17 @@ jobs:
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
-          # 在 Apple Silicon 上使用 Rosetta 运行 x86_64 Python
-          # 确保使用 x86_64 架构的 Python
-          arch -x86_64 /usr/local/bin/python3 ../scripts/build_client.py ${{ matrix.client }} macos || \
-          arch -x86_64 python3 ../scripts/build_client.py ${{ matrix.client }} macos
+          # 使用 setup-python 安装的 Python（如果可用）
+          if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
+            PYTHON_CMD="arch -x86_64 ${{ steps.setup-python.outputs.python-path }}"
+          else
+            PYTHON_CMD="arch -x86_64 python3"
+          fi
+          
+          echo "使用 Python: $PYTHON_CMD"
+          $PYTHON_CMD --version
+          echo "开始构建..."
+          $PYTHON_CMD ../scripts/build_client.py ${{ matrix.client }} macos
       
       - name: Upload DMG artifact
         if: steps.check_build.outputs.should_build == 'true'
