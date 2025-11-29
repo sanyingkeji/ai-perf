@@ -1,9 +1,8 @@
 name: Build Clients
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       client_type:
@@ -31,7 +30,7 @@ jobs:
     name: Build macOS (Apple Silicon)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
     timeout-minutes: 180  # 3小时超时
-    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -61,7 +60,7 @@ jobs:
       - name: Check if should build
         id: check_build
         run: |
-          if [ "${{ github.event_name }}" == "push" ] || \
+          if [ "${{ github.event_name }}" == "release" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -148,7 +147,7 @@ jobs:
     name: Build macOS (Intel)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
     timeout-minutes: 180  # 3小时超时
-    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -414,7 +413,7 @@ jobs:
       - name: Check if should build
         id: check_build
         run: |
-          if [ "${{ github.event_name }}" == "push" ] || \
+          if [ "${{ github.event_name }}" == "release" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -527,7 +526,7 @@ jobs:
     name: Build Windows
     runs-on: windows-latest
     timeout-minutes: 120  # 2小时超时
-    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -567,7 +566,7 @@ jobs:
         id: check_build
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" == "push" ] || \
+          if [ "${{ github.event_name }}" == "release" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -606,7 +605,7 @@ jobs:
     name: Build Linux (Ubuntu/Debian)
     runs-on: ubuntu-22.04
     timeout-minutes: 120  # 2小时超时
-    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -651,7 +650,7 @@ jobs:
       - name: Check if should build
         id: check_build
         run: |
-          if [ "${{ github.event_name }}" == "push" ] || \
+          if [ "${{ github.event_name }}" == "release" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -691,7 +690,7 @@ jobs:
     name: Create Release
     needs: [build-macos-arm64, build-macos-intel, build-windows, build-linux-ubuntu]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4

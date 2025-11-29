@@ -748,11 +748,10 @@ def main():
             
             try:
                 import socket
-                # 检测代理配置
-                proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']
+                # 检测代理配置（优先使用大写版本，如果不存在则使用小写版本）
                 proxy_config = {}
-                for proxy_var in proxy_vars:
-                    proxy_value = os.environ.get(proxy_var)
+                for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY']:
+                    proxy_value = os.environ.get(proxy_var) or os.environ.get(proxy_var.lower())
                     if proxy_value:
                         proxy_config[proxy_var] = proxy_value
                         proxy_available = True
