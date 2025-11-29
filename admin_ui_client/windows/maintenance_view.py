@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QFrame, QTabWidget, QHeaderView, QAbstractItemView,
     QFileDialog, QMessageBox, QLineEdit, QCheckBox, QTextEdit, QPlainTextEdit,
     QSplitter, QComboBox, QProgressDialog, QDialog, QListWidget,
-    QListWidgetItem
+    QListWidgetItem, QProgressBar
 )
 from PySide6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QTimer, QProcess
@@ -1170,7 +1170,8 @@ class SystemSettingsTab(QWidget):
         self.cron_jobs_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # 执行计划列撑满
         self.cron_jobs_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.cron_jobs_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.cron_jobs_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.cron_jobs_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)  # 操作列固定宽度
+        self.cron_jobs_table.setColumnWidth(5, 280)  # 设置操作列宽度（3个按钮 + 间距）
         self.cron_jobs_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.cron_jobs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.cron_jobs_table.verticalHeader().setVisible(False)
@@ -1648,6 +1649,42 @@ class SystemSettingsTab(QWidget):
                     """)
                     enable_btn.clicked.connect(lambda checked, j=job_name: self._on_cron_job_control_clicked(j, "enable"))
                     btn_layout.addWidget(enable_btn)
+                
+                # 立即执行按钮
+                run_now_btn = QPushButton("立即执行")
+                run_now_btn.setFixedSize(70, 24)
+                run_now_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #007bff;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        font-size: 9pt;
+                    }
+                    QPushButton:hover {
+                        background-color: #0056b3;
+                    }
+                """)
+                run_now_btn.clicked.connect(lambda checked, j=job_name: self._on_run_timer_now_clicked(j))
+                btn_layout.addWidget(run_now_btn)
+                
+                # 查看命令按钮
+                view_cmd_btn = QPushButton("查看命令")
+                view_cmd_btn.setFixedSize(70, 24)
+                view_cmd_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #6c757d;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        font-size: 9pt;
+                    }
+                    QPushButton:hover {
+                        background-color: #5a6268;
+                    }
+                """)
+                view_cmd_btn.clicked.connect(lambda checked, j=job_name: self._on_view_timer_command_clicked(j))
+                btn_layout.addWidget(view_cmd_btn)
             else:
                 # cron任务不支持控制
                 info_label = QLabel("不支持控制")
@@ -1757,6 +1794,200 @@ class SystemSettingsTab(QWidget):
             hide_loading()
         
         Toast.show_message(self, f"定时任务 {job_name} 操作失败：{error_msg}")
+
+    def _on_run_timer_now_clicked(self, timer_name: str):
+        """立即执行定时任务对应的 service"""
+        # 获取对应的 service 名称（去掉 .timer 后缀，加上 .service）
+        service_name = timer_name.replace(".timer", ".service")
+        
+        # 获取SSH配置
+        config = ConfigManager.load()
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "port": config.get("ssh_port", 22),
+            "username": config.get("ssh_username", ""),
+            "password": config.get("ssh_password", ""),
+            "key_path": config.get("ssh_key_path", ""),
+        }
+        
+        if not ssh_config.get("host") or not ssh_config.get("username"):
+            Toast.show_message(self, "请先配置SSH服务器信息")
+            return
+        
+        # 确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认执行",
+            f"确定要立即执行定时任务 {timer_name} 对应的服务 {service_name} 吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 显示loading
+        win = self.window()
+        show_loading = getattr(win, "show_loading", None)
+        if callable(show_loading):
+            show_loading(f"正在执行服务 {service_name}...")
+        
+        # 后台执行（通过SSH）
+        worker = _CronJobControlWorker(service_name, "start", ssh_config)
+        worker.signals.finished.connect(lambda job_name: self._on_run_timer_now_finished(service_name))
+        worker.signals.error.connect(lambda job_name, error_msg: self._on_run_timer_now_error(service_name, error_msg))
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_run_timer_now_finished(self, service_name: str):
+        """立即执行完成"""
+        win = self.window()
+        hide_loading = getattr(win, "hide_loading", None)
+        if callable(hide_loading):
+            hide_loading()
+        
+        Toast.show_message(self, f"服务 {service_name} 已开始执行")
+    
+    def _on_run_timer_now_error(self, service_name: str, error_msg: str):
+        """立即执行失败"""
+        win = self.window()
+        hide_loading = getattr(win, "hide_loading", None)
+        if callable(hide_loading):
+            hide_loading()
+        
+        Toast.show_message(self, f"执行服务 {service_name} 失败：{error_msg}")
+    
+    def _on_view_timer_command_clicked(self, timer_name: str):
+        """查看定时任务对应的 service 命令"""
+        # 获取对应的 service 名称（去掉 .timer 后缀，加上 .service）
+        service_name = timer_name.replace(".timer", ".service")
+        
+        # 获取SSH配置
+        config = ConfigManager.load()
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "port": config.get("ssh_port", 22),
+            "username": config.get("ssh_username", ""),
+            "password": config.get("ssh_password", ""),
+            "key_path": config.get("ssh_key_path", ""),
+        }
+        
+        if not ssh_config.get("host") or not ssh_config.get("username"):
+            Toast.show_message(self, "请先配置SSH服务器信息")
+            return
+        
+        # 显示loading
+        win = self.window()
+        show_loading = getattr(win, "show_loading", None)
+        if callable(show_loading):
+            show_loading(f"正在获取服务 {service_name} 的命令...")
+        
+        # 后台获取命令
+        class _ViewCommandWorkerSignals(QObject):
+            finished = Signal(str, str)  # service_name, command_info
+            error = Signal(str, str)  # service_name, error_msg
+        
+        class _ViewCommandWorker(QRunnable):
+            def __init__(self, service_name: str, ssh_config: Dict[str, Any]):
+                super().__init__()
+                self.signals = _ViewCommandWorkerSignals()
+                self._service_name = service_name
+                self._ssh_config = ssh_config
+            
+            @Slot()
+            def run(self) -> None:
+                try:
+                    # 创建SSH客户端
+                    ssh = SSHClient(
+                        host=self._ssh_config["host"],
+                        port=self._ssh_config.get("port", 22),
+                        username=self._ssh_config["username"],
+                        password=self._ssh_config.get("password"),
+                        key_path=self._ssh_config.get("key_path")
+                    )
+                    
+                    if not ssh.connect():
+                        self.signals.error.emit(self._service_name, "SSH连接失败，请检查配置")
+                        return
+                    
+                    # 获取 service 的完整配置（包括 ExecStart 等）
+                    result = ssh.execute(f"systemctl cat {self._service_name}", sudo=False)
+                    ssh.close()
+                    
+                    if result["success"]:
+                        service_content = result.get("stdout", "")
+                        self.signals.finished.emit(self._service_name, service_content)
+                    else:
+                        # 如果 cat 失败，尝试使用 show 命令获取 ExecStart
+                        ssh2 = SSHClient(
+                            host=self._ssh_config["host"],
+                            port=self._ssh_config.get("port", 22),
+                            username=self._ssh_config["username"],
+                            password=self._ssh_config.get("password"),
+                            key_path=self._ssh_config.get("key_path")
+                        )
+                        if ssh2.connect():
+                            result2 = ssh2.execute(f"systemctl show {self._service_name} -p ExecStart -p ExecStartPre -p ExecStartPost -p ExecStop", sudo=False)
+                            ssh2.close()
+                            if result2["success"]:
+                                self.signals.finished.emit(self._service_name, result2.get("stdout", ""))
+                            else:
+                                error_msg = result2.get("stderr") or result2.get("error") or "获取命令失败"
+                                self.signals.error.emit(self._service_name, error_msg)
+                        else:
+                            self.signals.error.emit(self._service_name, "SSH连接失败")
+                except Exception as e:
+                    self.signals.error.emit(self._service_name, f"获取命令失败：{e}")
+        
+        def on_command_loaded(service_name: str, command_info: str):
+            win = self.window()
+            hide_loading = getattr(win, "hide_loading", None)
+            if callable(hide_loading):
+                hide_loading()
+            
+            # 创建对话框显示命令
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"服务命令 - {service_name}")
+            dialog.resize(800, 600)
+            
+            layout = QVBoxLayout(dialog)
+            layout.setSpacing(12)
+            layout.setContentsMargins(16, 16, 16, 16)
+            
+            # 标题
+            title = QLabel(f"服务：{service_name}")
+            title.setFont(QFont("Arial", 12, QFont.Bold))
+            layout.addWidget(title)
+            
+            # 命令内容
+            command_text = QTextEdit()
+            command_text.setReadOnly(True)
+            command_text.setFont(QFont("Monaco", 10) if sys.platform == "darwin" else QFont("Consolas", 10))
+            command_text.setPlainText(command_info)
+            layout.addWidget(command_text, 1)
+            
+            # 关闭按钮
+            close_btn = QPushButton("关闭")
+            close_btn.setFixedWidth(100)
+            close_btn.clicked.connect(dialog.close)
+            btn_layout = QHBoxLayout()
+            btn_layout.addStretch()
+            btn_layout.addWidget(close_btn)
+            layout.addLayout(btn_layout)
+            
+            dialog.exec()
+        
+        def on_command_error(service_name: str, error_msg: str):
+            win = self.window()
+            hide_loading = getattr(win, "hide_loading", None)
+            if callable(hide_loading):
+                hide_loading()
+            
+            QMessageBox.warning(self, "获取命令失败", f"无法获取服务 {service_name} 的命令：\n{error_msg}")
+        
+        worker = _ViewCommandWorker(service_name, ssh_config)
+        worker.signals.finished.connect(on_command_loaded)
+        worker.signals.error.connect(on_command_error)
+        QThreadPool.globalInstance().start(worker)
 
     def _load_server_info(self, ssh_config: Dict[str, Any]):
         """加载服务器基本信息"""
@@ -5021,7 +5252,7 @@ class PackageTab(QWidget):
                         view_logs_btn = QPushButton("查看日志")
                         view_logs_btn.setFixedSize(70, 22)  # 宽度稍大以适应"查看日志"文本
                         view_logs_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
-                        view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name))
+                        view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url, parent_dlg=dialog: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name, parent_dlg))
                         btn_layout.addWidget(view_logs_btn)
                         
                         # Cancel-run 按钮（只有正在运行的工作流才能取消）
@@ -5128,97 +5359,106 @@ class PackageTab(QWidget):
                 "请重新运行打包流程以使用新版本号。"
             )
     
-    def _view_workflow_logs(self, run_id: int, run_url: str, api_url: str, api_key: str, repo_owner: str, repo_name: str):
-        """查看工作流运行的日志"""
-        # 创建日志查看对话框
-        log_dialog = QDialog(self)
-        log_dialog.setWindowTitle(f"工作流运行日志 - #{run_id}")
-        log_dialog.resize(1000, 700)
+    def _view_workflow_logs(self, run_id: int, run_url: str, api_url: str, api_key: str, repo_owner: str, repo_name: str, parent_dialog=None):
+        """下载工作流运行的日志到本地"""
+        # 让用户选择保存位置
+        default_filename = f"workflow_run_{run_id}_logs.zip"
+        # 使用传入的对话框作为父窗口，如果没有则使用 self
+        file_dialog_parent = parent_dialog if parent_dialog else self
+        file_path, _ = QFileDialog.getSaveFileName(
+            file_dialog_parent,
+            "保存工作流日志",
+            default_filename,
+            "ZIP 文件 (*.zip);;文本文件 (*.txt);;所有文件 (*)"
+        )
         
-        layout = QVBoxLayout(log_dialog)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
+        if not file_path:
+            # 用户取消了保存
+            return
         
-        # 标题和按钮
-        header_layout = QHBoxLayout()
-        title = QLabel(f"工作流运行 #{run_id} 日志")
-        title.setFont(QFont("Arial", 12, QFont.Bold))
-        header_layout.addWidget(title)
-        header_layout.addStretch()
+        # 创建自定义对话框来显示进度和调试信息
+        progress_parent = parent_dialog if parent_dialog else self
+        progress_dialog = QDialog(progress_parent)
+        progress_dialog.setWindowTitle("下载日志")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.resize(600, 300)
         
-        # 在浏览器中打开按钮
-        open_browser_btn = QPushButton("在浏览器中打开")
-        open_browser_btn.setFixedWidth(150)
-        open_browser_btn.clicked.connect(lambda: webbrowser.open(run_url))
-        header_layout.addWidget(open_browser_btn)
+        progress_layout = QVBoxLayout(progress_dialog)
+        progress_layout.setSpacing(12)
+        progress_layout.setContentsMargins(16, 16, 16, 16)
         
-        # 刷新按钮
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.setFixedWidth(80)
-        header_layout.addWidget(refresh_btn)
+        # 进度条
+        progress_label = QLabel("正在下载日志...")
+        progress_label.setFont(QFont("Arial", 11))
+        progress_layout.addWidget(progress_label)
         
-        layout.addLayout(header_layout)
+        progress_bar = QProgressBar()
+        progress_bar.setRange(0, 0)  # 不确定进度
+        progress_layout.addWidget(progress_bar)
         
-        # 日志显示区域
-        log_text = QTextEdit()
-        log_text.setReadOnly(True)
-        log_text.setFont(QFont("Monaco", 10) if sys.platform == "darwin" else QFont("Consolas", 10))
-        log_text.setPlaceholderText("正在加载日志...")
-        layout.addWidget(log_text, 1)
+        # 创建调试信息标签
+        debug_label = QLabel("")
+        debug_label.setWordWrap(True)
+        debug_label.setStyleSheet("color: #666; font-size: 9pt; font-family: monospace; background-color: #f5f5f5; padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        debug_label.setMaximumHeight(150)
+        debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        debug_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        progress_layout.addWidget(debug_label)
         
-        # 状态标签
-        status_label = QLabel("正在加载日志...")
-        status_label.setStyleSheet("color: #666; font-size: 10px;")
-        layout.addWidget(status_label)
+        progress_dialog.show()
         
-        # 关闭按钮
-        close_btn = QPushButton("关闭")
-        close_btn.setFixedWidth(100)
-        close_btn.clicked.connect(log_dialog.close)
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-        layout.addLayout(btn_layout)
+        class _LogsDownloadWorkerSignals(QObject):
+            finished = Signal(str, bytes)  # file_path, file_data
+            error = Signal(str)
+            debug = Signal(str)  # 调试信息
         
-        def load_logs():
-            # 检查对象是否仍然有效
-            try:
-                if not log_dialog.isVisible():
-                    return
-            except RuntimeError:
-                # 对话框已被删除
-                return
+        class _LogsDownloadWorker(QRunnable):
+            def __init__(self, save_path: str):
+                super().__init__()
+                self.save_path = save_path
+                self.signals = _LogsDownloadWorkerSignals()
             
-            try:
-                status_label.setText("正在下载日志...")
-                log_text.clear()
-                log_text.setPlaceholderText("正在下载日志...")
-            except RuntimeError:
-                # 对象已被删除
-                return
-            
-            class _LogsWorkerSignals(QObject):
-                finished = Signal(str)
-                error = Signal(str)
-            
-            class _LogsWorker(QRunnable):
-                def __init__(self):
-                    super().__init__()
-                    self.signals = _LogsWorkerSignals()
-                
-                @Slot()
-                def run(self):
-                    try:
-                        # 获取日志下载 URL
-                        logs_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/logs"
-                        headers = {
-                            "Accept": "application/vnd.github+json",
-                            "User-Agent": "aiperf-admin-client/1.0",
-                            "Authorization": f"token {api_key}"
-                        }
-                        
-                        # 下载日志 ZIP 文件（GitHub API 会返回重定向）
-                        response = httpx.get(logs_url, headers=headers, follow_redirects=True, timeout=60)
+            @Slot()
+            def run(self):
+                try:
+                    # 获取日志下载 URL
+                    logs_url = f"{api_url}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/logs"
+                    
+                    # 打印调试信息
+                    debug_info = f"日志下载 URL: {logs_url}\n"
+                    debug_info += f"API URL: {api_url}\n"
+                    debug_info += f"仓库: {repo_owner}/{repo_name}\n"
+                    debug_info += f"运行 ID: {run_id}\n"
+                    debug_info += f"API Key 长度: {len(api_key) if api_key else 0} 字符\n"
+                    print(f"[DEBUG] {debug_info}")  # 控制台输出
+                    self.signals.debug.emit(debug_info)  # UI 输出
+                    
+                    headers = {
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "aiperf-admin-client/1.0",
+                        "Authorization": f"token {api_key}"
+                    }
+                    
+                    # 下载日志 ZIP 文件（GitHub API 会返回重定向）
+                    print(f"[DEBUG] 开始下载日志，URL: {logs_url}")
+                    self.signals.debug.emit("开始下载日志...")
+                    
+                    # 使用流式下载，支持大文件和进度反馈
+                    file_data = None
+                    content_type = ""
+                    with httpx.stream("GET", logs_url, headers=headers, follow_redirects=True, timeout=300.0) as response:
+                        # 打印响应信息
+                        content_type = response.headers.get("content-type", "")
+                        response_info = f"响应状态码: {response.status_code}\n"
+                        response_info += f"响应内容类型: {content_type}\n"
+                        content_length = response.headers.get("content-length")
+                        if content_length:
+                            response_info += f"响应大小: {int(content_length):,} 字节 ({int(content_length) / (1024*1024):.2f} MB)\n"
+                        else:
+                            response_info += "响应大小: 未知（流式下载）\n"
+                        response_info += f"最终 URL: {response.url}\n"
+                        print(f"[DEBUG] {response_info}")
+                        self.signals.debug.emit(response_info)
                         
                         if response.status_code == 404:
                             self.signals.error.emit("日志不存在或已过期（GitHub 日志通常保留 90 天）")
@@ -5227,113 +5467,164 @@ class PackageTab(QWidget):
                             self.signals.error.emit(f"下载日志失败：HTTP {response.status_code}")
                             return
                         
-                        # 检查是否是 ZIP 文件
-                        content_type = response.headers.get("content-type", "")
-                        if "zip" not in content_type.lower() and not response.content.startswith(b"PK"):
-                            # 如果不是 ZIP，可能是纯文本日志
-                            log_content = response.text
-                            self.signals.finished.emit(log_content)
+                        # 流式读取内容
+                        print(f"[DEBUG] 开始流式读取内容...")
+                        self.signals.debug.emit("正在下载...")
+                        content_chunks = []
+                        total_size = 0
+                        chunk_size = 8192  # 8KB chunks
+                        
+                        try:
+                            for chunk in response.iter_bytes(chunk_size):
+                                content_chunks.append(chunk)
+                                total_size += len(chunk)
+                                # 每下载 1MB 更新一次进度
+                                if total_size % (1024 * 1024) < chunk_size:
+                                    progress_info = f"已下载: {total_size:,} 字节 ({total_size / (1024*1024):.2f} MB)"
+                                    print(f"[DEBUG] {progress_info}")
+                                    self.signals.debug.emit(progress_info)
+                        except Exception as e:
+                            error_msg = f"下载过程中出错: {e}"
+                            print(f"[DEBUG] {error_msg}")
+                            self.signals.error.emit(error_msg)
                             return
                         
-                        # 解压 ZIP 文件
-                        zip_data = io.BytesIO(response.content)
-                        with zipfile.ZipFile(zip_data, 'r') as zip_ref:
-                            # 获取所有文件列表
-                            file_list = zip_ref.namelist()
-                            
-                            # 按文件名排序（通常是按 job 名称和时间）
-                            file_list.sort()
-                            
-                            # 合并所有日志文件
-                            all_logs = []
-                            for file_name in file_list:
-                                if file_name.endswith('.txt') or not '.' in file_name.split('/')[-1]:
-                                    # 读取日志文件内容
-                                    try:
-                                        content = zip_ref.read(file_name).decode('utf-8', errors='replace')
-                                        # 添加文件头
-                                        all_logs.append(f"\n{'='*80}\n")
-                                        all_logs.append(f"文件: {file_name}\n")
-                                        all_logs.append(f"{'='*80}\n\n")
-                                        all_logs.append(content)
-                                        if not content.endswith('\n'):
-                                            all_logs.append('\n')
-                                    except Exception as e:
-                                        all_logs.append(f"\n{'='*80}\n")
-                                        all_logs.append(f"文件: {file_name} (读取失败: {e})\n")
-                                        all_logs.append(f"{'='*80}\n\n")
-                            
-                            if all_logs:
-                                log_content = ''.join(all_logs)
-                            else:
-                                log_content = "日志文件为空或格式不正确"
-                            
-                            self.signals.finished.emit(log_content)
+                        # 合并所有块
+                        print(f"[DEBUG] 合并下载内容，总大小: {total_size:,} 字节")
+                        self.signals.debug.emit(f"下载完成，总大小: {total_size:,} 字节 ({total_size / (1024*1024):.2f} MB)")
+                        file_data = b''.join(content_chunks)
                     
-                    except httpx.HTTPError as e:
-                        self.signals.error.emit(f"网络错误：{e}")
-                    except zipfile.BadZipFile:
-                        # 如果不是 ZIP 文件，尝试作为文本处理
+                    # 检查是否是 ZIP 文件
+                    is_zip = "zip" in content_type.lower() or (file_data and file_data.startswith(b"PK"))
+                    
+                    if is_zip:
+                        # 如果是 ZIP 文件，直接保存
+                        if self.save_path.endswith('.zip'):
+                            # 用户选择了 ZIP 格式，直接保存
+                            print(f"[DEBUG] 保存 ZIP 文件，大小: {len(file_data):,} 字节")
+                            self.signals.debug.emit(f"保存 ZIP 文件...")
+                            self.signals.finished.emit(self.save_path, file_data)
+                        else:
+                            # 用户选择了文本格式，需要解压并合并
+                            print(f"[DEBUG] 解压 ZIP 文件，大小: {len(file_data):,} 字节")
+                            self.signals.debug.emit("解压 ZIP 文件...")
+                            zip_data = io.BytesIO(file_data)
+                            with zipfile.ZipFile(zip_data, 'r') as zip_ref:
+                                file_list = zip_ref.namelist()
+                                file_list.sort()
+                                
+                                # 合并所有日志文件
+                                all_logs = []
+                                for file_name in file_list:
+                                    if file_name.endswith('.txt') or not '.' in file_name.split('/')[-1]:
+                                        try:
+                                            content = zip_ref.read(file_name).decode('utf-8', errors='replace')
+                                            all_logs.append(f"\n{'='*80}\n")
+                                            all_logs.append(f"文件: {file_name}\n")
+                                            all_logs.append(f"{'='*80}\n\n")
+                                            all_logs.append(content)
+                                            if not content.endswith('\n'):
+                                                all_logs.append('\n')
+                                        except Exception as e:
+                                            all_logs.append(f"\n{'='*80}\n")
+                                            all_logs.append(f"文件: {file_name} (读取失败: {e})\n")
+                                            all_logs.append(f"{'='*80}\n\n")
+                                
+                                if all_logs:
+                                    log_content = ''.join(all_logs)
+                                    self.signals.finished.emit(self.save_path, log_content.encode('utf-8'))
+                                else:
+                                    self.signals.error.emit("日志文件为空或格式不正确")
+                    else:
+                        # 如果不是 ZIP，作为文本处理
+                        print(f"[DEBUG] 处理文本内容，大小: {len(file_data):,} 字节")
+                        self.signals.debug.emit("处理文本内容...")
                         try:
-                            if 'response' in locals():
-                                log_content = response.text
-                                self.signals.finished.emit(log_content)
-                            else:
-                                self.signals.error.emit("日志格式错误：无法解析 ZIP 文件")
-                        except:
-                            self.signals.error.emit("日志格式错误：无法解析 ZIP 文件")
-                    except Exception as e:
-                        self.signals.error.emit(f"加载日志失败：{e}")
-            
-            def on_logs_loaded(log_content):
-                # 检查对象是否仍然有效
-                try:
-                    if not log_dialog.isVisible() or not hasattr(log_text, 'setPlainText'):
-                        return
-                except RuntimeError:
-                    # 对话框已被删除
-                    return
+                            log_content = file_data.decode('utf-8')
+                        except UnicodeDecodeError:
+                            log_content = file_data.decode('utf-8', errors='replace')
+                        self.signals.finished.emit(self.save_path, log_content.encode('utf-8'))
                 
-                try:
-                    log_text.setPlainText(log_content)
-                    status_label.setText(f"日志已加载（{len(log_content)} 字符）")
-                    # 滚动到底部（显示最新的日志）
-                    cursor = log_text.textCursor()
-                    cursor.movePosition(QTextCursor.MoveOperation.End)
-                    log_text.setTextCursor(cursor)
-                except RuntimeError:
-                    # 对象已被删除
-                    pass
-            
-            def on_logs_error(error_msg):
-                # 检查对象是否仍然有效
-                try:
-                    if not log_dialog.isVisible():
-                        return
-                except RuntimeError:
-                    # 对话框已被删除
+                except httpx.HTTPError as e:
+                    self.signals.error.emit(f"网络错误：{e}")
+                except zipfile.BadZipFile:
+                    self.signals.error.emit("日志格式错误：无法解析 ZIP 文件")
+                except Exception as e:
+                    self.signals.error.emit(f"下载日志失败：{e}")
+        
+        def on_download_finished(save_path: str, file_data: bytes):
+            try:
+                if not progress_dialog.isVisible():
                     return
-                
-                try:
-                    status_label.setText(f"错误: {error_msg}")
-                    log_text.setPlainText(f"错误: {error_msg}\n\n请检查：\n1. GitHub API Key 是否有足够权限\n2. 日志是否已过期（GitHub 日志通常保留 90 天）\n3. 网络连接是否正常")
-                    QMessageBox.warning(log_dialog, "加载日志失败", error_msg)
-                except RuntimeError:
-                    # 对象已被删除
-                    pass
+            except RuntimeError:
+                return
             
-            worker = _LogsWorker()
-            worker.signals.finished.connect(on_logs_loaded)
-            worker.signals.error.connect(on_logs_error)
-            QThreadPool.globalInstance().start(worker)
+            try:
+                progress_dialog.close()
+                
+                # 保存文件
+                with open(save_path, 'wb') as f:
+                    f.write(file_data)
+                
+                file_size = len(file_data)
+                size_mb = file_size / (1024 * 1024)
+                size_str = f"{size_mb:.2f} MB" if size_mb >= 1 else f"{file_size / 1024:.2f} KB"
+                
+                # 使用传入的对话框作为父窗口，如果没有则使用 self
+                msg_parent = parent_dialog if parent_dialog else self
+                QMessageBox.information(
+                    msg_parent,
+                    "下载完成",
+                    f"日志已成功下载到：\n{save_path}\n\n文件大小：{size_str}"
+                )
+            except Exception as e:
+                msg_parent = parent_dialog if parent_dialog else self
+                QMessageBox.critical(msg_parent, "保存失败", f"保存文件失败：{e}")
         
-        # 刷新按钮
-        refresh_btn.clicked.connect(load_logs)
+        def on_download_error(error_msg: str):
+            try:
+                if not progress_dialog.isVisible():
+                    return
+            except RuntimeError:
+                return
+            
+            try:
+                progress_dialog.close()
+                # 使用传入的对话框作为父窗口，如果没有则使用 self
+                msg_parent = parent_dialog if parent_dialog else self
+                QMessageBox.warning(
+                    msg_parent,
+                    "下载失败",
+                    f"{error_msg}\n\n请检查：\n1. GitHub API Key 是否有足够权限\n2. 日志是否已过期（GitHub 日志通常保留 90 天）\n3. 网络连接是否正常"
+                )
+            except RuntimeError:
+                pass
         
-        # 初始加载
-        load_logs()
+        def on_debug_info(debug_msg: str):
+            """显示调试信息"""
+            try:
+                if not progress_dialog.isVisible():
+                    return
+            except RuntimeError:
+                return
+            
+            try:
+                # 更新调试标签
+                current_text = debug_label.text()
+                if current_text:
+                    debug_label.setText(current_text + "\n" + debug_msg)
+                else:
+                    debug_label.setText(debug_msg)
+                # 滚动到底部（通过设置对齐方式）
+                debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+            except RuntimeError:
+                pass
         
-        log_dialog.exec()
+        worker = _LogsDownloadWorker(file_path)
+        worker.signals.finished.connect(on_download_finished)
+        worker.signals.error.connect(on_download_error)
+        worker.signals.debug.connect(on_debug_info)
+        QThreadPool.globalInstance().start(worker)
     
     def _rerun_workflow(self, run_id: int, workflow_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None, parent=None):
         """重新运行工作流"""

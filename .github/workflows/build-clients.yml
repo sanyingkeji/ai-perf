@@ -104,6 +104,7 @@ jobs:
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
           APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
@@ -217,13 +218,30 @@ jobs:
           if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
             echo "✓ Python 已通过 setup-python 安装"
             ${{ steps.setup-python.outputs.python-path }} --version
+            # 验证架构
+            file_output=$(file "${{ steps.setup-python.outputs.python-path }}" 2>/dev/null || echo "")
+            echo "Python 架构信息: $file_output"
           else
-            echo "警告: setup-python 可能失败，检查系统 Python..."
-            # 尝试使用系统 Python（如果可用）
-            if command -v python3 &> /dev/null; then
-              echo "使用系统 Python:"
-              python3 --version
-              arch -x86_64 python3 --version || echo "系统 Python 不是 x86_64 架构"
+            echo "警告: setup-python 失败，尝试使用 Homebrew 安装 x86_64 Python..."
+            # 使用 Homebrew 安装 x86_64 Python（通过 Rosetta）
+            arch -x86_64 /bin/bash -c "
+              if ! command -v brew &> /dev/null; then
+                echo '安装 Homebrew...'
+                /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
+              fi
+              echo '使用 Homebrew 安装 Python 3.10 (x86_64)...'
+              arch -x86_64 brew install python@3.10 || arch -x86_64 brew upgrade python@3.10
+              echo '✓ Python 安装完成'
+            " || {
+              echo "错误: 无法安装 x86_64 Python"
+              exit 1
+            }
+            # 查找 Homebrew 安装的 Python
+            HOMEBREW_PYTHON=$(arch -x86_64 /bin/bash -c 'brew --prefix python@3.10 2>/dev/null')/bin/python3
+            if [ -f "$HOMEBREW_PYTHON" ]; then
+              echo "✓ 找到 Homebrew Python: $HOMEBREW_PYTHON"
+              echo "homebrew-python-path=$HOMEBREW_PYTHON" >> $GITHUB_OUTPUT
+              $HOMEBREW_PYTHON --version
             else
               echo "错误: 未找到 Python"
               exit 1
@@ -237,28 +255,70 @@ jobs:
           # 使用 setup-python 安装的 Python（如果可用）
           if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
             PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
+          elif [ -n "${{ steps.setup-python.outputs.homebrew-python-path }}" ]; then
+            PYTHON_CMD="${{ steps.setup-python.outputs.homebrew-python-path }}"
           else
-            PYTHON_CMD="arch -x86_64 python3"
+            # 最后尝试：使用 Homebrew Python（直接从路径查找）
+            # 注意：必须在 Rosetta 环境下查找 Homebrew Python
+            HOMEBREW_PREFIX=$(arch -x86_64 /bin/bash -c 'brew --prefix 2>/dev/null' || echo "/usr/local")
+            HOMEBREW_PYTHON="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
+            if [ -f "$HOMEBREW_PYTHON" ]; then
+              PYTHON_CMD="$HOMEBREW_PYTHON"
+            else
+              # 尝试其他可能的路径
+              HOMEBREW_PYTHON_ALT="$HOMEBREW_PREFIX/bin/python3"
+              if [ -f "$HOMEBREW_PYTHON_ALT" ]; then
+                PYTHON_CMD="$HOMEBREW_PYTHON_ALT"
+              else
+                echo "错误: 无法找到可用的 x86_64 Python"
+                echo "尝试查找所有可能的 Python 路径..."
+                echo "Homebrew prefix: $HOMEBREW_PREFIX"
+                arch -x86_64 /bin/bash -c 'ls -la /usr/local/bin/python3* 2>/dev/null || echo "未找到 /usr/local/bin/python3"'
+                arch -x86_64 /bin/bash -c 'ls -la /usr/local/opt/python@3.10/bin/python3* 2>/dev/null || echo "未找到 /usr/local/opt/python@3.10/bin/python3"'
+                exit 1
+              fi
+            fi
           fi
           
           echo "使用 Python: $PYTHON_CMD"
-          $PYTHON_CMD --version
+          # 验证 Python 是否可用（必须在 Rosetta 环境下运行）
+          arch -x86_64 "$PYTHON_CMD" --version || {
+            echo "错误: Python 无法在 x86_64 架构下运行"
+            exit 1
+          }
+          echo "Python 路径验证:"
+          file "$PYTHON_CMD" || echo "无法检查 Python 架构"
           
-          $PYTHON_CMD -m pip install --upgrade pip --break-system-packages
-          $PYTHON_CMD -m pip install -r requirements.txt --break-system-packages
+          # 安装依赖（必须在 Rosetta 环境下运行）
+          arch -x86_64 "$PYTHON_CMD" -m pip install --upgrade pip --break-system-packages
+          arch -x86_64 "$PYTHON_CMD" -m pip install -r requirements.txt --break-system-packages
       
       - name: Verify PyInstaller installation
         run: |
           # 使用相同的 Python 命令
           if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
             PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
+          elif [ -n "${{ steps.setup-python.outputs.homebrew-python-path }}" ]; then
+            PYTHON_CMD="${{ steps.setup-python.outputs.homebrew-python-path }}"
           else
-            PYTHON_CMD="arch -x86_64 python3"
+            HOMEBREW_PREFIX=$(arch -x86_64 /bin/bash -c 'brew --prefix 2>/dev/null' || echo "/usr/local")
+            HOMEBREW_PYTHON="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
+            if [ -f "$HOMEBREW_PYTHON" ]; then
+              PYTHON_CMD="$HOMEBREW_PYTHON"
+            else
+              HOMEBREW_PYTHON_ALT="$HOMEBREW_PREFIX/bin/python3"
+              if [ -f "$HOMEBREW_PYTHON_ALT" ]; then
+                PYTHON_CMD="$HOMEBREW_PYTHON_ALT"
+              else
+                echo "错误: 无法找到可用的 x86_64 Python"
+                exit 1
+              fi
+            fi
           fi
           
           echo "验证 PyInstaller 安装..."
-          $PYTHON_CMD -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
-          $PYTHON_CMD -m pip list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+          arch -x86_64 "$PYTHON_CMD" -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          arch -x86_64 "$PYTHON_CMD" -m pip list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
       
       - name: Check if should build
         id: check_build
@@ -306,6 +366,7 @@ jobs:
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
           APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
@@ -320,15 +381,28 @@ jobs:
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           # 使用 setup-python 安装的 Python（如果可用）
           if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
-            PYTHON_CMD="arch -x86_64 ${{ steps.setup-python.outputs.python-path }}"
+            PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
           else
-            PYTHON_CMD="arch -x86_64 python3"
+            # 使用 Homebrew Python
+            HOMEBREW_PREFIX=$(arch -x86_64 /bin/bash -c 'brew --prefix 2>/dev/null' || echo "/usr/local")
+            HOMEBREW_PYTHON="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
+            if [ -f "$HOMEBREW_PYTHON" ]; then
+              PYTHON_CMD="$HOMEBREW_PYTHON"
+            else
+              HOMEBREW_PYTHON_ALT="$HOMEBREW_PREFIX/bin/python3"
+              if [ -f "$HOMEBREW_PYTHON_ALT" ]; then
+                PYTHON_CMD="$HOMEBREW_PYTHON_ALT"
+              else
+                echo "错误: 无法找到可用的 x86_64 Python"
+                exit 1
+              fi
+            fi
           fi
           
           echo "使用 Python: $PYTHON_CMD"
-          $PYTHON_CMD --version
+          arch -x86_64 "$PYTHON_CMD" --version
           echo "开始构建..."
-          $PYTHON_CMD ../scripts/build_client.py ${{ matrix.client }} macos
+          arch -x86_64 "$PYTHON_CMD" ../scripts/build_client.py ${{ matrix.client }} macos
       
       - name: Upload DMG artifact
         if: steps.check_build.outputs.should_build == 'true'
@@ -403,6 +477,7 @@ jobs:
       - name: Build client (Windows)
         if: steps.check_build.outputs.should_build == 'true'
         env:
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
@@ -486,6 +561,7 @@ jobs:
       - name: Build client (Linux)
         if: steps.check_build.outputs.should_build == 'true'
         env:
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}

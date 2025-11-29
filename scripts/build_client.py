@@ -7,6 +7,18 @@
 
 import sys
 import os
+
+# 设置无缓冲输出，确保在 GitHub Actions 中能够实时看到日志
+# 这对于长时间运行的脚本特别重要
+try:
+    if not sys.stdout.isatty():
+        # 如果不是终端（如 GitHub Actions），设置行缓冲
+        # 这样可以确保每行输出都立即刷新，而不是等待缓冲区满
+        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)  # 行缓冲
+        sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)  # 行缓冲
+except (OSError, AttributeError):
+    # 如果无法设置（某些特殊环境），忽略错误
+    pass
 import subprocess
 import shutil
 from pathlib import Path
@@ -48,7 +60,7 @@ except ImportError:
 def log_with_time(message, color=""):
     """带时间戳的日志输出"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{color}[{timestamp}] {message}{NC}")
+    print(f"{color}[{timestamp}] {message}{NC}", flush=True)  # flush=True 确保在 GitHub Actions 中实时显示
 
 def log_info(message):
     """信息日志"""
@@ -527,26 +539,44 @@ def main():
             # 错误信息已经在实时输出中显示，直接抛出异常
             raise
         
+        log_info("✓ PyInstaller 打包完成，开始后续处理...")
+        print()  # 空行分隔
+        
         # 恢复 spec 文件（如果修改过）
         if spec_backup and spec_backup.exists():
+            log_warn("恢复 spec 文件...")
             shutil.move(spec_backup, spec_file)
             log_info("✓ spec 文件已恢复")
         
         # 如果 PyInstaller 输出到了 dist，需要移动到对应的子目录
+        log_warn("检查应用包位置...")
         temp_app_bundle = Path("dist") / f"{app_name}.app"
         app_bundle = dist_dir / f"{app_name}.app"
+        log_info(f"  临时应用包路径: {temp_app_bundle}")
+        log_info(f"  目标应用包路径: {app_bundle}")
         
         if temp_app_bundle.exists() and temp_app_bundle != app_bundle:
             log_warn(f"移动应用包到 {dist_dir}...")
             if app_bundle.exists():
+                log_info(f"  删除已存在的应用包: {app_bundle}")
                 shutil.rmtree(app_bundle)
+            log_info(f"  移动 {temp_app_bundle} -> {app_bundle}")
             shutil.move(str(temp_app_bundle), str(app_bundle))
+            log_info("✓ 应用包移动完成")
+        elif app_bundle.exists():
+            log_info(f"✓ 应用包已在目标位置: {app_bundle}")
+        else:
+            log_warn(f"  临时应用包存在: {temp_app_bundle.exists()}")
+            log_warn(f"  目标应用包存在: {app_bundle.exists()}")
         
         if not app_bundle.exists():
             log_error("错误: 应用包未生成")
+            log_error(f"  检查路径: {app_bundle}")
+            log_error(f"  临时路径: {temp_app_bundle}")
             sys.exit(1)
         
         log_info(f"✓ 应用包生成成功: {app_bundle}")
+        print()  # 空行分隔
         
         # 验证应用包的架构
         if arch and target_arch:
@@ -706,7 +736,10 @@ def main():
                 log_warn(f"  ⚠ 导入 Installer p12 证书时出错: {e}")
         
         if codesign_identity:
-            log_warn("代码签名（使用改进的签名流程）...")
+            log_info("=" * 50)
+            log_warn("开始代码签名（使用改进的签名流程）...")
+            log_info(f"  签名身份: {codesign_identity}")
+            print()  # 空行分隔
             
             # 创建基本的 entitlements 文件（如果需要）
             entitlements_file = client_dir / "entitlements.plist"
@@ -801,7 +834,7 @@ def main():
                                     ["codesign", "-vvv", str(item)],
                                     capture_output=True,
                                     text=True,
-                                    timeout=2
+                                    timeout=30  # 增加超时时间，大型文件需要更长时间
                                 )
                                 if verify_result.returncode != 0:
                                     log_warn(f"      警告: {item.name} 签名验证失败，尝试重新签名...")
@@ -908,7 +941,7 @@ def main():
                     ["codesign", "-vvv", str(qt_file)],
                     capture_output=True,
                     text=True,
-                    timeout=2
+                    timeout=30  # 增加超时时间，大型文件（如 QtWebEngineCore）需要更长时间
                 )
                 if verify_result.returncode != 0:
                     log_warn(f"  重新签名: {qt_file.relative_to(app_bundle)}")
@@ -960,7 +993,8 @@ def main():
                         ["codesign", "-vvv", str(item)],
                         capture_output=True,
                         text=True,
-                        check=False # 不检查返回码，因为可能就是无效
+                        check=False, # 不检查返回码，因为可能就是无效
+                        timeout=30  # 增加超时时间，大型文件需要更长时间
                     )
                     # 检查是否有 "invalid Info.plist" 或 "code object is not signed" 错误
                     if verify_result.returncode != 0 or "invalid Info.plist" in verify_result.stderr or "code object is not signed" in verify_result.stderr:
@@ -977,7 +1011,8 @@ def main():
                             ["codesign", "-vvv", str(item)],
                             capture_output=True,
                             text=True,
-                            check=False
+                            check=False,
+                            timeout=30  # 增加超时时间，大型文件需要更长时间
                         )
                         if verify_again.returncode == 0:
                             log_info(f"      ✓ 重新签名成功")
@@ -1039,6 +1074,9 @@ def main():
         else:
             log_warn("⚠ 跳过代码签名（设置 CODESIGN_IDENTITY 环境变量以启用）")
         
+        log_info("=" * 50)
+        log_warn("开始创建 DMG...")
+        print()  # 空行分隔
         # 创建 DMG
         log_warn("创建 DMG...")
         dmg_name = app_name.replace(" ", "_")
