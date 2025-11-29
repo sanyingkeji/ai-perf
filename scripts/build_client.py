@@ -740,34 +740,13 @@ def main():
             log_warn("开始代码签名（使用改进的签名流程）...")
             log_info(f"  签名身份: {codesign_identity}")
             
-            # 测试时间戳服务器连接并检测代理配置
+            # 测试时间戳服务器连接
             log_info("  测试时间戳服务器连接...")
             apple_timestamp_available = False
             sectigo_timestamp_available = False  # 保留变量，但不再测试
-            proxy_available = False
             
             try:
                 import socket
-                # 检测代理配置（优先使用大写版本，如果不存在则使用小写版本）
-                proxy_config = {}
-                for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY']:
-                    proxy_value = os.environ.get(proxy_var) or os.environ.get(proxy_var.lower())
-                    if proxy_value:
-                        proxy_config[proxy_var] = proxy_value
-                        proxy_available = True
-                
-                if proxy_available:
-                    # 显示代理信息（隐藏密码）
-                    proxy_url = list(proxy_config.values())[0]
-                    if '@' in proxy_url and '://' in proxy_url:
-                        # 隐藏密码显示
-                        proxy_display = proxy_url.split('://')[0] + '://***@' + proxy_url.split('@')[1]
-                    else:
-                        proxy_display = proxy_url
-                    log_info(f"  ✓ 检测到代理配置: {list(proxy_config.keys())[0]}={proxy_display}")
-                else:
-                    log_info("  ℹ 未检测到代理配置（如果时间戳服务器连接失败，可配置代理）")
-                    log_info("     代理格式: http://username:password@ip:port 或 http://ip:port")
                 
                 # 只测试 Apple 时间戳服务器，重试3次
                 host = "timestamp.apple.com"
@@ -790,72 +769,23 @@ def main():
                         else:
                             log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问（尝试 {attempt}/{max_retries}）")
                 
-                # 如果重试后仍然不可用，且配置了代理，使用代理再试试
-                if not apple_timestamp_available and proxy_available:
-                    log_warn("  ⚠ Apple 时间戳服务器不可访问，尝试使用代理连接...")
-                    # 使用 urllib 测试代理连接（socket 不支持代理）
-                    try:
-                        from urllib.request import urlopen, ProxyHandler, build_opener, install_opener
-                        from urllib.error import URLError
-                        
-                        # 构建代理 URL
-                        proxy_url = list(proxy_config.values())[0]
-                        # 创建代理处理器
-                        proxy_handler = ProxyHandler({
-                            'http': proxy_url,
-                            'https': proxy_url
-                        })
-                        opener = build_opener(proxy_handler)
-                        install_opener(opener)
-                        
-                        # 使用代理重试连接（重置延迟时间）
-                        proxy_retry_delay = 2
-                        for attempt in range(1, max_retries + 1):
-                            try:
-                                # 测试 HTTPS 连接（时间戳服务器使用 HTTPS）
-                                response = urlopen(f'https://{host}:{port}', timeout=5)
-                                response.close()
-                                apple_timestamp_available = True
-                                log_info(f"  ✓ 使用代理后，时间戳服务器 {host}:{port} 可访问")
-                                break
-                            except (URLError, socket.timeout, socket.error, OSError) as e:
-                                if attempt < max_retries:
-                                    log_warn(f"  ⚠ 使用代理后仍不可访问（尝试 {attempt}/{max_retries}），{proxy_retry_delay} 秒后重试...")
-                                    time.sleep(proxy_retry_delay)
-                                    proxy_retry_delay *= 2  # 指数退避
-                                else:
-                                    log_warn(f"  ⚠ 使用代理后仍不可访问（尝试 {attempt}/{max_retries}）")
-                    except ImportError:
-                        # 如果 urllib 不可用，使用 socket 测试（虽然不支持代理，但至少可以测试连接）
-                        log_warn("  ⚠ 无法使用代理测试连接（urllib 不可用），将直接尝试签名")
-                    except Exception as e:
-                        log_warn(f"  ⚠ 使用代理测试连接时出错: {e}")
-                
                 if not apple_timestamp_available:
-                    if proxy_available:
-                        log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问（已重试且使用代理后仍失败）")
-                        log_warn("     签名时将自动启用代理重试")
-                    else:
-                        log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问（已重试）")
-                        log_warn("     这可能是网络问题，签名过程可能会失败")
+                    log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问（已重试）")
+                    log_warn("     这可能是网络问题，签名过程可能会失败")
             except Exception as e:
                 log_warn(f"  ⚠ 无法测试时间戳服务器连接: {e}")
             
-            # 保存时间戳服务器状态和代理配置，供签名函数使用
+            # 保存时间戳服务器状态，供签名函数使用
             # 确保变量已初始化（即使在异常情况下）
             if 'timestamp_status' not in locals():
                 timestamp_status = {
                     'apple_available': apple_timestamp_available,
                     'sectigo_available': sectigo_timestamp_available,
-                    'proxy_available': proxy_available,
-                    'proxy_config': proxy_config
                 }
             else:
                 timestamp_status.update({
                     'apple_available': apple_timestamp_available,
                     'sectigo_available': sectigo_timestamp_available,
-                    'proxy_available': proxy_available,
-                    'proxy_config': proxy_config
                 })
             
             print()  # 空行分隔
@@ -881,17 +811,16 @@ def main():
                     f.write(entitlements_content)
                 log_info("✓ 创建 entitlements.plist")
             
-            # 辅助函数：带时间戳签名（带重试机制，支持代理）
+            # 辅助函数：带时间戳签名（带重试机制）
             def sign_with_timestamp(file_path, codesign_identity, max_retries=3, retry_delay=5, extra_args=None, timeout=180):
                 """
                 带时间戳签名，如果失败则重试（不使用无时间戳签名，因为无法通过公证）
-                重试3次后如果仍失败，将尝试使用代理
-                如果使用代理后仍然失败，将抛出异常停止执行
+                如果所有重试都失败，将抛出异常停止执行
                 
                 Args:
                     file_path: 要签名的文件路径
                     codesign_identity: 签名身份
-                    max_retries: 最大重试次数（不使用代理的重试次数）
+                    max_retries: 最大重试次数
                     retry_delay: 初始重试延迟（秒），会指数退避
                     extra_args: 额外的 codesign 参数列表
                     timeout: 单次签名超时时间（秒），默认180秒
@@ -903,21 +832,8 @@ def main():
                     extra_args = []
                 
                 current_delay = retry_delay
-                use_proxy = False
-                proxy_attempted = False
                 
-                # 获取时间戳服务器状态和代理配置
-                try:
-                    ts_status = timestamp_status
-                except NameError:
-                    # 如果 timestamp_status 未定义，使用默认值
-                    ts_status = {
-                        'apple_available': False,
-                        'proxy_available': False,
-                        'proxy_config': {}
-                    }
-                
-                # 第一阶段：不使用代理，重试 max_retries 次
+                # 重试 max_retries 次
                 for attempt in range(1, max_retries + 1):
                     try:
                         env = os.environ.copy()
@@ -938,111 +854,33 @@ def main():
                                 time.sleep(current_delay)
                                 current_delay *= 2  # 指数退避
                             else:
-                                # 第3次重试失败，继续到代理阶段
-                                log_warn(f"      带时间戳签名失败（尝试 {attempt}/{max_retries}）: {error_msg}")
+                                # 最后一次重试失败，抛出异常停止执行
+                                error_msg_full = f"签名失败（已重试 {max_retries} 次）: {error_msg}"
+                                log_error(f"      ✗ {error_msg_full}")
+                                raise Exception(error_msg_full)
                     except subprocess.TimeoutExpired:
                         if attempt < max_retries:
                             log_warn(f"      签名超时（尝试 {attempt}/{max_retries}，超时 {timeout} 秒），{current_delay} 秒后重试...")
                             time.sleep(current_delay)
                             current_delay *= 2  # 指数退避
                         else:
-                            # 第3次超时，继续到代理阶段
-                            log_warn(f"      签名超时（尝试 {attempt}/{max_retries}，超时 {timeout} 秒）")
+                            # 最后一次超时，抛出异常停止执行
+                            error_msg = f"签名超时（已重试 {max_retries} 次，超过 {timeout} 秒）"
+                            log_error(f"      ✗ {error_msg}")
+                            raise Exception(error_msg)
                     except Exception as e:
+                        # 如果是我们抛出的异常，直接抛出
+                        if "签名失败" in str(e) or "签名超时" in str(e):
+                            raise
                         if attempt < max_retries:
                             log_warn(f"      签名出错（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {e}")
                             time.sleep(current_delay)
                             current_delay *= 2  # 指数退避
                         else:
-                            # 第3次出错，继续到代理阶段
-                            log_warn(f"      签名出错（尝试 {attempt}/{max_retries}）: {e}")
-                
-                # 第二阶段：如果前3次都失败，且 Apple 服务器不可用，且有代理配置，使用代理重试
-                if (not ts_status.get('apple_available', False) and 
-                    ts_status.get('proxy_available', False) and 
-                    not proxy_attempted):
-                    log_warn(f"      Apple 时间戳服务器不可用，已重试 {max_retries} 次失败，尝试启用代理...")
-                    proxy_config = ts_status.get('proxy_config', {})
-                    
-                    if not proxy_config:
-                        error_msg = "Apple 时间戳服务器不可用，且未配置代理，无法继续签名"
-                        log_error(f"      ✗ {error_msg}")
-                        raise Exception(error_msg)
-                    
-                    # 显示代理信息（隐藏密码）
-                    proxy_url = list(proxy_config.values())[0]
-                    # 隐藏密码显示
-                    if '@' in proxy_url:
-                        proxy_display = proxy_url.split('@')[0].split('://')[0] + '://***@' + proxy_url.split('@')[1]
-                    else:
-                        proxy_display = proxy_url
-                    log_info(f"      ✓ 已启用代理: {proxy_display}")
-                    
-                    use_proxy = True
-                    proxy_attempted = True
-                    current_delay = retry_delay  # 重置延迟
-                    
-                    # 使用代理重试 max_retries 次
-                    for attempt in range(1, max_retries + 1):
-                        try:
-                            env = os.environ.copy()
-                            # 设置代理环境变量
-                            for proxy_var, proxy_value in proxy_config.items():
-                                env[proxy_var] = proxy_value
-                            
-                            sign_result = subprocess.run([
-                                "codesign", "--force", "--sign", codesign_identity,
-                                "--options", "runtime",
-                                "--timestamp",
-                                *extra_args,
-                                str(file_path)
-                            ], check=False, capture_output=True, text=True, timeout=timeout, env=env)
-                            
-                            if sign_result.returncode == 0:
-                                log_info(f"      ✓ 使用代理签名成功")
-                                return (True, None)
-                            else:
-                                error_msg = sign_result.stderr[:200] if sign_result.stderr else '未知错误'
-                                if attempt < max_retries:
-                                    log_warn(f"      使用代理签名失败（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {error_msg}")
-                                    time.sleep(current_delay)
-                                    current_delay *= 2  # 指数退避
-                                else:
-                                    # 使用代理后仍然失败，抛出异常停止执行
-                                    error_msg_full = f"使用代理后仍失败（已重试 {max_retries} 次）: {error_msg}"
-                                    log_error(f"      ✗ {error_msg_full}")
-                                    raise Exception(error_msg_full)
-                        except subprocess.TimeoutExpired:
-                            if attempt < max_retries:
-                                log_warn(f"      使用代理签名超时（尝试 {attempt}/{max_retries}，超时 {timeout} 秒），{current_delay} 秒后重试...")
-                                time.sleep(current_delay)
-                                current_delay *= 2  # 指数退避
-                            else:
-                                # 使用代理后仍然超时，抛出异常停止执行
-                                error_msg = f"使用代理后仍超时（已重试 {max_retries} 次，超过 {timeout} 秒）"
-                                log_error(f"      ✗ {error_msg}")
-                                raise Exception(error_msg)
-                        except Exception as e:
-                            # 如果是我们抛出的异常，直接抛出
-                            if "使用代理后仍" in str(e) or "Apple 时间戳服务器不可用" in str(e):
-                                raise
-                            if attempt < max_retries:
-                                log_warn(f"      使用代理签名出错（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {e}")
-                                time.sleep(current_delay)
-                                current_delay *= 2  # 指数退避
-                            else:
-                                # 使用代理后仍然出错，抛出异常停止执行
-                                error_msg = f"使用代理后仍出错（已重试 {max_retries} 次）: {e}"
-                                log_error(f"      ✗ {error_msg}")
-                                raise Exception(error_msg)
-                else:
-                    # 没有代理配置或 Apple 服务器可用，直接抛出异常停止执行
-                    if not ts_status.get('proxy_available', False):
-                        error_msg = f"Apple 时间戳服务器不可用，且未配置代理，无法继续签名（已重试 {max_retries} 次）"
-                    else:
-                        error_msg = f"签名失败（已重试 {max_retries} 次）"
-                    log_error(f"      ✗ {error_msg}")
-                    raise Exception(error_msg)
+                            # 最后一次出错，抛出异常停止执行
+                            error_msg = f"签名出错（已重试 {max_retries} 次）: {e}"
+                            log_error(f"      ✗ {error_msg}")
+                            raise Exception(error_msg)
             
             # 签名 Resources 目录中的二进制文件（如果有）
             resources_dir = app_bundle / "Contents" / "Resources"
@@ -1078,7 +916,7 @@ def main():
                                         failed_files.append((item.relative_to(app_bundle), error_msg))
                                         log_error(f"      签名失败（已重试）: {error_msg}")
                                 except Exception as e:
-                                    # 签名失败且代理也失败，停止执行
+                                    # 签名失败，停止执行
                                     failed_files.append((item.relative_to(app_bundle), str(e)))
                                     log_error(f"      签名失败: {e}")
                                     raise  # 重新抛出异常，停止执行
@@ -1110,7 +948,7 @@ def main():
                             failed_dylibs.append((dylib.relative_to(app_bundle), error_msg))
                             log_error(f"      签名失败（已重试）: {error_msg}")
                     except Exception as e:
-                        # 签名失败且代理也失败，停止执行
+                        # 签名失败，停止执行
                         log_error(f"      签名失败: {e}")
                         raise
                 
@@ -1158,7 +996,7 @@ def main():
                                         if not success:
                                             raise Exception(f"重新签名失败: {error_msg}")
                                     except Exception as e:
-                                        # 签名失败且代理也失败，停止执行
+                                        # 签名失败，停止执行
                                         raise
                         except Exception as e:
                             log_warn(f"      签名 {item.name} 时出错: {e}")
@@ -1196,7 +1034,7 @@ def main():
                                                 log_error(f"      框架内文件签名失败（已重试）: {item.relative_to(app_bundle)}: {error_msg}")
                                                 raise Exception(f"框架内文件签名失败: {error_msg}")
                                         except Exception as e:
-                                            # 签名失败且代理也失败，停止执行
+                                            # 签名失败，停止执行
                                             raise
                                 except Exception:
                                     pass
@@ -1208,7 +1046,7 @@ def main():
                                 log_error(f"      框架签名失败（已重试）: {framework_dir.relative_to(app_bundle)}: {error_msg}")
                                 raise Exception(f"框架签名失败: {error_msg}")
                         except Exception as e:
-                            # 签名失败且代理也失败，停止执行
+                            # 签名失败，停止执行
                             raise
                     
                     # 签名 Qt 目录中的其他二进制文件（非框架）
@@ -1233,7 +1071,7 @@ def main():
                                             log_error(f"      签名失败（已重试）: {error_msg}")
                                             raise Exception(f"Qt 文件签名失败: {error_msg}")
                                     except Exception as e:
-                                        # 签名失败且代理也失败，停止执行
+                                        # 签名失败，停止执行
                                         raise
                             except Exception:
                                 pass
@@ -1250,7 +1088,7 @@ def main():
                             failed_so_files.append((so_file.relative_to(app_bundle), error_msg))
                             log_error(f"      签名失败（已重试）: {error_msg}")
                     except Exception as e:
-                        # 签名失败且代理也失败，停止执行
+                        # 签名失败，停止执行
                         log_error(f"      签名失败: {e}")
                         raise
                 
@@ -1284,7 +1122,7 @@ def main():
                                 log_error(f"      重新签名失败: {error_msg}")
                                 raise Exception(f"Qt 文件重新签名失败: {error_msg}")
                         except Exception as e:
-                            # 签名失败且代理也失败，停止执行
+                            # 签名失败，停止执行
                             raise
             
             log_warn("签名应用包主可执行文件...")
@@ -1298,7 +1136,7 @@ def main():
                         raise Exception(f"主可执行文件签名失败: {error_msg}")
                     log_info("✓ 主可执行文件已签名")
                 except Exception as e:
-                    # 签名失败且代理也失败，停止执行
+                    # 签名失败，停止执行
                     raise
             
             log_warn("签名应用包（不使用 --deep，避免重新签名）...")
@@ -1315,7 +1153,7 @@ def main():
                     log_error(f"      应用包签名失败: {error_msg}")
                     raise Exception(f"应用包签名失败: {error_msg}")
             except Exception as e:
-                # 签名失败且代理也失败，停止执行
+                # 签名失败，停止执行
                 raise
             
             # 签名后，再次验证并修复关键文件（因为 --deep 可能会破坏签名）
@@ -1348,7 +1186,7 @@ def main():
                                     log_error(f"      重新签名失败: {error_msg}")
                                     raise Exception(f"关键文件重新签名失败: {error_msg}")
                             except Exception as e:
-                                # 签名失败且代理也失败，停止执行
+                                # 签名失败，停止执行
                                 raise
                             # 再次验证
                             verify_again = subprocess.run(
@@ -1380,7 +1218,7 @@ def main():
                         raise Exception(f"应用包重新签名失败: {error_msg}")
                     log_info("✓ 应用包已重新签名以包含修复")
                 except Exception as e:
-                    # 签名失败且代理也失败，停止执行
+                    # 签名失败，停止执行
                     raise
             
             # 验证签名（不使用 --deep，因为已弃用）
@@ -1542,7 +1380,7 @@ def main():
                         raise Exception("DMG 签名失败：时间戳服务不可用（无时间戳签名无法通过公证）")
                     log_info("✓ DMG 代码签名完成（已使用时间戳，重试成功）")
                 except Exception as e:
-                    # 签名失败且代理也失败，停止执行
+                    # 签名失败，停止执行
                     log_error(f"✗ DMG 签名失败: {e}")
                     raise
             elif timestamp_result.returncode != 0:
