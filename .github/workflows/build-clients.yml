@@ -99,17 +99,18 @@ jobs:
             echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
           fi
       
+      - name: Debug timestamp connectivity
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          echo "Testing timestamp.apple.com..."
+          nc -vz timestamp.apple.com 443 || echo "nc failed"
+          curl -v https://timestamp.apple.com -m 10 || echo "curl failed"
+      
       - name: Build client (Apple Silicon)
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
-          # 代理配置（备用，仅在时间戳服务器连接失败时使用）
-          # 格式: http://username:password@ip:port 或 http://ip:port
-          # 示例: http://user:pass@192.168.1.100:8080
-          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
-          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
-          NO_PROXY: 'localhost,127.0.0.1'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
           APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
@@ -121,6 +122,8 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
+          # 清除可能存在的代理环境变量，避免干扰 codesign
+          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python3 ../scripts/build_client.py ${{ matrix.client }} macos
       
@@ -450,17 +453,18 @@ jobs:
             echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
           fi
       
+      - name: Debug timestamp connectivity
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          echo "Testing timestamp.apple.com..."
+          nc -vz timestamp.apple.com 443 || echo "nc failed"
+          curl -v https://timestamp.apple.com -m 10 || echo "curl failed"
+      
       - name: Build client (Intel)
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
-          # 代理配置（备用，仅在时间戳服务器连接失败时使用）
-          # 格式: http://username:password@ip:port 或 http://ip:port
-          # 示例: http://user:pass@192.168.1.100:8080
-          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
-          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
-          NO_PROXY: 'localhost,127.0.0.1'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
           APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
@@ -472,6 +476,8 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
+          # 清除可能存在的代理环境变量，避免干扰 codesign
+          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           # 使用 Homebrew Python（x86_64，位于 /usr/local）
           HOMEBREW_PREFIX="/usr/local"

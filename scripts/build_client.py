@@ -740,10 +740,9 @@ def main():
             log_warn("开始代码签名（使用改进的签名流程）...")
             log_info(f"  签名身份: {codesign_identity}")
             
-            # 测试时间戳服务器连接
-            log_info("  测试时间戳服务器连接...")
+            # 强制检查时间戳服务器连接，失败则终止构建
+            log_info("  强制检查时间戳服务器连接（timestamp.apple.com:443）...")
             apple_timestamp_available = False
-            sectigo_timestamp_available = False  # 保留变量，但不再测试
             
             try:
                 import socket
@@ -767,26 +766,21 @@ def main():
                             time.sleep(retry_delay)
                             retry_delay *= 2  # 指数退避
                         else:
-                            log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问（尝试 {attempt}/{max_retries}）")
+                            log_error(f"  ✗ 时间戳服务器 {host}:{port} 不可访问（尝试 {attempt}/{max_retries}）")
                 
+                # 如果检查失败，立即终止构建
                 if not apple_timestamp_available:
-                    log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问（已重试）")
-                    log_warn("     这可能是网络问题，签名过程可能会失败")
+                    log_error("  ✗ 错误: Apple 时间戳服务器不可访问（已重试所有次数）")
+                    log_error("     无法继续签名，构建终止")
+                    log_error("     请检查网络连接或 DNS 配置")
+                    raise Exception("Apple 时间戳服务器不可访问，无法继续签名")
             except Exception as e:
-                log_warn(f"  ⚠ 无法测试时间戳服务器连接: {e}")
-            
-            # 保存时间戳服务器状态，供签名函数使用
-            # 确保变量已初始化（即使在异常情况下）
-            if 'timestamp_status' not in locals():
-                timestamp_status = {
-                    'apple_available': apple_timestamp_available,
-                    'sectigo_available': sectigo_timestamp_available,
-                }
-            else:
-                timestamp_status.update({
-                    'apple_available': apple_timestamp_available,
-                    'sectigo_available': sectigo_timestamp_available,
-                })
+                # 如果检查过程本身出错，也终止构建
+                if "Apple 时间戳服务器不可访问" in str(e):
+                    raise  # 重新抛出我们的异常
+                log_error(f"  ✗ 无法测试时间戳服务器连接: {e}")
+                log_error("     构建终止")
+                raise Exception(f"无法测试时间戳服务器连接: {e}")
             
             print()  # 空行分隔
             
@@ -1367,26 +1361,26 @@ def main():
                 str(dmg_path)
             ], capture_output=True, text=True, check=False)
             
-            # 如果时间戳服务不可用，重试（不使用无时间戳签名，因为无法通过公证）
-            if timestamp_result.returncode != 0 and "timestamp service is not available" in timestamp_result.stderr:
-                log_warn("⚠ 时间戳服务不可用，尝试重试...")
-                log_warn("   注意：无时间戳签名无法通过公证，必须使用时间戳签名")
-                # 重试带时间戳的签名
-                try:
-                    success, error_msg = sign_with_timestamp(dmg_path, codesign_identity, max_retries=3, retry_delay=10, timeout=300)
-                    if not success:
-                        log_error("✗ DMG 签名失败：时间戳服务不可用（已重试）")
-                        log_error(f"   错误信息: {error_msg}")
-                        raise Exception("DMG 签名失败：时间戳服务不可用（无时间戳签名无法通过公证）")
-                    log_info("✓ DMG 代码签名完成（已使用时间戳，重试成功）")
-                except Exception as e:
-                    # 签名失败，停止执行
-                    log_error(f"✗ DMG 签名失败: {e}")
-                    raise
-            elif timestamp_result.returncode != 0:
-                # 其他错误，直接抛出
-                log_error(f"DMG 签名失败: {timestamp_result.stderr}")
-                raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
+            # 如果时间戳服务不可用，使用带重试的签名函数
+            if timestamp_result.returncode != 0:
+                if "timestamp service is not available" in timestamp_result.stderr:
+                    log_warn("⚠ 时间戳服务不可用，尝试重试...")
+                    # 使用带重试的带时间戳签名
+                    try:
+                        success, error_msg = sign_with_timestamp(dmg_path, codesign_identity, max_retries=3, retry_delay=10, timeout=300)
+                        if not success:
+                            log_error("✗ DMG 签名失败：时间戳服务不可用（已重试）")
+                            log_error(f"   错误信息: {error_msg}")
+                            raise Exception("DMG 签名失败：时间戳服务不可用（已重试）")
+                        log_info("✓ DMG 代码签名完成（已使用时间戳，重试成功）")
+                    except Exception as e:
+                        # 签名失败，停止执行
+                        log_error(f"✗ DMG 签名失败: {e}")
+                        raise
+                else:
+                    # 其他错误，直接抛出
+                    log_error(f"DMG 签名失败: {timestamp_result.stderr}")
+                    raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
             else:
                 log_info("✓ DMG 代码签名完成（已使用时间戳）")
             
@@ -2068,35 +2062,19 @@ def main():
                             time.sleep(timestamp_retry_delay)
                             timestamp_retry_delay *= 2  # 指数退避
                         else:
-                            log_warn("  ⚠ 时间戳服务多次重试失败，回退到不使用时间戳签名...")
+                            # 最后一次重试失败，将在循环外抛出异常
+                            log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
                     else:
-                        # 其他错误，不重试
+                        # 其他错误，立即抛出异常
                         log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
-                        break
+                        raise Exception(f"PKG 签名失败: {error_msg[:200]}")
             
-            # 如果时间戳签名失败，尝试不使用时间戳（但这不是推荐的做法）
+            # 如果时间戳签名失败，终止构建（不使用无时间戳签名，因为无法通过公证）
             if not timestamp_success:
-                if "timestamp service is not available" in (timestamp_result.stderr or ""):
-                    log_warn("  ⚠ 时间戳服务不可用，使用无时间戳签名（可能影响公证）...")
-                    no_timestamp_result = subprocess.run([
-                        "productsign",
-                        "--sign", installer_identity,
-                        str(pkg_path),
-                        str(pkg_signed)
-                    ], capture_output=True, text=True, check=False)
-                    
-                    if no_timestamp_result.returncode == 0:
-                        log_warn("  ⚠ PKG 签名完成（未使用时间戳，可能无法通过公证）")
-                        timestamp_success = True
-                    else:
-                        log_error(f"  ✗ PKG 签名失败: {no_timestamp_result.stderr[:200]}")
-                        log_warn("  ⚠ 跳过 PKG 签名，继续执行...")
-                        if pkg_signed.exists():
-                            pkg_signed.unlink()
-                else:
-                    log_warn("  ⚠ 跳过 PKG 签名，继续执行...")
-                    if pkg_signed.exists():
-                        pkg_signed.unlink()
+                error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                log_error(f"  ✗ PKG 签名失败（已重试 {timestamp_max_retries} 次）: {error_msg[:200]}")
+                log_error("     无时间戳签名无法通过公证，构建终止")
+                raise Exception(f"PKG 签名失败：时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
             
             # 替换原文件（如果签名成功）
             if timestamp_success and pkg_signed.exists():
