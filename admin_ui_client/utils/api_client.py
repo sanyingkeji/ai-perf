@@ -82,6 +82,23 @@ class AdminApiClient:
 
         return self._handle_response(r)
 
+    # ---------- GET Binary (for file downloads) ----------
+    def _get_binary(self, path: str) -> bytes:
+        """下载二进制文件"""
+        url = f"{self.base_url}{path}"
+        
+        try:
+            r = httpx.get(url, headers=self._headers(), timeout=300)  # 5分钟超时
+            if r.status_code == 401:
+                raise AuthError("需要重新登录")
+            if r.status_code != 200:
+                raise ApiError(f"下载失败: HTTP {r.status_code}")
+            return r.content
+        except (ApiError, AuthError):
+            raise
+        except Exception as e:
+            raise ApiError(f"网络异常：{type(e).__name__}: {e}")
+
     # ---------- POST ----------
     def _post(self, path: str, payload: Dict[str, Any]) -> Any:
         url = f"{self.base_url}{path}"
@@ -192,9 +209,15 @@ class AdminApiClient:
         """GET /admin/api/review_input"""
         return self._get("/admin/api/review_input", params={"date": date_str, "user_id": user_id})
 
-    def rerun_etl(self, date_str: str, user_id: str) -> Dict[str, Any]:
-        """POST /admin/api/rerun_etl"""
-        return self._post("/admin/api/rerun_etl", {"date": date_str, "user_id": user_id})
+    def rerun_etl(self, date_str: str, user_id: str, platforms: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        POST /admin/api/rerun_etl
+        platforms: 平台列表（如 ["jira", "github"]），None表示所有平台
+        """
+        payload = {"date": date_str, "user_id": user_id}
+        if platforms:
+            payload["platforms"] = platforms
+        return self._post("/admin/api/rerun_etl", payload)
 
     def get_employees(self) -> Dict[str, Any]:
         """GET /admin/api/employees"""
@@ -558,4 +581,52 @@ class AdminApiClient:
         """
         payload = {"month": month}
         return self._post("/admin/api/lock_month_rank", payload)
+    
+    def get_report_generation_logs(
+        self,
+        report_type: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """
+        GET /admin/api/report_generation_logs
+        查询报表生成记录列表
+        返回格式：{"status": "success", "items": [...], "total": 0, "message": null}
+        """
+        params = {"offset": offset, "limit": limit}
+        if report_type:
+            params["report_type"] = report_type
+        return self._get("/admin/api/report_generation_logs", params=params)
+    
+    def generate_report(
+        self,
+        report_type: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        month: Optional[str] = None,
+        week_number: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        POST /admin/api/generate_report
+        手动生成报表
+        返回格式：{"status": "success", "message": "...", "file_path": "...", "file_size": 0}
+        """
+        payload = {"report_type": report_type}
+        if start_date:
+            payload["start_date"] = start_date
+        if end_date:
+            payload["end_date"] = end_date
+        if month:
+            payload["month"] = month
+        if week_number:
+            payload["week_number"] = week_number
+        return self._post("/admin/api/generate_report", payload)
+    
+    def download_report(self, log_id: int) -> bytes:
+        """
+        GET /admin/api/download_report/{log_id}
+        下载报表文件（ZIP压缩）
+        返回：ZIP文件的二进制数据
+        """
+        return self._get_binary(f"/admin/api/download_report/{log_id}")
 

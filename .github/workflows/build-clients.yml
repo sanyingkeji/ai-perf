@@ -37,29 +37,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Check Apple Timestamp Server Connectivity
-        id: check_tsa
-        run: |
-          echo "Checking timestamp.apple.com connectivity..."
-          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
-
-          # 打印当前出口 IP
-          echo "Public IP: $(curl -s https://api.ipify.org)"
-
-          # 用 nc 测试
-          if ! nc -vz timestamp.apple.com 80; then
-            echo "❌ nc check failed"
-            exit 1
-          fi
-
-          # 用 curl 测试 TLS 握手
-          if ! curl -v http://timestamp.apple.com/ts01 -m 10; then
-            echo "❌ curl TLS handshake failed"
-            exit 1
-          fi
-
-          echo "✓ TSA reachable"
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -91,74 +68,25 @@ jobs:
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
-      
-      - name: Import certificates from p12
-        if: steps.check_build.outputs.should_build == 'true'
-        id: import_certs
-        run: |
-          # 创建证书目录
-          mkdir -p certs
-          
-          # 如果有 Application p12 证书文件，导入到 Keychain
-          if [ -n "${{ secrets.APPLICATION_P12_BASE64 }}" ]; then
-            echo "${{ secrets.APPLICATION_P12_BASE64 }}" | base64 -d > certs/developerID_application.p12
-            security import certs/developerID_application.p12 \
-              -k ~/Library/Keychains/login.keychain-db \
-              -T /usr/bin/codesign \
-              -T /usr/bin/productsign \
-              -P "${{ secrets.APPLICATION_P12_PASSWORD }}" || true
-            echo "✓ Application p12 证书已导入"
-            echo "APPLICATION_P12_PATH=certs/developerID_application.p12" >> $GITHUB_ENV
-          fi
-          
-          # 如果有 Installer p12 证书文件，导入到 Keychain
-          if [ -n "${{ secrets.INSTALLER_P12_BASE64 }}" ]; then
-            echo "${{ secrets.INSTALLER_P12_BASE64 }}" | base64 -d > certs/developerID_installer.p12
-            security import certs/developerID_installer.p12 \
-              -k ~/Library/Keychains/login.keychain-db \
-              -T /usr/bin/productsign \
-              -P "${{ secrets.INSTALLER_P12_PASSWORD }}" || true
-            echo "✓ Installer p12 证书已导入"
-            echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
-          fi
-      
+
       - name: Build client (Apple Silicon)
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
-          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
-          INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
-          APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
-          APPLICATION_P12_PASSWORD: ${{ secrets.APPLICATION_P12_PASSWORD }}
-          INSTALLER_P12_PATH: ${{ env.INSTALLER_P12_PATH }}
-          INSTALLER_P12_PASSWORD: ${{ secrets.INSTALLER_P12_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          TEAM_ID: ${{ secrets.TEAM_ID }}
-          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
-          # 清除可能存在的代理环境变量，避免干扰 codesign
-          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python3 ../scripts/build_client.py ${{ matrix.client }} macos
       
-      - name: Upload DMG artifact
+      - name: Upload APP artifact
         if: steps.check_build.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.client }}-macos-arm64-dmg
-          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.dmg
+          name: ${{ matrix.client }}-macos-arm64-app
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.app
           retention-days: 30
-      
-      - name: Upload PKG artifact
-        if: steps.check_build.outputs.should_build == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.client }}-macos-arm64-pkg
-          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.pkg
-          retention-days: 30
-          if-no-files-found: ignore
 
   build-macos-intel:
     name: Build macOS (Intel)
@@ -171,29 +99,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Check Apple Timestamp Server Connectivity
-        id: check_tsa
-        run: |
-          echo "Checking timestamp.apple.com connectivity..."
-          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
-
-          # 打印当前出口 IP
-          echo "Public IP: $(curl -s https://api.ipify.org)"
-
-          # 用 nc 测试
-          if ! nc -vz timestamp.apple.com 80; then
-            echo "❌ nc check failed"
-            exit 1
-          fi
-
-          # 用 curl 测试 TLS 握手
-          if ! curl -v http://timestamp.apple.com/ts01 -m 10; then
-            echo "❌ curl TLS handshake failed"
-            exit 1
-          fi
-
-          echo "✓ TSA reachable"
 
       - name: Install gettext (x86_64) for Python x86_64
         run: |
@@ -462,54 +367,14 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
       
-      - name: Import certificates from p12
-        if: steps.check_build.outputs.should_build == 'true'
-        id: import_certs
-        run: |
-          # 创建证书目录
-          mkdir -p certs
-          
-          # 如果有 Application p12 证书文件，导入到 Keychain
-          if [ -n "${{ secrets.APPLICATION_P12_BASE64 }}" ]; then
-            echo "${{ secrets.APPLICATION_P12_BASE64 }}" | base64 -d > certs/developerID_application.p12
-            security import certs/developerID_application.p12 \
-              -k ~/Library/Keychains/login.keychain-db \
-              -T /usr/bin/codesign \
-              -T /usr/bin/productsign \
-              -P "${{ secrets.APPLICATION_P12_PASSWORD }}" || true
-            echo "✓ Application p12 证书已导入"
-            echo "APPLICATION_P12_PATH=certs/developerID_application.p12" >> $GITHUB_ENV
-          fi
-          
-          # 如果有 Installer p12 证书文件，导入到 Keychain
-          if [ -n "${{ secrets.INSTALLER_P12_BASE64 }}" ]; then
-            echo "${{ secrets.INSTALLER_P12_BASE64 }}" | base64 -d > certs/developerID_installer.p12
-            security import certs/developerID_installer.p12 \
-              -k ~/Library/Keychains/login.keychain-db \
-              -T /usr/bin/productsign \
-              -P "${{ secrets.INSTALLER_P12_PASSWORD }}" || true
-            echo "✓ Installer p12 证书已导入"
-            echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
-          fi
-      
       - name: Build client (Intel)
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
-          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
-          INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
-          APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
-          APPLICATION_P12_PASSWORD: ${{ secrets.APPLICATION_P12_PASSWORD }}
-          INSTALLER_P12_PATH: ${{ env.INSTALLER_P12_PATH }}
-          INSTALLER_P12_PASSWORD: ${{ secrets.INSTALLER_P12_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          TEAM_ID: ${{ secrets.TEAM_ID }}
-          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
-          # 清除可能存在的代理环境变量，避免干扰 codesign
-          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           # 使用 Homebrew Python（x86_64，位于 /usr/local）
           HOMEBREW_PREFIX="/usr/local"
@@ -539,22 +404,13 @@ jobs:
           echo "开始构建..."
           arch -x86_64 "$PYTHON_CMD" ../scripts/build_client.py ${{ matrix.client }} macos
       
-      - name: Upload DMG artifact
+      - name: Upload APP artifact
         if: steps.check_build.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.client }}-macos-intel-dmg
-          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.dmg
+          name: ${{ matrix.client }}-macos-intel-app
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.app
           retention-days: 30
-      
-      - name: Upload PKG artifact
-        if: steps.check_build.outputs.should_build == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.client }}-macos-intel-pkg
-          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.pkg
-          retention-days: 30
-          if-no-files-found: ignore
 
   build-windows:
     name: Build Windows

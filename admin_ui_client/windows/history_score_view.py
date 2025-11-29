@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QPushButton, QDialog,
     QTextEdit, QHeaderView, QDateEdit, QLineEdit, QMessageBox,
-    QAbstractItemView, QTabWidget
+    QAbstractItemView, QTabWidget, QCheckBox, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QDate
 from PySide6.QtGui import QFont
@@ -125,10 +125,11 @@ class _RerunEtlWorkerSignals(QObject):
 
 class _RerunEtlWorker(QRunnable):
     """后台重新拉取数据"""
-    def __init__(self, date_str: str, user_id: str):
+    def __init__(self, date_str: str, user_id: str, platforms: Optional[List[str]] = None):
         super().__init__()
         self._date_str = date_str
         self._user_id = user_id
+        self._platforms = platforms  # None表示所有平台，否则是平台列表
         self.signals = _RerunEtlWorkerSignals()
 
     @Slot()
@@ -147,13 +148,86 @@ class _RerunEtlWorker(QRunnable):
             return
 
         try:
-            resp = client.rerun_etl(self._date_str, self._user_id)
+            resp = client.rerun_etl(self._date_str, self._user_id, self._platforms)
             message = resp.get("message", "操作成功") if isinstance(resp, dict) else "操作成功"
             self.signals.finished.emit(message)
         except (ApiError, AuthError) as e:
             self.signals.error.emit(str(e))
         except Exception as e:
             self.signals.error.emit(f"重新拉取数据失败：{e}")
+
+
+class PlatformSelectDialog(QDialog):
+    """平台选择对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择平台")
+        self.setMinimumWidth(300)
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("请选择要重新拉取的平台："))
+        
+        # 全部平台选项
+        self._all_checkbox = QCheckBox("全部平台")
+        self._all_checkbox.setChecked(True)
+        self._all_checkbox.stateChanged.connect(self._on_all_changed)
+        layout.addWidget(self._all_checkbox)
+        
+        # 单个平台选项
+        self._jira_checkbox = QCheckBox("Jira")
+        self._github_checkbox = QCheckBox("GitHub")
+        self._figma_checkbox = QCheckBox("Figma")
+        
+        # 当选择单个平台时，取消"全部平台"
+        self._jira_checkbox.stateChanged.connect(self._on_platform_changed)
+        self._github_checkbox.stateChanged.connect(self._on_platform_changed)
+        self._figma_checkbox.stateChanged.connect(self._on_platform_changed)
+        
+        layout.addWidget(self._jira_checkbox)
+        layout.addWidget(self._github_checkbox)
+        layout.addWidget(self._figma_checkbox)
+        
+        # 按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+    
+    def _on_all_changed(self, state: int):
+        """全部平台选项改变"""
+        if state == Qt.Checked:
+            # 选中"全部平台"时，取消所有单个平台
+            self._jira_checkbox.setChecked(False)
+            self._github_checkbox.setChecked(False)
+            self._figma_checkbox.setChecked(False)
+    
+    def _on_platform_changed(self, state: int):
+        """单个平台选项改变"""
+        if state == Qt.Checked:
+            # 选中任何单个平台时，取消"全部平台"
+            self._all_checkbox.setChecked(False)
+    
+    def get_selected_platforms(self) -> Optional[List[str]]:
+        """获取选中的平台列表，None表示全部平台"""
+        if self._all_checkbox.isChecked():
+            return None  # None表示所有平台
+        
+        platforms = []
+        if self._jira_checkbox.isChecked():
+            platforms.append("jira")
+        if self._github_checkbox.isChecked():
+            platforms.append("github")
+        if self._figma_checkbox.isChecked():
+            platforms.append("figma")
+        
+        # 如果没有任何平台被选中，返回None（全部平台）
+        if not platforms:
+            return None
+        
+        return platforms
 
 
 class AllDataViewDialog(QDialog):
@@ -634,34 +708,38 @@ class HistoryScoreView(QWidget):
         dlg.exec()
     
     def _rerun_etl(self, date_str: str, user_id: str):
+        # 弹出平台选择对话框
+        platform_dialog = PlatformSelectDialog(self)
+        if platform_dialog.exec() != QDialog.Accepted:
+            return
+        
+        selected_platforms = platform_dialog.get_selected_platforms()
+        
+        # 确认对话框
+        platform_text = "全部平台" if selected_platforms is None else "、".join([p.upper() for p in selected_platforms])
         reply = QMessageBox.question(
             self,
             "确认重新拉取",
-            f"确定要重新拉取 {user_id} 在 {date_str} 的原始输入数据吗？\n这可能需要较长时间。",
+            f"确定要重新拉取 {user_id} 在 {date_str} 的原始输入数据吗？\n"
+            f"选择平台：{platform_text}\n"
+            f"这可能需要较长时间。",
             QMessageBox.Yes | QMessageBox.No
         )
         if reply != QMessageBox.Yes:
             return
         
-        main_window = self.window()
-        if hasattr(main_window, "show_loading"):
-            main_window.show_loading("正在重新拉取数据，请稍候...")
-        
-        worker = _RerunEtlWorker(date_str, user_id)
-        worker.signals.finished.connect(lambda msg: self._on_rerun_success(msg, main_window))
-        worker.signals.error.connect(lambda err: self._on_rerun_error(err, main_window))
+        # 异步执行，不显示加载提示
+        worker = _RerunEtlWorker(date_str, user_id, selected_platforms)
+        worker.signals.finished.connect(self._on_rerun_success)
+        worker.signals.error.connect(self._on_rerun_error)
         self._thread_pool.start(worker)
     
-    def _on_rerun_success(self, message: str, main_window):
-        if hasattr(main_window, "hide_loading"):
-            main_window.hide_loading()
+    def _on_rerun_success(self, message: str):
         Toast.show_message(self, message)
         # 重新加载数据
         self.reload_from_api()
     
-    def _on_rerun_error(self, error: str, main_window):
-        if hasattr(main_window, "hide_loading"):
-            main_window.hide_loading()
+    def _on_rerun_error(self, error: str):
         # 使用统一的错误处理，如果是 detail 错误会用弹出框显示
         handle_api_error(self, Exception(error), "重新拉取失败")
     

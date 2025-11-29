@@ -616,11 +616,26 @@ def main():
                     log_warn(f"  无法验证架构: {e}")
         
         # 代码签名（使用配置的凭据）
-        codesign_identity = os.environ.get("CODESIGN_IDENTITY", "Developer ID Application: wei liu (U5SLTWD6AH)")
-        installer_identity = os.environ.get("INSTALLER_CODESIGN_IDENTITY", None)
-        apple_id = os.environ.get("APPLE_ID", "ruier09@qq.com")
-        team_id = os.environ.get("TEAM_ID", "U5SLTWD6AH")
-        notary_password = os.environ.get("NOTARY_PASSWORD", "qhiz-rnwg-fhtz-tude")
+        # 如果设置了 SKIP_SIGNING 环境变量，则跳过签名和公证（用于 CI/CD 环境）
+        skip_signing = os.environ.get("SKIP_SIGNING", "").lower() in ("true", "1", "yes")
+        
+        if skip_signing:
+            log_info("=" * 50)
+            log_warn("跳过代码签名和公证（SKIP_SIGNING=true）")
+            log_info("  仅打包 .app，不进行签名和公证")
+            codesign_identity = None
+            installer_identity = None
+            apple_id = None
+            team_id = None
+            notary_password = None
+            application_p12_path = None
+            installer_p12_path = None
+        else:
+            codesign_identity = os.environ.get("CODESIGN_IDENTITY", "Developer ID Application: wei liu (U5SLTWD6AH)")
+            installer_identity = os.environ.get("INSTALLER_CODESIGN_IDENTITY", None)
+            apple_id = os.environ.get("APPLE_ID", "ruier09@qq.com")
+            team_id = os.environ.get("TEAM_ID", "U5SLTWD6AH")
+            notary_password = os.environ.get("NOTARY_PASSWORD", "qhiz-rnwg-fhtz-tude")
         
         # 支持从 p12 文件导入证书（包含证书和私钥）
         # APPLICATION_P12_PATH: Developer ID Application 证书 p12 文件路径（用于 DMG）
@@ -629,22 +644,28 @@ def main():
         # INSTALLER_P12_PASSWORD: Installer p12 文件密码（可选）
         # 默认路径：项目根目录下的 apple-p12 目录
         # 注意：project_root 已经在 main() 函数开头定义
-        default_application_p12 = project_root / "apple-p12" / "developerID_application.p12"
-        default_installer_p12 = project_root / "apple-p12" / "developerID_installer.p12"
-        
-        application_p12_path = os.environ.get("APPLICATION_P12_PATH", None)
-        if not application_p12_path and default_application_p12.exists():
-            application_p12_path = str(default_application_p12)
-            log_info(f"使用默认 Application p12 证书: {application_p12_path}")
-        
-        application_p12_password = os.environ.get("APPLICATION_P12_PASSWORD", "123456")
-        
-        installer_p12_path = os.environ.get("INSTALLER_P12_PATH", None)
-        if not installer_p12_path and default_installer_p12.exists():
-            installer_p12_path = str(default_installer_p12)
-            log_info(f"使用默认 Installer p12 证书: {installer_p12_path}")
-        
-        installer_p12_password = os.environ.get("INSTALLER_P12_PASSWORD", "123456")
+        if not skip_signing:
+            default_application_p12 = project_root / "apple-p12" / "developerID_application.p12"
+            default_installer_p12 = project_root / "apple-p12" / "developerID_installer.p12"
+            
+            application_p12_path = os.environ.get("APPLICATION_P12_PATH", None)
+            if not application_p12_path and default_application_p12.exists():
+                application_p12_path = str(default_application_p12)
+                log_info(f"使用默认 Application p12 证书: {application_p12_path}")
+            
+            application_p12_password = os.environ.get("APPLICATION_P12_PASSWORD", "123456")
+            
+            installer_p12_path = os.environ.get("INSTALLER_P12_PATH", None)
+            if not installer_p12_path and default_installer_p12.exists():
+                installer_p12_path = str(default_installer_p12)
+                log_info(f"使用默认 Installer p12 证书: {installer_p12_path}")
+            
+            installer_p12_password = os.environ.get("INSTALLER_P12_PASSWORD", "123456")
+        else:
+            application_p12_path = None
+            application_p12_password = None
+            installer_p12_path = None
+            installer_p12_password = None
         
         # 导入 Application p12 证书（如果提供了 p12 文件路径）
         if application_p12_path and Path(application_p12_path).exists():
@@ -1295,6 +1316,14 @@ def main():
             log_info("✓ 应用包代码签名完成")
         else:
             log_warn("⚠ 跳过代码签名（设置 CODESIGN_IDENTITY 环境变量以启用）")
+        
+        # 如果设置了 SKIP_SIGNING，则跳过 DMG 和 PKG 的创建（仅打包 .app）
+        if skip_signing:
+            log_info("=" * 50)
+            log_warn("跳过 DMG 和 PKG 创建（SKIP_SIGNING=true）")
+            log_info(f"✓ 仅打包 .app 完成: {app_bundle}")
+            log_info("  可以在本机下载后进行签名和公证")
+            return
         
         log_info("=" * 50)
         log_warn("开始创建 DMG...")

@@ -15,6 +15,7 @@ from windows.etl_log_view import EtlLogView
 from windows.ai_log_view import AiLogView
 from windows.operation_log_view import OperationLogView
 from windows.health_check_view import HealthCheckView
+from windows.report_view import ReportView
 from windows.update_dialog import UpdateDialog
 from utils.config_manager import ConfigManager
 from utils.google_login import login_and_get_id_token, GoogleLoginError
@@ -56,7 +57,8 @@ class MainWindow(QMainWindow):
             8: False,  # 通知管理
             9: False,  # 日历管理
             10: False,  # 日常运维
-            11: False,  # 设置
+            11: False,  # 统计&报表
+            12: False,  # 设置
         }
 
         root = QWidget()
@@ -89,6 +91,7 @@ class MainWindow(QMainWindow):
             "通知管理",
             "日历管理",
             "日常运维",
+            "统计&报表",
             "设置",
         ]
         # 初始化时添加所有菜单项
@@ -139,6 +142,7 @@ class MainWindow(QMainWindow):
         self.notification_page = NotificationView(self)
         self.workday_page = WorkdayView()
         self.maintenance_page = MaintenanceView(self)
+        self.report_page = ReportView()
         self.settings_page = SettingsView()
 
         self.stack.addWidget(self.history_page)
@@ -152,6 +156,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.notification_page)
         self.stack.addWidget(self.workday_page)
         self.stack.addWidget(self.maintenance_page)
+        self.stack.addWidget(self.report_page)
         self.stack.addWidget(self.settings_page)
 
         # 全局加载中遮罩
@@ -167,11 +172,11 @@ class MainWindow(QMainWindow):
         # 检查是否已登录，决定默认显示的页面
         is_logged_in = self._ensure_logged_in()
         if is_logged_in:
-            # 已登录，默认选中"设置"页面（索引11），等权限获取完成后再切换到合适的页面
-            self.nav.setCurrentRow(11)
+            # 已登录，默认选中"设置"页面（索引12），等权限获取完成后再切换到合适的页面
+            self.nav.setCurrentRow(12)
         else:
-            # 未登录，默认选中"设置"页面（索引11）
-            self.nav.setCurrentRow(11)
+            # 未登录，默认选中"设置"页面（索引12）
+            self.nav.setCurrentRow(12)
         
         # 标记：是否已经显示过升级弹窗（防止重复弹窗）
         self._update_dialog_shown = False
@@ -448,7 +453,7 @@ class MainWindow(QMainWindow):
 
         # 只对业务 Tab 做一次性自动请求
         # 判定条件：已登录 且 该页面还没有请求过数据
-        if index in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10) and not self._page_first_loaded.get(index, False):
+        if index in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11) and not self._page_first_loaded.get(index, False):
             # 未登录：只提示，不标记为已加载，方便登录后再自动触发
             if not self._ensure_logged_in():
                 return
@@ -489,6 +494,9 @@ class MainWindow(QMainWindow):
             elif index == 10 and hasattr(self.maintenance_page, "reload_from_api"):
                 # 日常运维
                 self.maintenance_page.reload_from_api()
+            elif index == 11 and hasattr(self.report_page, "reload_from_api"):
+                # 统计&报表
+                self.report_page.reload_from_api()
     
     # -------- 启动时登录检查 --------
     def _check_login_on_startup(self):
