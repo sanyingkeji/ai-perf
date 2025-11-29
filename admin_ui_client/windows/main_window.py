@@ -539,57 +539,88 @@ class MainWindow(QMainWindow):
         
         def on_permission_loaded(permission_data: dict):
             """权限加载成功回调"""
-            # 隐藏加载状态
-            self.hide_loading()
-            
-            if permission_data.get("status") == "success":
-                is_admin = permission_data.get("is_admin", False)
-                allowed_menus = permission_data.get("allowed_menus", [])
+            try:
+                # 隐藏加载状态
+                self.hide_loading()
                 
-                self.menu_permission = {
-                    "is_admin": is_admin,
-                    "allowed_menus": allowed_menus,
-                }
-                self._update_menu_visibility()
-                
-                # 如果是超级管理员，切换到第一个页面（历史评分）
-                # 如果是普通管理员，切换到第一个允许的菜单项
-                if is_admin:
-                    # 超级管理员，切换到历史评分页面（索引0）
-                    if 0 < self.nav.count():
-                        self.nav.setCurrentRow(0)
-                else:
-                    # 普通管理员，切换到第一个允许的菜单项
-                    if allowed_menus:
-                        first_menu = allowed_menus[0]
-                        if first_menu in self.menu_items:
-                            menu_index = self.menu_items.index(first_menu)
-                            if menu_index < self.nav.count():
-                                self.nav.setCurrentRow(menu_index)
+                if permission_data.get("status") == "success":
+                    is_admin = permission_data.get("is_admin", False)
+                    allowed_menus = permission_data.get("allowed_menus", [])
+                    
+                    self.menu_permission = {
+                        "is_admin": is_admin,
+                        "allowed_menus": allowed_menus,
+                    }
+                    self._update_menu_visibility()
+                    
+                    # 如果是超级管理员，切换到第一个页面（历史评分）
+                    # 如果是普通管理员，切换到第一个允许的菜单项
+                    if is_admin:
+                        # 超级管理员，切换到历史评分页面（索引0）
+                        if 0 < self.nav.count():
+                            self.nav.setCurrentRow(0)
                     else:
-                        # 如果没有允许的菜单，保持在"设置"页面
-                        self.nav.setCurrentRow(11)
-            else:
-                # 如果获取失败，只显示"设置"菜单（未登录状态）
+                        # 普通管理员，切换到第一个允许的菜单项
+                        if allowed_menus:
+                            first_menu = allowed_menus[0]
+                            if first_menu in self.menu_items:
+                                menu_index = self.menu_items.index(first_menu)
+                                if menu_index < self.nav.count():
+                                    self.nav.setCurrentRow(menu_index)
+                        else:
+                            # 如果没有允许的菜单，保持在"设置"页面
+                            self.nav.setCurrentRow(11)
+                else:
+                    # 如果获取失败，只显示"设置"菜单（未登录状态）
+                    self.menu_permission = {
+                        "is_admin": False,
+                        "allowed_menus": ["设置"],
+                    }
+                    self._update_menu_visibility()
+            except RuntimeError:
+                # 对象已被删除，忽略
+                pass
+            except Exception as e:
+                # 记录错误但继续执行
+                print(f"[ERROR] on_permission_loaded 异常: {e}")
+                import traceback
+                traceback.print_exc()
+                try:
+                    self.hide_loading()
+                except:
+                    pass
+        
+        def on_permission_error(error_msg: str):
+            """权限加载失败回调"""
+            try:
+                # 隐藏加载状态
+                self.hide_loading()
+                # 如果获取失败（如未登录），只显示"设置"菜单
                 self.menu_permission = {
                     "is_admin": False,
                     "allowed_menus": ["设置"],
                 }
                 self._update_menu_visibility()
-        
-        def on_permission_error(error_msg: str):
-            """权限加载失败回调"""
-            # 隐藏加载状态
-            self.hide_loading()
-            # 如果获取失败（如未登录），只显示"设置"菜单
-            self.menu_permission = {
-                "is_admin": False,
-                "allowed_menus": ["设置"],
-            }
-            self._update_menu_visibility()
+            except RuntimeError:
+                # 对象已被删除，忽略
+                pass
+            except Exception as e:
+                # 记录错误但继续执行
+                print(f"[ERROR] on_permission_error 异常: {e}")
+                import traceback
+                traceback.print_exc()
+                try:
+                    self.hide_loading()
+                except:
+                    pass
         
         # 创建并启动后台任务
         worker = _MenuPermissionWorker()
+        # 保存 worker 引用，防止被垃圾回收
+        if not hasattr(self, '_menu_permission_workers'):
+            self._menu_permission_workers = []
+        self._menu_permission_workers.append(worker)
+        
         worker.signals.finished.connect(on_permission_loaded)
         worker.signals.error.connect(on_permission_error)
         QThreadPool.globalInstance().start(worker)
