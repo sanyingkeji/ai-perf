@@ -741,7 +741,7 @@ def main():
             log_info(f"  签名身份: {codesign_identity}")
             
             # 强制检查时间戳服务器连接，失败则终止构建
-            log_info("  强制检查时间戳服务器连接（timestamp.apple.com:443）...")
+            log_info("  强制检查时间戳服务器连接（timestamp.apple.com:80）...")
             apple_timestamp_available = False
             
             try:
@@ -749,7 +749,7 @@ def main():
                 
                 # 只测试 Apple 时间戳服务器，重试3次
                 host = "timestamp.apple.com"
-                port = 443
+                port = 80
                 max_retries = 3
                 retry_delay = 2
                 
