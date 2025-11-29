@@ -32,11 +32,36 @@ jobs:
     timeout-minutes: 180  # 3小时超时
     if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
+      fail-fast: false
       matrix:
+        attempt: [1, 2, 3, 4]
         client: [employee, admin]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Check Apple Timestamp Server Connectivity
+        id: check_tsa
+        run: |
+          echo "Checking timestamp.apple.com connectivity..."
+          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+
+          # 打印当前出口 IP
+          echo "Public IP: $(curl -s https://api.ipify.org)"
+
+          # 用 nc 测试
+          if ! nc -vz timestamp.apple.com 443; then
+            echo "❌ nc check failed"
+            exit 1
+          fi
+
+          # 用 curl 测试 TLS 握手
+          if ! curl -v https://timestamp.apple.com -m 10; then
+            echo "❌ curl TLS handshake failed"
+            exit 1
+          fi
+
+          echo "✓ TSA reachable"
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -99,13 +124,6 @@ jobs:
             echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
           fi
       
-      - name: Debug timestamp connectivity
-        if: steps.check_build.outputs.should_build == 'true'
-        run: |
-          echo "Testing timestamp.apple.com..."
-          nc -vz timestamp.apple.com 443 || echo "nc failed"
-          curl -v https://timestamp.apple.com -m 10 || echo "curl failed"
-      
       - name: Build client (Apple Silicon)
         if: steps.check_build.outputs.should_build == 'true'
         env:
@@ -150,12 +168,37 @@ jobs:
     timeout-minutes: 180  # 3小时超时
     if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
+      fail-fast: false
       matrix:
+        attempt: [1, 2, 3, 4]
         client: [employee, admin]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
+      - name: Check Apple Timestamp Server Connectivity
+        id: check_tsa
+        run: |
+          echo "Checking timestamp.apple.com connectivity..."
+          unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+
+          # 打印当前出口 IP
+          echo "Public IP: $(curl -s https://api.ipify.org)"
+
+          # 用 nc 测试
+          if ! nc -vz timestamp.apple.com 443; then
+            echo "❌ nc check failed"
+            exit 1
+          fi
+
+          # 用 curl 测试 TLS 握手
+          if ! curl -v https://timestamp.apple.com -m 10; then
+            echo "❌ curl TLS handshake failed"
+            exit 1
+          fi
+
+          echo "✓ TSA reachable"
+
       - name: Install gettext (x86_64) for Python x86_64
         run: |
           # 在 Rosetta 环境下安装 x86_64 版本的 gettext
@@ -452,13 +495,6 @@ jobs:
             echo "✓ Installer p12 证书已导入"
             echo "INSTALLER_P12_PATH=certs/developerID_installer.p12" >> $GITHUB_ENV
           fi
-      
-      - name: Debug timestamp connectivity
-        if: steps.check_build.outputs.should_build == 'true'
-        run: |
-          echo "Testing timestamp.apple.com..."
-          nc -vz timestamp.apple.com 443 || echo "nc failed"
-          curl -v https://timestamp.apple.com -m 10 || echo "curl failed"
       
       - name: Build client (Intel)
         if: steps.check_build.outputs.should_build == 'true'
