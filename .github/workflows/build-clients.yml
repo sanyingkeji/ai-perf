@@ -105,6 +105,14 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          # 代理配置（备用，仅在时间戳服务器连接失败时使用）
+          # 格式: http://username:password@ip:port 或 http://ip:port
+          # 示例: http://user:pass@192.168.1.100:8080
+          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
+          http_proxy: ${{ secrets.HTTP_PROXY }}
+          https_proxy: ${{ secrets.HTTPS_PROXY }}
+          NO_PROXY: 'localhost,127.0.0.1'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
           APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
@@ -450,6 +458,14 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          # 代理配置（备用，仅在时间戳服务器连接失败时使用）
+          # 格式: http://username:password@ip:port 或 http://ip:port
+          # 示例: http://user:pass@192.168.1.100:8080
+          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
+          http_proxy: ${{ secrets.HTTP_PROXY }}
+          https_proxy: ${{ secrets.HTTPS_PROXY }}
+          NO_PROXY: 'localhost,127.0.0.1'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
           APPLICATION_P12_PATH: ${{ env.APPLICATION_P12_PATH }}
