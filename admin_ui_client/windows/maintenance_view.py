@@ -5249,7 +5249,7 @@ class PackageTab(QWidget):
                         btn_layout.setSpacing(4)
                         
                         # 查看日志按钮（mini 按钮样式，与健康检查一致）
-                        view_logs_btn = QPushButton("查看日志")
+                        view_logs_btn = QPushButton("下载日志")
                         view_logs_btn.setFixedSize(70, 22)  # 宽度稍大以适应"查看日志"文本
                         view_logs_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
                         view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url, parent_dlg=dialog: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name, parent_dlg))
@@ -5407,16 +5407,27 @@ class PackageTab(QWidget):
         
         progress_dialog.show()
         
+        # 保存 worker 和 signals 对象的引用，防止被垃圾回收
+        # 使用列表来保存引用，确保在方法作用域内可访问
+        worker_refs = []  # 用于保存 worker 和 signals 对象
+        
         class _LogsDownloadWorkerSignals(QObject):
             finished = Signal(str, bytes)  # file_path, file_data
             error = Signal(str)
             debug = Signal(str)  # 调试信息
+            
+            def __init__(self):
+                super().__init__()
+                # 确保信号在主线程中处理
+                self.setObjectName("_LogsDownloadWorkerSignals")
         
         class _LogsDownloadWorker(QRunnable):
-            def __init__(self, save_path: str):
+            def __init__(self, save_path: str, refs_list):
                 super().__init__()
                 self.save_path = save_path
                 self.signals = _LogsDownloadWorkerSignals()
+                # 保存 signals 对象的引用（通过参数传递 refs_list）
+                refs_list.append(self.signals)
             
             @Slot()
             def run(self):
@@ -5503,7 +5514,14 @@ class PackageTab(QWidget):
                             # 用户选择了 ZIP 格式，直接保存
                             print(f"[DEBUG] 保存 ZIP 文件，大小: {len(file_data):,} 字节")
                             self.signals.debug.emit(f"保存 ZIP 文件...")
-                            self.signals.finished.emit(self.save_path, file_data)
+                            print(f"[DEBUG] 准备发送 finished 信号，save_path: {self.save_path}, file_data 大小: {len(file_data)}")
+                            try:
+                                self.signals.finished.emit(self.save_path, file_data)
+                                print(f"[DEBUG] finished 信号已发送")
+                            except Exception as e:
+                                print(f"[DEBUG] 发送 finished 信号失败: {e}")
+                                import traceback
+                                traceback.print_exc()
                         else:
                             # 用户选择了文本格式，需要解压并合并
                             print(f"[DEBUG] 解压 ZIP 文件，大小: {len(file_data):,} 字节")
@@ -5553,15 +5571,23 @@ class PackageTab(QWidget):
                     self.signals.error.emit(f"下载日志失败：{e}")
         
         def on_download_finished(save_path: str, file_data: bytes):
+            print(f"[DEBUG] on_download_finished 被调用，文件路径: {save_path}, 数据大小: {len(file_data)} 字节")
+            
+            # 检查对话框是否仍然有效
             try:
-                if not progress_dialog.isVisible():
+                if not progress_dialog or not progress_dialog.isVisible():
+                    print("[DEBUG] 对话框已关闭，跳过处理")
                     return
             except RuntimeError:
+                print("[DEBUG] 对话框已被删除，跳过处理")
+                return
+            except Exception as e:
+                print(f"[DEBUG] 检查对话框时出错: {e}")
                 return
             
+            # 先保存文件，再关闭对话框
             try:
-                progress_dialog.close()
-                
+                print("[DEBUG] 开始保存文件...")
                 # 保存文件
                 with open(save_path, 'wb') as f:
                     f.write(file_data)
@@ -5570,26 +5596,61 @@ class PackageTab(QWidget):
                 size_mb = file_size / (1024 * 1024)
                 size_str = f"{size_mb:.2f} MB" if size_mb >= 1 else f"{file_size / 1024:.2f} KB"
                 
-                # 使用传入的对话框作为父窗口，如果没有则使用 self
+                print(f"[DEBUG] 文件保存成功，大小: {size_str}")
+            except Exception as e:
+                print(f"[DEBUG] 保存文件时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                try:
+                    if progress_dialog and progress_dialog.isVisible():
+                        progress_dialog.close()
+                except:
+                    pass
+                try:
+                    msg_parent = parent_dialog if parent_dialog else self
+                    QMessageBox.critical(msg_parent, "保存失败", f"保存文件失败：{e}")
+                except:
+                    pass
+                return
+            
+            # 关闭进度对话框（无论是否可见都尝试关闭）
+            try:
+                print("[DEBUG] 关闭进度对话框...")
+                if progress_dialog and progress_dialog.isVisible():
+                    progress_dialog.close()
+                print("[DEBUG] 进度对话框已关闭")
+            except RuntimeError as e:
+                print(f"[DEBUG] 关闭对话框时出错（可能已关闭）: {e}")
+            except Exception as e:
+                print(f"[DEBUG] 关闭对话框时出错: {e}")
+            
+            # 显示完成消息
+            try:
                 msg_parent = parent_dialog if parent_dialog else self
+                print(f"[DEBUG] 显示完成消息框，父窗口: {msg_parent}")
                 QMessageBox.information(
                     msg_parent,
                     "下载完成",
                     f"日志已成功下载到：\n{save_path}\n\n文件大小：{size_str}"
                 )
+                print("[DEBUG] 完成消息框已显示")
             except Exception as e:
-                msg_parent = parent_dialog if parent_dialog else self
-                QMessageBox.critical(msg_parent, "保存失败", f"保存文件失败：{e}")
+                print(f"[DEBUG] 显示消息框时出错: {e}")
+                import traceback
+                traceback.print_exc()
         
         def on_download_error(error_msg: str):
             try:
-                if not progress_dialog.isVisible():
+                if not progress_dialog or not progress_dialog.isVisible():
                     return
             except RuntimeError:
                 return
+            except Exception:
+                return
             
             try:
-                progress_dialog.close()
+                if progress_dialog:
+                    progress_dialog.close()
                 # 使用传入的对话框作为父窗口，如果没有则使用 self
                 msg_parent = parent_dialog if parent_dialog else self
                 QMessageBox.warning(
@@ -5599,16 +5660,22 @@ class PackageTab(QWidget):
                 )
             except RuntimeError:
                 pass
+            except Exception as e:
+                print(f"[DEBUG] on_download_error 异常: {e}")
         
         def on_debug_info(debug_msg: str):
             """显示调试信息"""
             try:
-                if not progress_dialog.isVisible():
+                if not progress_dialog or not progress_dialog.isVisible():
                     return
             except RuntimeError:
                 return
+            except Exception:
+                return
             
             try:
+                if not debug_label:
+                    return
                 # 更新调试标签
                 current_text = debug_label.text()
                 if current_text:
@@ -5619,12 +5686,45 @@ class PackageTab(QWidget):
                 debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
             except RuntimeError:
                 pass
+            except Exception as e:
+                print(f"[DEBUG] on_debug_info 异常: {e}")
         
-        worker = _LogsDownloadWorker(file_path)
+        worker = _LogsDownloadWorker(file_path, worker_refs)
+        # 保存 worker 引用
+        worker_refs.append(worker)
+        
+        print(f"[DEBUG] 连接信号...")
         worker.signals.finished.connect(on_download_finished)
         worker.signals.error.connect(on_download_error)
         worker.signals.debug.connect(on_debug_info)
+        print(f"[DEBUG] 信号已连接，启动 worker...")
         QThreadPool.globalInstance().start(worker)
+        print(f"[DEBUG] Worker 已启动")
+        
+        # 在对话框关闭时断开信号连接并清理引用
+        def on_dialog_finished():
+            try:
+                # 断开所有信号连接
+                if worker and worker.signals:
+                    try:
+                        worker.signals.finished.disconnect()
+                    except:
+                        pass
+                    try:
+                        worker.signals.error.disconnect()
+                    except:
+                        pass
+                    try:
+                        worker.signals.debug.disconnect()
+                    except:
+                        pass
+            except Exception as e:
+                print(f"[DEBUG] 断开信号连接时出错: {e}")
+            # 清理引用（允许垃圾回收）
+            worker_refs.clear()
+        
+        # 连接对话框的 finished 信号
+        progress_dialog.finished.connect(on_dialog_finished)
     
     def _rerun_workflow(self, run_id: int, workflow_id: int, api_url: str, api_key: str, repo_owner: str, repo_name: str, refresh_callback=None, parent=None):
         """重新运行工作流"""

@@ -223,27 +223,57 @@ jobs:
             echo "Python 架构信息: $file_output"
           else
             echo "警告: setup-python 失败，尝试使用 Homebrew 安装 x86_64 Python..."
-            # 使用 Homebrew 安装 x86_64 Python（通过 Rosetta）
-            arch -x86_64 /bin/bash -c "
-              if ! command -v brew &> /dev/null; then
-                echo '安装 Homebrew...'
-                /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
-              fi
-              echo '使用 Homebrew 安装 Python 3.10 (x86_64)...'
-              arch -x86_64 brew install python@3.10 || arch -x86_64 brew upgrade python@3.10
-              echo '✓ Python 安装完成'
-            " || {
-              echo "错误: 无法安装 x86_64 Python"
+            # 在 Rosetta 环境下安装 Homebrew 到 /usr/local（x86_64 版本）
+            # 首先检查 /usr/local 下是否已有 Homebrew
+            if [ ! -f "/usr/local/bin/brew" ] && [ ! -f "/usr/local/Homebrew/bin/brew" ]; then
+              echo "在 Rosetta 环境下安装 Homebrew 到 /usr/local..."
+              # 设置 Homebrew 安装路径为 /usr/local
+              export HOMEBREW_PREFIX="/usr/local"
+              export HOMEBREW_REPOSITORY="/usr/local/Homebrew"
+              # 在 Rosetta 环境下安装 Homebrew
+              arch -x86_64 /bin/bash -c '
+                CI=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
+                  echo "警告: Homebrew 安装可能失败，尝试继续..."
+                }
+              '
+            fi
+            
+            # 确定 Homebrew 路径
+            if [ -f "/usr/local/bin/brew" ]; then
+              BREW_CMD="/usr/local/bin/brew"
+            elif [ -f "/usr/local/Homebrew/bin/brew" ]; then
+              BREW_CMD="/usr/local/Homebrew/bin/brew"
+            else
+              echo "错误: 无法找到 Homebrew"
               exit 1
-            }
-            # 查找 Homebrew 安装的 Python
-            HOMEBREW_PYTHON=$(arch -x86_64 /bin/bash -c 'brew --prefix python@3.10 2>/dev/null')/bin/python3
+            fi
+            
+            echo "使用 Homebrew: $BREW_CMD"
+            # 在 Rosetta 环境下使用 /usr/local 的 Homebrew 安装 Python
+            arch -x86_64 /bin/bash -c "
+              export PATH=\"/usr/local/bin:/usr/local/sbin:\$PATH\"
+              $BREW_CMD install python@3.10 || $BREW_CMD upgrade python@3.10 || {
+                echo '警告: Python 安装/升级失败，尝试继续...'
+              }
+              echo '✓ Python 安装完成'
+            "
+            
+            # 查找 Homebrew 安装的 Python（优先使用 /usr/local）
+            HOMEBREW_PYTHON="/usr/local/opt/python@3.10/bin/python3"
+            if [ ! -f "$HOMEBREW_PYTHON" ]; then
+              # 尝试其他可能的路径
+              HOMEBREW_PYTHON="/usr/local/bin/python3"
+            fi
+            
             if [ -f "$HOMEBREW_PYTHON" ]; then
               echo "✓ 找到 Homebrew Python: $HOMEBREW_PYTHON"
               echo "homebrew-python-path=$HOMEBREW_PYTHON" >> $GITHUB_OUTPUT
-              $HOMEBREW_PYTHON --version
+              arch -x86_64 "$HOMEBREW_PYTHON" --version || "$HOMEBREW_PYTHON" --version
             else
               echo "错误: 未找到 Python"
+              echo "尝试查找所有可能的 Python 路径..."
+              arch -x86_64 /bin/bash -c 'ls -la /usr/local/bin/python3* 2>/dev/null || echo "未找到 /usr/local/bin/python3"'
+              arch -x86_64 /bin/bash -c 'ls -la /usr/local/opt/python@3.10/bin/python3* 2>/dev/null || echo "未找到 /usr/local/opt/python@3.10/bin/python3"'
               exit 1
             fi
           fi

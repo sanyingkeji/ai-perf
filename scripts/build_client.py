@@ -762,11 +762,68 @@ def main():
                     f.write(entitlements_content)
                 log_info("✓ 创建 entitlements.plist")
             
+            # 辅助函数：带时间戳签名（带重试机制）
+            def sign_with_timestamp(file_path, codesign_identity, max_retries=3, retry_delay=2, extra_args=None):
+                """
+                带时间戳签名，如果失败则重试（不使用无时间戳签名，因为无法通过公证）
+                
+                Args:
+                    file_path: 要签名的文件路径
+                    codesign_identity: 签名身份
+                    max_retries: 最大重试次数
+                    retry_delay: 重试延迟（秒）
+                    extra_args: 额外的 codesign 参数列表
+                
+                Returns:
+                    (success: bool, error_msg: str)
+                """
+                if extra_args is None:
+                    extra_args = []
+                
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        sign_result = subprocess.run([
+                            "codesign", "--force", "--sign", codesign_identity,
+                            "--options", "runtime",
+                            "--timestamp",
+                            *extra_args,
+                            str(file_path)
+                        ], check=False, capture_output=True, text=True, timeout=60)
+                        
+                        if sign_result.returncode == 0:
+                            return (True, None)
+                        else:
+                            error_msg = sign_result.stderr[:200] if sign_result.stderr else '未知错误'
+                            if attempt < max_retries:
+                                log_warn(f"      带时间戳签名失败（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试: {error_msg}")
+                                time.sleep(retry_delay)
+                            else:
+                                return (False, error_msg)
+                    except subprocess.TimeoutExpired:
+                        if attempt < max_retries:
+                            log_warn(f"      签名超时（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试...")
+                            time.sleep(retry_delay)
+                        else:
+                            return (False, "签名超时")
+                    except Exception as e:
+                        if attempt < max_retries:
+                            log_warn(f"      签名出错（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试: {e}")
+                            time.sleep(retry_delay)
+                        else:
+                            return (False, str(e))
+                
+                return (False, "达到最大重试次数")
+            
             # 签名 Resources 目录中的二进制文件（如果有）
             resources_dir = app_bundle / "Contents" / "Resources"
             if resources_dir.exists():
                 log_info("  签名 Resources 目录中的二进制文件...")
-                for item in resources_dir.rglob("*"):
+                resources_files = list(resources_dir.rglob("*"))
+                total_files = len([f for f in resources_files if f.is_file()])
+                signed_count = 0
+                failed_files = []
+                
+                for item in resources_files:
                     if item.is_file():
                         # 跳过资源文件
                         if item.suffix in [".plist", ".qm", ".png", ".json", ".icns", ".txt", ".md"]:
@@ -778,18 +835,29 @@ def main():
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                                timeout=2
+                                timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
                             )
                             if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
-                                log_info(f"    签名: {item.relative_to(app_bundle)}")
-                                subprocess.run([
-                                    "codesign", "--force", "--sign", codesign_identity,
-                                    "--options", "runtime",
-                                    "--timestamp",
-                                    str(item)
-                                ], check=False, capture_output=True)
-                        except Exception:
-                            pass
+                                log_info(f"    签名: {item.relative_to(app_bundle)} ({signed_count + 1}/{total_files})")
+                                # 使用带重试的带时间戳签名
+                                success, error_msg = sign_with_timestamp(item, codesign_identity)
+                                if success:
+                                    signed_count += 1
+                                else:
+                                    failed_files.append((item.relative_to(app_bundle), error_msg))
+                                    log_error(f"      签名失败（已重试）: {error_msg}")
+                        except subprocess.TimeoutExpired:
+                            log_warn(f"      文件类型检查超时: {item.relative_to(app_bundle)}")
+                        except Exception as e:
+                            log_warn(f"      签名时出错: {e}")
+                
+                if failed_files:
+                    log_error(f"  ✗ Resources 目录签名失败 {len(failed_files)} 个文件:")
+                    for file_path, error in failed_files:
+                        log_error(f"    - {file_path}: {error}")
+                    raise Exception(f"Resources 目录中有 {len(failed_files)} 个文件签名失败，无法继续（无时间戳签名无法通过公证）")
+                
+                log_info(f"  ✓ Resources 目录签名完成: {signed_count} 个文件")
             
             frameworks_dir = app_bundle / "Contents" / "Frameworks"
             if frameworks_dir.exists():
@@ -797,14 +865,19 @@ def main():
                 log_info("  签名独立的 .dylib 文件和无扩展名 Mach-O 文件...")
                 dylib_files = [f for f in frameworks_dir.rglob("*.dylib") 
                               if ".framework" not in str(f)]
+                failed_dylibs = []
                 for dylib in dylib_files:
                     log_info(f"    签名: {dylib.relative_to(app_bundle)}")
-                    subprocess.run([
-                        "codesign", "--force", "--sign", codesign_identity,
-                        "--options", "runtime",
-                        "--timestamp",  # 使用时间戳，对公证很重要
-                        str(dylib)
-                    ], check=False, capture_output=True)
+                    success, error_msg = sign_with_timestamp(dylib, codesign_identity)
+                    if not success:
+                        failed_dylibs.append((dylib.relative_to(app_bundle), error_msg))
+                        log_error(f"      签名失败（已重试）: {error_msg}")
+                
+                if failed_dylibs:
+                    log_error(f"  ✗ .dylib 文件签名失败 {len(failed_dylibs)} 个文件:")
+                    for file_path, error in failed_dylibs:
+                        log_error(f"    - {file_path}: {error}")
+                    raise Exception(f".dylib 文件中有 {len(failed_dylibs)} 个文件签名失败，无法继续（无时间戳签名无法通过公证）")
                 
                 # 签名无扩展名的 Mach-O 文件（如 QtWidgets, QtCore 等）
                 log_info("  签名无扩展名的 Mach-O 文件...")
@@ -817,34 +890,31 @@ def main():
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                                timeout=2
+                                timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
                             )
                             if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                 log_info(f"    签名: {item.relative_to(app_bundle)}")
-                                # 使用 --preserve-metadata 和 --deep 确保签名完整
-                                subprocess.run([
-                                    "codesign", "--force", "--sign", codesign_identity,
-                                    "--options", "runtime",
-                                    "--timestamp",  # 使用时间戳
-                                    "--preserve-metadata=entitlements,requirements,flags",
-                                    str(item)
-                                ], check=False, capture_output=True)
+                                # 使用 --preserve-metadata 确保签名完整
+                                success, error_msg = sign_with_timestamp(
+                                    item, codesign_identity,
+                                    extra_args=["--preserve-metadata=entitlements,requirements,flags"]
+                                )
+                                if not success:
+                                    raise Exception(f"签名失败: {error_msg}")
+                                
                                 # 验证签名
                                 verify_result = subprocess.run(
                                     ["codesign", "-vvv", str(item)],
                                     capture_output=True,
                                     text=True,
-                                    timeout=30  # 增加超时时间，大型文件需要更长时间
+                                    timeout=60  # 大型文件（如 QtWebEngineCore）验证可能需要更长时间
                                 )
                                 if verify_result.returncode != 0:
                                     log_warn(f"      警告: {item.name} 签名验证失败，尝试重新签名...")
-                                    # 如果验证失败，尝试使用 --deep 重新签名
-                                    subprocess.run([
-                                        "codesign", "--force", "--sign", codesign_identity,
-                                        "--options", "runtime",
-                                        "--timestamp",  # 使用时间戳
-                                        str(item)
-                                    ], check=False, capture_output=True)
+                                    # 如果验证失败，重新签名（带时间戳）
+                                    success, error_msg = sign_with_timestamp(item, codesign_identity)
+                                    if not success:
+                                        raise Exception(f"重新签名失败: {error_msg}")
                         except Exception as e:
                             log_warn(f"      签名 {item.name} 时出错: {e}")
                 
@@ -872,25 +942,21 @@ def main():
                                         capture_output=True,
                                         text=True,
                                         check=True,
-                                        timeout=2
+                                        timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
                                     )
-                                    if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
-                                        subprocess.run([
-                                            "codesign", "--force", "--sign", codesign_identity,
-                                            "--options", "runtime",
-                                            "--timestamp",  # 使用时间戳
-                                            str(item)
-                                        ], check=False, capture_output=True)
-                                except Exception:
-                                    pass
+                                if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
+                                    success, error_msg = sign_with_timestamp(item, codesign_identity)
+                                    if not success:
+                                        log_error(f"      框架内文件签名失败（已重试）: {item.relative_to(app_bundle)}: {error_msg}")
+                                        raise Exception(f"框架内文件签名失败: {error_msg}")
+                            except Exception:
+                                pass
                         
                         # 然后签名整个框架目录
-                        subprocess.run([
-                            "codesign", "--force", "--sign", codesign_identity,
-                            "--options", "runtime",
-                            "--timestamp",  # 使用时间戳
-                            str(framework_dir)
-                        ], check=False, capture_output=True)
+                        success, error_msg = sign_with_timestamp(framework_dir, codesign_identity, max_retries=3, retry_delay=3)
+                        if not success:
+                            log_error(f"      框架签名失败（已重试）: {framework_dir.relative_to(app_bundle)}: {error_msg}")
+                            raise Exception(f"框架签名失败: {error_msg}")
                     
                     # 签名 Qt 目录中的其他二进制文件（非框架）
                     log_info("  签名 Qt 其他二进制文件...")
@@ -908,26 +974,29 @@ def main():
                                 )
                                 if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                     log_info(f"    签名: {qt_lib.relative_to(app_bundle)}")
-                                    subprocess.run([
-                                        "codesign", "--force", "--sign", codesign_identity,
-                                        "--options", "runtime",
-                                        "--timestamp",  # 使用时间戳
-                                        str(qt_lib)
-                                    ], check=False, capture_output=True)
+                                    success, error_msg = sign_with_timestamp(qt_lib, codesign_identity)
+                                    if not success:
+                                        log_error(f"      签名失败（已重试）: {error_msg}")
+                                        raise Exception(f"Qt 文件签名失败: {error_msg}")
                             except Exception:
                                 pass
                 
                 # 第三步：签名所有 .so 文件（它们依赖已签名的框架）
                 log_info("  签名 .so 文件...")
                 so_files = list(frameworks_dir.rglob("*.so"))
+                failed_so_files = []
                 for so_file in so_files:
                     log_info(f"    签名: {so_file.relative_to(app_bundle)}")
-                    subprocess.run([
-                        "codesign", "--force", "--sign", codesign_identity,
-                        "--options", "runtime",
-                        "--timestamp",  # 使用时间戳
-                        str(so_file)
-                    ], check=False, capture_output=True)
+                    success, error_msg = sign_with_timestamp(so_file, codesign_identity)
+                    if not success:
+                        failed_so_files.append((so_file.relative_to(app_bundle), error_msg))
+                        log_error(f"      签名失败（已重试）: {error_msg}")
+                
+                if failed_so_files:
+                    log_error(f"  ✗ .so 文件签名失败 {len(failed_so_files)} 个文件:")
+                    for file_path, error in failed_so_files:
+                        log_error(f"    - {file_path}: {error}")
+                    raise Exception(f".so 文件中有 {len(failed_so_files)} 个文件签名失败，无法继续（无时间戳签名无法通过公证）")
             
             # 最后签名整个应用包
             # 注意：使用 --deep 会重新签名所有内容，可能会破坏之前的签名
@@ -941,7 +1010,7 @@ def main():
                     ["codesign", "-vvv", str(qt_file)],
                     capture_output=True,
                     text=True,
-                    timeout=30  # 增加超时时间，大型文件（如 QtWebEngineCore）需要更长时间
+                    timeout=60  # 大型文件（如 QtWebEngineCore）验证可能需要更长时间
                 )
                 if verify_result.returncode != 0:
                     log_warn(f"  重新签名: {qt_file.relative_to(app_bundle)}")
@@ -994,25 +1063,23 @@ def main():
                         capture_output=True,
                         text=True,
                         check=False, # 不检查返回码，因为可能就是无效
-                        timeout=30  # 增加超时时间，大型文件需要更长时间
+                        timeout=60  # 大型文件验证可能需要更长时间
                     )
                     # 检查是否有 "invalid Info.plist" 或 "code object is not signed" 错误
                     if verify_result.returncode != 0 or "invalid Info.plist" in verify_result.stderr or "code object is not signed" in verify_result.stderr:
                         log_warn(f"    发现签名无效: {item.relative_to(app_bundle)}，重新签名...")
                         log_warn(f"      错误信息: {verify_result.stderr.strip()[:100]}")
-                        subprocess.run([
-                            "codesign", "--force", "--sign", codesign_identity,
-                            "--options", "runtime",
-                            "--timestamp=none",
-                            str(item)
-                        ], check=False, capture_output=True)
+                        success, error_msg = sign_with_timestamp(item, codesign_identity)
+                        if not success:
+                            log_error(f"      重新签名失败: {error_msg}")
+                            raise Exception(f"关键文件重新签名失败: {error_msg}")
                         # 再次验证
                         verify_again = subprocess.run(
                             ["codesign", "-vvv", str(item)],
                             capture_output=True,
                             text=True,
                             check=False,
-                            timeout=30  # 增加超时时间，大型文件需要更长时间
+                            timeout=60  # 大型文件验证可能需要更长时间
                         )
                         if verify_again.returncode == 0:
                             log_info(f"      ✓ 重新签名成功")
@@ -1181,17 +1248,17 @@ def main():
                 str(dmg_path)
             ], capture_output=True, text=True, check=False)
             
-            # 如果时间戳服务不可用，回退到不使用时间戳
+            # 如果时间戳服务不可用，重试（不使用无时间戳签名，因为无法通过公证）
             if timestamp_result.returncode != 0 and "timestamp service is not available" in timestamp_result.stderr:
-                log_warn("⚠ 时间戳服务不可用，尝试不使用时间戳签名...")
-                log_warn("   注意：不使用时间戳可能影响公证，但可以继续签名")
-                subprocess.run([
-                    "codesign", "--force", "--verify", "--verbose",
-                    "--sign", codesign_identity,
-                    "--timestamp=none",  # 回退到不使用时间戳
-                    str(dmg_path)
-                ], check=True)
-                log_info("✓ DMG 代码签名完成（未使用时间戳）")
+                log_warn("⚠ 时间戳服务不可用，尝试重试...")
+                log_warn("   注意：无时间戳签名无法通过公证，必须使用时间戳签名")
+                # 重试带时间戳的签名
+                success, error_msg = sign_with_timestamp(dmg_path, codesign_identity, max_retries=3, retry_delay=5)
+                if not success:
+                    log_error("✗ DMG 签名失败：时间戳服务不可用（已重试）")
+                    log_error(f"   错误信息: {error_msg}")
+                    raise Exception("DMG 签名失败：时间戳服务不可用（无时间戳签名无法通过公证）")
+                log_info("✓ DMG 代码签名完成（已使用时间戳，重试成功）")
             elif timestamp_result.returncode != 0:
                 # 其他错误，直接抛出
                 log_error(f"DMG 签名失败: {timestamp_result.stderr}")
@@ -1255,11 +1322,11 @@ def main():
                         # 使用轮询方式检查状态，而不是 wait 命令
                         max_wait_time = 1800  # 30分钟
                         poll_interval = 30  # 每30秒检查一次
-                        start_time = time.time()
+                        notary_start_time = time.time()  # 使用不同的变量名，避免覆盖全局 start_time
                         status = None
                         result_output = submit_result.stdout
                         
-                        while time.time() - start_time < max_wait_time:
+                        while time.time() - notary_start_time < max_wait_time:
                             check_cancel()  # 检查是否请求取消
                             # 查询状态
                             try:
@@ -1268,13 +1335,13 @@ def main():
                                     "--apple-id", apple_id,
                                     "--team-id", team_id,
                                     "--password", notary_password
-                                ], capture_output=True, text=True, timeout=30, check=False)
+                                ], capture_output=True, text=True, timeout=60, check=False)
                                 
                                 if status_result.returncode == 0 and status_result.stdout:
                                     # 检查是否是 "not yet available" 消息
                                     if "not yet available" in status_result.stdout.lower() or "does not exist" in status_result.stdout.lower():
                                         # 还在处理中，继续等待
-                                        elapsed = int(time.time() - start_time)
+                                        elapsed = int(time.time() - notary_start_time)
                                         log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                                     else:
                                         # 尝试解析 JSON 输出获取状态
@@ -1300,7 +1367,7 @@ def main():
                                                 result_output = status_result.stdout
                                                 break
                                             elif status == 'in progress':
-                                                elapsed = int(time.time() - start_time)
+                                                elapsed = int(time.time() - notary_start_time)
                                                 log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                                         except json.JSONDecodeError:
                                             # 如果不是 JSON，尝试从文本中解析
@@ -1315,7 +1382,7 @@ def main():
                                                 break
                                 elif status_result.returncode != 0:
                                     # 查询失败，可能是还在处理中
-                                    elapsed = int(time.time() - start_time)
+                                    elapsed = int(time.time() - notary_start_time)
                                     log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                             except Exception as e:
                                 log_warn(f"  查询状态时出错: {e}")
@@ -1332,7 +1399,7 @@ def main():
                                     "--apple-id", apple_id,
                                     "--team-id", team_id,
                                     "--password", notary_password
-                                ], capture_output=True, text=True, timeout=30, check=False)
+                                ], capture_output=True, text=True, timeout=60, check=False)
                                 if final_result.returncode == 0:
                                     result_output = final_result.stdout
                                     # 尝试解析状态
@@ -1356,7 +1423,7 @@ def main():
                         # 使用轮询模式代替 --wait，以便更好地控制超时和日志输出
                         max_wait_time = 1800  # 30分钟
                         poll_interval = 30  # 每30秒检查一次
-                        start_time = time.time()
+                        notary_start_time = time.time()  # 使用不同的变量名，避免覆盖全局 start_time
                         status = None
                         result_output = ""
                         
@@ -1388,7 +1455,7 @@ def main():
                                     "--apple-id", apple_id,
                                     "--team-id", team_id,
                                     "--password", notary_password
-                                ], capture_output=True, text=True, timeout=30, check=False)
+                                ], capture_output=True, text=True, timeout=60, check=False)
                                 if history_result.returncode == 0:
                                     # 解析历史记录获取最新的提交 ID
                                     import json
@@ -1405,7 +1472,7 @@ def main():
                             log_info(f"  ✓ 提交成功，ID: {submission_id}")
                             log_info("  等待 Apple 处理公证（轮询模式）...")
                             
-                            while time.time() - start_time < max_wait_time:
+                            while time.time() - notary_start_time < max_wait_time:
                                 check_cancel()  # 检查是否请求取消
                                 try:
                                     status_result = subprocess.run([
@@ -1413,7 +1480,7 @@ def main():
                                         "--apple-id", apple_id,
                                         "--team-id", team_id,
                                         "--password", notary_password
-                                    ], capture_output=True, text=True, timeout=30, check=False)
+                                    ], capture_output=True, text=True, timeout=60, check=False)
                                     
                                     if status_result.returncode == 0 and status_result.stdout:
                                         import json
@@ -1430,11 +1497,11 @@ def main():
                                                 result_output = status_result.stdout
                                                 break
                                             elif status == 'in progress':
-                                                elapsed = int(time.time() - start_time)
+                                                elapsed = int(time.time() - notary_start_time)
                                                 log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                                         except json.JSONDecodeError:
                                             if "not yet available" in status_result.stdout.lower():
-                                                elapsed = int(time.time() - start_time)
+                                                elapsed = int(time.time() - notary_start_time)
                                                 log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                                 
                                 except Exception as e:
@@ -1442,7 +1509,7 @@ def main():
                                 
                                 time.sleep(poll_interval)
                             
-                            if time.time() - start_time >= max_wait_time:
+                            if time.time() - notary_start_time >= max_wait_time:
                                 log_error("  ✗ 公证等待超时（30分钟）")
                                 raise subprocess.TimeoutExpired("notarytool", max_wait_time)
                             
@@ -1544,7 +1611,7 @@ def main():
                                             "--apple-id", apple_id,
                                             "--team-id", team_id,
                                             "--password", notary_password
-                                        ], capture_output=True, text=True, timeout=30)
+                                        ], capture_output=True, text=True, timeout=60)  # 网络请求可能需要更长时间
                                         if history_result.returncode == 0:
                                             print(history_result.stdout[:1000])
                                 except Exception as e:
@@ -1590,7 +1657,7 @@ def main():
                                 "--apple-id", apple_id,
                                 "--team-id", team_id,
                                 "--password", notary_password
-                            ], capture_output=True, text=True, timeout=30)
+                            ], capture_output=True, text=True, timeout=60)  # 网络请求可能需要更长时间
                             if history_result.returncode == 0:
                                 log_info("最近的公证历史:")
                                 print(history_result.stdout[:500])
@@ -1971,11 +2038,11 @@ def main():
                         
                         max_wait_time = 1800
                         poll_interval = 30
-                        start_time = time.time()
+                        notary_start_time = time.time()  # 使用不同的变量名，避免覆盖全局 start_time
                         status = None
                         result_output = submit_result.stdout
                         
-                        while time.time() - start_time < max_wait_time:
+                        while time.time() - notary_start_time < max_wait_time:
                             check_cancel()  # 检查是否请求取消
                             try:
                                 status_result = subprocess.run([
@@ -1983,11 +2050,11 @@ def main():
                                     "--apple-id", apple_id,
                                     "--team-id", team_id,
                                     "--password", notary_password
-                                ], capture_output=True, text=True, timeout=30, check=False)
+                                ], capture_output=True, text=True, timeout=60, check=False)
                                 
                                 if status_result.returncode == 0 and status_result.stdout:
                                     if "not yet available" in status_result.stdout.lower() or "does not exist" in status_result.stdout.lower():
-                                        elapsed = int(time.time() - start_time)
+                                        elapsed = int(time.time() - notary_start_time)
                                         log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                                     else:
                                         import json
@@ -2037,7 +2104,7 @@ def main():
                                                 # 非网络错误，不重试，直接中断
                                                 raise Exception("PKG 公证失败（非网络错误），请检查签名问题")
                                             elif status == 'in progress':
-                                                elapsed = int(time.time() - start_time)
+                                                elapsed = int(time.time() - notary_start_time)
                                                 log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                                         except json.JSONDecodeError:
                                             if "status:" in status_result.stdout.lower():
@@ -2050,7 +2117,7 @@ def main():
                                             if status and status in ['accepted', 'success', 'invalid', 'rejected', 'failed']:
                                                 break
                                 elif status_result.returncode != 0:
-                                    elapsed = int(time.time() - start_time)
+                                    elapsed = int(time.time() - notary_start_time)
                                     log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
                             except Exception as e:
                                 log_warn(f"  查询状态时出错: {e}")
@@ -2058,7 +2125,7 @@ def main():
                             time.sleep(poll_interval)
                         
                         # 检查是否超时
-                        if time.time() - start_time >= max_wait_time:
+                        if time.time() - notary_start_time >= max_wait_time:
                             log_error("  ✗ PKG 公证等待超时（30分钟）")
                             # 尝试最后一次查询
                             try:
@@ -2067,7 +2134,7 @@ def main():
                                     "--apple-id", apple_id,
                                     "--team-id", team_id,
                                     "--password", notary_password
-                                ], capture_output=True, text=True, timeout=30, check=False)
+                                ], capture_output=True, text=True, timeout=60, check=False)
                                 if final_result.returncode == 0:
                                     result_output = final_result.stdout
                                     import json
@@ -2133,7 +2200,7 @@ def main():
                                             "--apple-id", apple_id,
                                             "--team-id", team_id,
                                             "--password", notary_password
-                                        ], capture_output=True, text=True, timeout=30)
+                                        ], capture_output=True, text=True, timeout=60)  # 网络请求可能需要更长时间
                                         if history_result.returncode == 0:
                                             print(history_result.stdout[:1000])
                                 except Exception as log_err:
@@ -2694,4 +2761,5 @@ chmod 755 %{{buildroot}}/usr/bin/{exe_name}
 
 if __name__ == "__main__":
     main()
+
 
