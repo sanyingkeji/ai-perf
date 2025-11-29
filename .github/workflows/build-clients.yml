@@ -32,9 +32,7 @@ jobs:
     timeout-minutes: 180  # 3小时超时
     if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
-      fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4]
         client: [employee, admin]
     steps:
       - name: Checkout code
@@ -168,9 +166,7 @@ jobs:
     timeout-minutes: 180  # 3小时超时
     if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
-      fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4]
         client: [employee, admin]
     steps:
       - name: Checkout code
