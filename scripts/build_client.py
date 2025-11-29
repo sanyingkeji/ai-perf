@@ -743,7 +743,7 @@ def main():
             # 测试时间戳服务器连接并检测代理配置
             log_info("  测试时间戳服务器连接...")
             apple_timestamp_available = False
-            sectigo_timestamp_available = False
+            sectigo_timestamp_available = False  # 保留变量，但不再测试
             proxy_available = False
             
             try:
@@ -765,44 +765,79 @@ def main():
                     else:
                         proxy_display = proxy_url
                     log_info(f"  ✓ 检测到代理配置: {list(proxy_config.keys())[0]}={proxy_display}")
-                    log_info("     代理将在重试3次失败后自动启用")
                 else:
                     log_info("  ℹ 未检测到代理配置（如果时间戳服务器连接失败，可配置代理）")
                     log_info("     代理格式: http://username:password@ip:port 或 http://ip:port")
                 
-                # 测试时间戳服务器连接（不使用代理）
-                timestamp_servers = [
-                    ("timestamp.apple.com", 443),
-                    ("timestamp.sectigo.com", 443),  # 备用服务器
-                ]
+                # 只测试 Apple 时间戳服务器，重试3次
+                host = "timestamp.apple.com"
+                port = 443
+                max_retries = 3
+                retry_delay = 2
                 
-                for host, port in timestamp_servers:
+                for attempt in range(1, max_retries + 1):
                     try:
                         sock = socket.create_connection((host, port), timeout=5)
                         sock.close()
-                        if host == "timestamp.apple.com":
-                            apple_timestamp_available = True
-                            log_info(f"  ✓ 时间戳服务器 {host}:{port} 可访问")
+                        apple_timestamp_available = True
+                        log_info(f"  ✓ 时间戳服务器 {host}:{port} 可访问")
+                        break
+                    except (socket.timeout, socket.error, OSError) as e:
+                        if attempt < max_retries:
+                            log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # 指数退避
                         else:
-                            sectigo_timestamp_available = True
-                            log_info(f"  ✓ 时间戳服务器 {host}:{port} 可访问")
-                    except (socket.timeout, socket.error, OSError):
-                        if host == "timestamp.apple.com":
-                            log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问")
-                        else:
-                            log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问")
+                            log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问（尝试 {attempt}/{max_retries}）")
                 
-                if not apple_timestamp_available and not sectigo_timestamp_available:
-                    log_warn("  ⚠ 警告: 所有时间戳服务器都不可访问，签名可能会很慢或失败")
+                # 如果重试后仍然不可用，且配置了代理，使用代理再试试
+                if not apple_timestamp_available and proxy_available:
+                    log_warn("  ⚠ Apple 时间戳服务器不可访问，尝试使用代理连接...")
+                    # 使用 urllib 测试代理连接（socket 不支持代理）
+                    try:
+                        from urllib.request import urlopen, ProxyHandler, build_opener, install_opener
+                        from urllib.error import URLError
+                        
+                        # 构建代理 URL
+                        proxy_url = list(proxy_config.values())[0]
+                        # 创建代理处理器
+                        proxy_handler = ProxyHandler({
+                            'http': proxy_url,
+                            'https': proxy_url
+                        })
+                        opener = build_opener(proxy_handler)
+                        install_opener(opener)
+                        
+                        # 使用代理重试连接（重置延迟时间）
+                        proxy_retry_delay = 2
+                        for attempt in range(1, max_retries + 1):
+                            try:
+                                # 测试 HTTPS 连接（时间戳服务器使用 HTTPS）
+                                response = urlopen(f'https://{host}:{port}', timeout=5)
+                                response.close()
+                                apple_timestamp_available = True
+                                log_info(f"  ✓ 使用代理后，时间戳服务器 {host}:{port} 可访问")
+                                break
+                            except (URLError, socket.timeout, socket.error, OSError) as e:
+                                if attempt < max_retries:
+                                    log_warn(f"  ⚠ 使用代理后仍不可访问（尝试 {attempt}/{max_retries}），{proxy_retry_delay} 秒后重试...")
+                                    time.sleep(proxy_retry_delay)
+                                    proxy_retry_delay *= 2  # 指数退避
+                                else:
+                                    log_warn(f"  ⚠ 使用代理后仍不可访问（尝试 {attempt}/{max_retries}）")
+                    except ImportError:
+                        # 如果 urllib 不可用，使用 socket 测试（虽然不支持代理，但至少可以测试连接）
+                        log_warn("  ⚠ 无法使用代理测试连接（urllib 不可用），将直接尝试签名")
+                    except Exception as e:
+                        log_warn(f"  ⚠ 使用代理测试连接时出错: {e}")
+                
+                if not apple_timestamp_available:
                     if proxy_available:
-                        log_info("     将尝试使用代理连接时间戳服务器")
+                        log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问（已重试且使用代理后仍失败）")
+                        log_warn("     签名时将自动启用代理重试")
                     else:
-                        log_warn("     这可能是网络问题，签名过程可能需要更长时间")
-                elif not apple_timestamp_available and sectigo_timestamp_available:
-                    log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问，但备用服务器可用")
-                    log_warn("     codesign 会自动尝试备用服务器，但每个文件签名可能需要更长时间")
-                    if proxy_available:
-                        log_info("     如果签名失败，将自动启用代理重试")
+                        log_warn("  ⚠ 警告: Apple 时间戳服务器不可访问（已重试）")
+                        log_warn("     这可能是网络问题，签名过程可能会失败")
             except Exception as e:
                 log_warn(f"  ⚠ 无法测试时间戳服务器连接: {e}")
             
