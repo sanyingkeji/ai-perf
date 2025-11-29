@@ -50,13 +50,13 @@ jobs:
           echo "Public IP: $(curl -s https://api.ipify.org)"
 
           # 用 nc 测试
-          if ! nc -vz timestamp.apple.com 443; then
+          if ! nc -vz timestamp.apple.com 80; then
             echo "❌ nc check failed"
             exit 1
           fi
 
           # 用 curl 测试 TLS 握手
-          if ! curl -v https://timestamp.apple.com -m 10; then
+          if ! curl -v http://timestamp.apple.com/ts01 -m 10; then
             echo "❌ curl TLS handshake failed"
             exit 1
           fi
@@ -186,13 +186,13 @@ jobs:
           echo "Public IP: $(curl -s https://api.ipify.org)"
 
           # 用 nc 测试
-          if ! nc -vz timestamp.apple.com 443; then
+          if ! nc -vz timestamp.apple.com 80; then
             echo "❌ nc check failed"
             exit 1
           fi
 
           # 用 curl 测试 TLS 握手
-          if ! curl -v https://timestamp.apple.com -m 10; then
+          if ! curl -v http://timestamp.apple.com/ts01 -m 10; then
             echo "❌ curl TLS handshake failed"
             exit 1
           fi
