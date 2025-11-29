@@ -458,14 +458,15 @@ class RankingView(QWidget):
                     "按最终综合分（final_score）降序排列<br/>"
                     "最终综合分 = 0.7 × 当月AI均分 + 0.2 × 工资贡献率 + 0.1 × 成长率<br/><br/>"
                     "排名锁定规则：<br/>"
-                    "只要今天属于当月都算未锁定，下个月开始后排名才会锁定"
+                    "当月最后一个工作日的排名锁定 = 月评分锁定<br/>"
+                    "否则，未锁定"
                 )
             else:
                 month_info.setToolTip(
                     "月度排名规则：<br/>"
                     "按最终综合分（final_score）降序排列<br/>"
                     "最终综合分 = 0.7 × 当月AI均分 + 0.2 × 工资贡献率 + 0.1 × 成长率<br/><br/>"
-                    "排名已锁定"
+                    "排名已锁定（当月最后一个工作日的排名已锁定）"
                 )
             self.content_layout.addWidget(month_info)
         else:

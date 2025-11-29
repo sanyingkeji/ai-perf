@@ -407,9 +407,9 @@ class HistoryScoreView(QWidget):
         
         # 表格
         self._table = QTableWidget()
-        self._table.setColumnCount(9)
+        self._table.setColumnCount(10)
         self._table.setHorizontalHeaderLabels([
-            "日期", "员工ID", "姓名", "总分", "执行/质/协/思", "排名", "复评状态", "备注", "操作"
+            "日期", "员工ID", "姓名", "总分", "执行/质/协/思", "排名", "置信度", "复评状态", "备注", "操作"
         ])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -556,12 +556,15 @@ class HistoryScoreView(QWidget):
             collaboration = item.get("collaboration", 0)
             reflection = item.get("reflection", 0)
             rank = item.get("rank")
+            confidence = item.get("confidence")  # 置信度
             is_reviewed = item.get("is_reviewed", False)
             eligible = item.get("eligible", 1)
             reason = item.get("reason") or ""
             
             dims_text = f"{execution}/{quality}/{collaboration}/{reflection}"
             rank_text = f"第{rank}名" if rank else "未锁定"
+            # 置信度显示：如果有值则显示，否则显示"-"
+            confidence_text = f"{confidence:.2f}" if confidence is not None else "-"
             review_status = "已复评" if is_reviewed else "自动评分"
             remark = "参与评优" if eligible == 1 else f"不参与（{reason}）"
             
@@ -571,8 +574,12 @@ class HistoryScoreView(QWidget):
             self._table.setItem(row, 3, QTableWidgetItem(str(total_ai)))
             self._table.setItem(row, 4, QTableWidgetItem(dims_text))
             self._table.setItem(row, 5, QTableWidgetItem(rank_text))
-            self._table.setItem(row, 6, QTableWidgetItem(review_status))
-            self._table.setItem(row, 7, QTableWidgetItem(remark))
+            # 置信度列（居中显示）
+            confidence_item = QTableWidgetItem(confidence_text)
+            confidence_item.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(row, 6, confidence_item)
+            self._table.setItem(row, 7, QTableWidgetItem(review_status))
+            self._table.setItem(row, 8, QTableWidgetItem(remark))
             
             # 操作下拉框（合并查看输入和查看输出为"查看"）
             action_combo = QComboBox()
@@ -591,7 +598,7 @@ class HistoryScoreView(QWidget):
                 lambda text, combo=action_combo: self._on_action_selected(text, combo)
             )
             
-            self._table.setCellWidget(row, 8, action_combo)
+            self._table.setCellWidget(row, 9, action_combo)
     
     def _on_error(self, error: str):
         self._is_loading = False

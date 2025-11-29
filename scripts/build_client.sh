@@ -186,19 +186,21 @@ if [ "$PLATFORM" = "macos" ]; then
         FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
         if [ -d "$FRAMEWORKS_DIR" ]; then
             # 第一步：签名所有独立的 .dylib 文件（不包括框架内的）
-            log_info "  签名独立的 .dylib 文件..."
+            # 注意：内部文件不使用时间戳，时间戳只用于最终产物（.app、.pkg、.dmg）
+            log_info "  签名独立的 .dylib 文件（内部文件，不使用时间戳）..."
             find "$FRAMEWORKS_DIR" -name "*.dylib" ! -path "*.framework/*" -print0 | while IFS= read -r -d '' dylib; do
                 log_info "    签名: $(basename "$dylib")"
-                codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$dylib" 2>/dev/null || true
+                codesign --force --sign "$CODESIGN_IDENTITY" "$dylib" 2>/dev/null || true
             done
             
             # 签名无扩展名的 Mach-O 文件（如 QtWidgets, QtCore 等）
-            log_info "  签名无扩展名的 Mach-O 文件..."
+            # 注意：内部文件不使用时间戳
+            log_info "  签名无扩展名的 Mach-O 文件（内部文件，不使用时间戳）..."
             for item in "$FRAMEWORKS_DIR"/*; do
                 if [ -f "$item" ] && [ ! "${item##*.}" = "dylib" ] && [ ! "${item##*.}" = "so" ] && [[ ! "$item" =~ \.framework ]]; then
                     if file "$item" 2>/dev/null | grep -qE "(Mach-O|executable)"; then
                         log_info "    签名: $(basename "$item")"
-                        codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$item" 2>/dev/null || true
+                        codesign --force --sign "$CODESIGN_IDENTITY" "$item" 2>/dev/null || true
                     fi
                 fi
             done
@@ -212,38 +214,40 @@ if [ "$PLATFORM" = "macos" ]; then
                     framework_name=$(basename "$framework_dir")
                     log_info "    签名框架: $framework_name"
                     
-                    # 先签名框架内的所有二进制文件
+                    # 先签名框架内的所有二进制文件（内部文件不使用时间戳）
                     find "$framework_dir" -type f ! -name "*.plist" ! -name "*.qm" ! -name "*.png" ! -name "*.json" -print0 | while IFS= read -r -d '' qt_file; do
                         if file "$qt_file" 2>/dev/null | grep -qE "(Mach-O|executable)"; then
-                            codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$qt_file" 2>/dev/null || true
+                            codesign --force --sign "$CODESIGN_IDENTITY" "$qt_file" 2>/dev/null || true
                         fi
                     done
                     
-                    # 然后签名整个框架目录
-                    codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$framework_dir" 2>/dev/null || true
+                    # 然后签名整个框架目录（内部文件不使用时间戳）
+                    codesign --force --sign "$CODESIGN_IDENTITY" "$framework_dir" 2>/dev/null || true
                 done
                 
                 # 签名 Qt 目录中的其他二进制文件（非框架）
-                log_info "  签名 Qt 其他二进制文件..."
+                # 注意：内部文件不使用时间戳
+                log_info "  签名 Qt 其他二进制文件（内部文件，不使用时间戳）..."
                 find "$QT_DIR" -type f ! -path "*.framework/*" ! -name "*.plist" ! -name "*.qm" ! -name "*.png" ! -name "*.json" -print0 | while IFS= read -r -d '' qt_file; do
                     if file "$qt_file" 2>/dev/null | grep -qE "(Mach-O|executable)"; then
                         log_info "    签名: $(basename "$qt_file")"
-                        codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$qt_file" 2>/dev/null || true
+                        codesign --force --sign "$CODESIGN_IDENTITY" "$qt_file" 2>/dev/null || true
                     fi
                 done
             fi
             
             # 第三步：签名所有 .so 文件（它们依赖已签名的框架）
-            log_info "  签名 .so 文件..."
+            # 注意：内部文件不使用时间戳
+            log_info "  签名 .so 文件（内部文件，不使用时间戳）..."
             find "$FRAMEWORKS_DIR" -name "*.so" -print0 | while IFS= read -r -d '' so_file; do
                 log_info "    签名: $(basename "$so_file")"
-                codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$so_file" 2>/dev/null || true
+                codesign --force --sign "$CODESIGN_IDENTITY" "$so_file" 2>/dev/null || true
             done
         fi
         
-        # 最后签名整个应用包
-        log_warn "签名应用包..."
-        codesign --deep --force --verify --verbose --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$APP_BUNDLE"
+        # 最后签名整个应用包（最终产物，使用时间戳）
+        log_warn "签名应用包（最终产物，使用时间戳）..."
+        codesign --deep --force --verify --verbose --sign "$CODESIGN_IDENTITY" --options runtime --timestamp "$APP_BUNDLE"
         
         # 签名后，再次验证并修复关键文件（因为 --deep 可能会破坏签名）
         log_warn "签名后验证并修复关键文件..."
@@ -257,7 +261,8 @@ if [ "$PLATFORM" = "macos" ]; then
                     ERROR_MSG=$(codesign -vvv "$item" 2>&1 | grep -E "(invalid|error|fail)" | head -1)
                     log_warn "    发现签名无效: $(basename "$item")，重新签名..."
                     log_warn "      错误信息: $ERROR_MSG"
-                    codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$item" 2>/dev/null || true
+                    # 内部文件重新签名（不使用时间戳）
+                    codesign --force --sign "$CODESIGN_IDENTITY" "$item" 2>/dev/null || true
                     # 再次验证
                     if codesign -vvv "$item" 2>&1 | grep -qE "(valid on disk|satisfies)"; then
                         log_info "      ✓ 重新签名成功"
@@ -269,10 +274,10 @@ if [ "$PLATFORM" = "macos" ]; then
             fi
         done
         
-        # 如果修复了文件，重新签名应用包
+        # 如果修复了文件，重新签名应用包（最终产物，使用时间戳）
         if [ "$RE_SIGN_NEEDED" = true ]; then
-            log_warn "关键文件已修复，重新签名应用包以包含修复..."
-            codesign --deep --force --verify --verbose --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none "$APP_BUNDLE"
+            log_warn "关键文件已修复，重新签名应用包以包含修复（最终产物，使用时间戳）..."
+            codesign --deep --force --verify --verbose --sign "$CODESIGN_IDENTITY" --options runtime --timestamp "$APP_BUNDLE"
             log_info "✓ 应用包已重新签名以包含修复"
         fi
         
@@ -307,10 +312,10 @@ if [ "$PLATFORM" = "macos" ]; then
     
     log_info "✓ DMG 创建成功: $DMG_PATH"
     
-    # DMG 代码签名
+    # DMG 代码签名（最终产物，使用时间戳）
     if [ -n "$CODESIGN_IDENTITY" ]; then
-        log_warn "DMG 代码签名..."
-        codesign --force --verify --verbose --sign "$CODESIGN_IDENTITY" --timestamp=none "$DMG_PATH"
+        log_warn "DMG 代码签名（最终产物，使用时间戳）..."
+        codesign --force --verify --verbose --sign "$CODESIGN_IDENTITY" --timestamp "$DMG_PATH"
         log_info "✓ DMG 代码签名完成"
     fi
     

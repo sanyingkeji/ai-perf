@@ -9,11 +9,13 @@
 
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
+from pathlib import Path
+import json
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QPushButton, QHeaderView,
-    QLineEdit, QAbstractItemView
+    QLineEdit, QAbstractItemView, QMessageBox
 )
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QDate
 from PySide6.QtGui import QFont
@@ -27,6 +29,47 @@ from utils.date_edit_helper import apply_theme_to_date_edit
 class _MonthlyScoreWorkerSignals(QObject):
     finished = Signal(list, int)  # List[Dict], total_count
     error = Signal(str)
+
+
+class _LockRankWorkerSignals(QObject):
+    finished = Signal(str)  # success message
+    error = Signal(str)
+
+
+class _LockRankWorker(QRunnable):
+    """后台锁定排名"""
+    def __init__(self, month: str):
+        super().__init__()
+        self._month = month
+        self.signals = _LockRankWorkerSignals()
+    
+    @Slot()
+    def run(self) -> None:
+        if not AdminApiClient.is_logged_in():
+            self.signals.error.emit("需要先登录")
+            return
+        
+        try:
+            client = AdminApiClient.from_config()
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+            return
+        except Exception as e:
+            self.signals.error.emit(f"初始化客户端失败：{e}")
+            return
+        
+        try:
+            resp = client.lock_month_rank(self._month)
+            if isinstance(resp, dict) and resp.get("status") == "success":
+                message = resp.get("message", "锁定成功")
+                self.signals.finished.emit(message)
+            else:
+                message = resp.get("message", "锁定失败") if isinstance(resp, dict) else "锁定失败"
+                self.signals.error.emit(message)
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+        except Exception as e:
+            self.signals.error.emit(f"锁定排名失败：{e}")
 
 
 class _MonthlyScoreWorker(QRunnable):
@@ -88,17 +131,20 @@ class MonthlyScoreView(QWidget):
         self._current_filters = {}  # 保存当前筛选条件
         self._current_sort_by = "final_score"  # 当前排序字段
         self._current_sort_order = "desc"  # 当前排序方向
+        self._user_team_map = {}  # user_id -> team_name 映射
         
         # 列索引到排序字段的映射
         self._column_to_sort_field = {
-            3: "total_ai_month",  # AI综合均分
-            4: "salary_ratio",    # 工资贡献率
-            5: "growth_rate",     # 成长率
-            6: "final_score",     # 最终综合分
+            4: "total_ai_month",  # AI综合均分
+            5: "salary_ratio",    # 工资贡献率
+            6: "growth_rate",     # 成长率
+            7: "final_score",     # 最终综合分
         }
         
         self._setup_ui()
         self._thread_pool = QThreadPool.globalInstance()
+        # 初始化时加载员工数据以获取团队信息
+        self._load_employee_data()
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -141,14 +187,22 @@ class MonthlyScoreView(QWidget):
         btn_clear.clicked.connect(self._on_clear_filter)
         filter_layout.addWidget(btn_clear)
         
+        # 锁定排名按钮（动态显示月份）
+        self._lock_rank_btn = QPushButton("锁定排名")
+        self._lock_rank_btn.clicked.connect(self._on_lock_rank_clicked)
+        # 监听月份选择变化，更新按钮文本
+        self._month_combo.currentIndexChanged.connect(self._update_lock_rank_btn_text)
+        self._update_lock_rank_btn_text()
+        filter_layout.addWidget(self._lock_rank_btn)
+        
         filter_layout.addStretch()
         layout.addLayout(filter_layout)
         
         # 表格
         self._table = QTableWidget()
-        self._table.setColumnCount(8)
+        self._table.setColumnCount(9)
         self._table.setHorizontalHeaderLabels([
-            "月份", "员工ID", "姓名", "AI综合均分", "工资贡献率", "成长率", "最终综合分", "有效工作日"
+            "月份", "员工ID", "姓名", "团队", "AI综合均分", "工资贡献率", "成长率", "最终综合分", "有效工作日"
         ])
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -158,11 +212,12 @@ class MonthlyScoreView(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 月份
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 员工ID
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # 姓名
-        header.setSectionResizeMode(3, QHeaderView.Stretch)  # AI综合均分（可排序）
-        header.setSectionResizeMode(4, QHeaderView.Stretch)  # 工资贡献率（可排序）
-        header.setSectionResizeMode(5, QHeaderView.Stretch)  # 成长率（可排序）
-        header.setSectionResizeMode(6, QHeaderView.Stretch)  # 最终综合分（可排序）
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # 有效工作日
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 团队
+        header.setSectionResizeMode(4, QHeaderView.Stretch)  # AI综合均分（可排序）
+        header.setSectionResizeMode(5, QHeaderView.Stretch)  # 工资贡献率（可排序）
+        header.setSectionResizeMode(6, QHeaderView.Stretch)  # 成长率（可排序）
+        header.setSectionResizeMode(7, QHeaderView.Stretch)  # 最终综合分（可排序）
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # 有效工作日
         
         # 连接列标题点击信号
         header.sectionClicked.connect(self._on_header_clicked)
@@ -292,6 +347,23 @@ class MonthlyScoreView(QWidget):
         # 使用当前排序设置加载数据
         self._load_data_with_current_filters()
     
+    def _update_lock_rank_btn_text(self):
+        """更新锁定排名按钮的文本"""
+        month = None
+        if self._month_combo.currentIndex() > 0:
+            month = self._month_combo.currentData()
+        
+        if month:
+            # 将 YYYY-MM 格式转换为中文显示
+            try:
+                month_date = datetime.strptime(month, "%Y-%m").date()
+                month_text = month_date.strftime("%Y年%m月")
+                self._lock_rank_btn.setText(f"锁定{month_text}排名")
+            except:
+                self._lock_rank_btn.setText("锁定排名")
+        else:
+            self._lock_rank_btn.setText("锁定排名")
+    
     def _on_clear_filter(self):
         """清除筛选条件"""
         self._month_combo.setCurrentIndex(0)
@@ -307,6 +379,116 @@ class MonthlyScoreView(QWidget):
     def reload_from_api(self):
         """从API重新加载数据（供主窗口调用）"""
         self._on_filter_clicked()
+    
+    def _load_employee_data(self):
+        """加载员工数据以获取团队信息（带缓存）"""
+        # 使用与employee_view相同的缓存机制
+        class _DataCache:
+            CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
+            CACHE_EXPIRE_HOURS = 24
+            
+            @classmethod
+            def _get_cache_path(cls, cache_key: str) -> Path:
+                cls.CACHE_DIR.mkdir(exist_ok=True)
+                return cls.CACHE_DIR / f"{cache_key}.json"
+            
+            @classmethod
+            def get(cls, cache_key: str):
+                cache_path = cls._get_cache_path(cache_key)
+                if not cache_path.exists():
+                    return None
+                try:
+                    with open(cache_path, 'r', encoding='utf-8') as f:
+                        cache_data = json.load(f)
+                    cached_time_str = cache_data.get('cached_at')
+                    if not cached_time_str:
+                        return None
+                    cached_time = datetime.fromisoformat(cached_time_str)
+                    now = datetime.now()
+                    if (now - cached_time).total_seconds() > cls.CACHE_EXPIRE_HOURS * 3600:
+                        return None
+                    return cache_data.get('data')
+                except:
+                    try:
+                        cache_path.unlink()
+                    except:
+                        pass
+                    return None
+        
+        class _EmployeeDataWorkerSignals(QObject):
+            finished = Signal(dict)  # user_id -> team_name 映射
+            error = Signal(str)
+        
+        class _EmployeeDataWorker(QRunnable):
+            def __init__(self):
+                super().__init__()
+                self.signals = _EmployeeDataWorkerSignals()
+            
+            @Slot()
+            def run(self):
+                if not AdminApiClient.is_logged_in():
+                    self.signals.finished.emit({})
+                    return
+                
+                try:
+                    client = AdminApiClient.from_config()
+                    # 先尝试从缓存加载
+                    cached_employees = _DataCache.get("employees")
+                    if cached_employees is not None:
+                        employees = cached_employees
+                    else:
+                        resp = client.get_employees()
+                        employees = resp.get("items", []) if isinstance(resp, dict) else []
+                        # 缓存员工数据
+                        cache_path = _DataCache._get_cache_path("employees")
+                        cache_path.parent.mkdir(exist_ok=True)
+                        with open(cache_path, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                'cached_at': datetime.now().isoformat(),
+                                'data': employees
+                            }, f, ensure_ascii=False, indent=2)
+                    
+                    # 建立 user_id -> team_name 映射
+                    user_team_map = {}
+                    for emp in employees:
+                        user_id = str(emp.get("user_id", ""))
+                        team_name = emp.get("team_name") or ""
+                        if user_id:
+                            user_team_map[user_id] = team_name
+                    
+                    self.signals.finished.emit(user_team_map)
+                except Exception as e:
+                    self.signals.error.emit(str(e))
+        
+        worker = _EmployeeDataWorker()
+        worker.signals.finished.connect(self._on_employee_data_loaded)
+        worker.signals.error.connect(lambda err: None)  # 静默失败，不影响主功能
+        self._thread_pool.start(worker)
+    
+    def _on_employee_data_loaded(self, user_team_map: Dict[str, str]):
+        """员工数据加载完成"""
+        self._user_team_map = user_team_map
+        
+        # 如果表格已经有数据，需要更新团队列
+        if self._table.rowCount() > 0:
+            self._update_team_column()
+    
+    def _update_team_column(self):
+        """更新表格中的团队列（当员工数据加载完成后调用）"""
+        for row in range(self._table.rowCount()):
+            # 获取该行的员工ID（第1列，索引为1）
+            user_id_item = self._table.item(row, 1)
+            if user_id_item:
+                user_id = user_id_item.text()
+                # 获取团队名称
+                team_name = self._user_team_map.get(user_id, "")
+                # 更新团队列（第3列，索引为3）
+                team_item = self._table.item(row, 3)
+                if team_item:
+                    team_item.setText(team_name)
+                else:
+                    # 如果团队列还没有item，创建一个
+                    self._table.setItem(row, 3, QTableWidgetItem(team_name))
     
     def _on_data_loaded(self, items: List[Dict], total_count: int):
         """数据加载完成"""
@@ -378,6 +560,8 @@ class MonthlyScoreView(QWidget):
             
             user_id = str(item.get("user_id", ""))
             name = item.get("name") or ""
+            # 从员工数据映射中获取团队名称，如果没有则使用API返回的team_name（如果有）
+            team_name = self._user_team_map.get(user_id, "") or item.get("team_name", "")
             total_ai_month = item.get("total_ai_month", 0.0)
             salary_ratio = item.get("salary_ratio", 0.0)
             growth_rate = item.get("growth_rate", 0.0)
@@ -421,29 +605,80 @@ class MonthlyScoreView(QWidget):
             name_item.setFont(font)
             self._table.setItem(idx, 2, name_item)
             
+            # 设置团队（左对齐）
+            team_item = QTableWidgetItem(team_name)
+            self._table.setItem(idx, 3, team_item)
+            
             # 设置可排序的列（居中显示）
             item_ai = QTableWidgetItem(f"{total_ai_month:.2f}")
             item_ai.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 3, item_ai)
+            self._table.setItem(idx, 4, item_ai)
             
             # 工资贡献率：数据库存的是小数（如0.83表示83%），显示时乘以100，显示为整数
             item_salary = QTableWidgetItem(f"{int(round(salary_ratio * 100))}%")
             item_salary.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 4, item_salary)
+            self._table.setItem(idx, 5, item_salary)
             
             # 成长率：数据库存的是小数（如0.10表示10%），显示时乘以100，显示为整数
             item_growth = QTableWidgetItem(f"{int(round(growth_rate * 100))}%")
             item_growth.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 5, item_growth)
+            self._table.setItem(idx, 6, item_growth)
             
             item_final = QTableWidgetItem(f"{final_score:.2f}")
             item_final.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 6, item_final)
+            self._table.setItem(idx, 7, item_final)
             
             # 设置有效工作日（居中显示）
             item_workday = QTableWidgetItem(str(workday_count))
             item_workday.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 7, item_workday)
+            self._table.setItem(idx, 8, item_workday)
+    
+    def _on_lock_rank_clicked(self):
+        """锁定排名按钮点击事件"""
+        # 获取当前选择的月份
+        month = None
+        if self._month_combo.currentIndex() > 0:
+            month = self._month_combo.currentData()
+        else:
+            QMessageBox.warning(self, "提示", "请先选择要锁定排名的月份")
+            return
+        
+        # 确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认锁定",
+            f"确定要锁定 {month} 月的排名吗？\n\n锁定后将无法再提交该月最后一个工作日的复评。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 显示加载中
+        main_window = self.window()
+        if hasattr(main_window, "show_loading"):
+            main_window.show_loading("正在锁定排名...")
+        
+        # 在后台线程中锁定排名
+        worker = _LockRankWorker(month)
+        worker.signals.finished.connect(self._on_lock_rank_success)
+        worker.signals.error.connect(self._on_lock_rank_error)
+        self._thread_pool.start(worker)
+    
+    def _on_lock_rank_success(self, message: str):
+        """锁定排名成功"""
+        main_window = self.window()
+        if hasattr(main_window, "hide_loading"):
+            main_window.hide_loading()
+        Toast.show_message(self, message)
+    
+    def _on_lock_rank_error(self, error: str):
+        """锁定排名失败"""
+        main_window = self.window()
+        if hasattr(main_window, "hide_loading"):
+            main_window.hide_loading()
+        handle_api_error(self, Exception(error), "锁定排名失败")
     
     def _on_error(self, error: str):
         self._is_loading = False

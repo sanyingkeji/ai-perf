@@ -549,4 +549,13 @@ class AdminApiClient:
         if sort_order:
             params["sort_order"] = sort_order
         return self._get("/admin/api/monthly_scores", params=params if params else None)
+    
+    def lock_month_rank(self, month: str) -> Dict[str, Any]:
+        """
+        POST /admin/api/lock_month_rank
+        锁定指定月份最后一个工作日的排名
+        返回格式：{"status": "success", "message": "..."}
+        """
+        payload = {"month": month}
+        return self._post("/admin/api/lock_month_rank", payload)
 

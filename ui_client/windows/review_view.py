@@ -153,6 +153,10 @@ class ReviewView(QWidget):
         self.result_page = self._create_result_page()
         self.stack.addWidget(self.result_page)
 
+        # 状态 3: 排名已锁定页面
+        self.locked_page = self._create_locked_page()
+        self.stack.addWidget(self.locked_page)
+
         # 默认显示加载中，先获取最新评分日期，然后查询状态
         self._latest_date = None  # 存储最新的评分日期
         
@@ -319,6 +323,42 @@ class ReviewView(QWidget):
         hint.setAlignment(Qt.AlignCenter)
         hint.setStyleSheet("background-color: transparent;")
         layout.addWidget(hint)
+
+        layout.addStretch()
+        return page
+
+    def _create_locked_page(self) -> QWidget:
+        """创建排名已锁定页面"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        # 标题
+        title = QLabel("排名已锁定")
+        title.setFont(QFont("Arial", 20, QFont.Bold))
+        title.setStyleSheet("color: #dc3545; background-color: transparent;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # 提示信息
+        hint = QLabel("该工作日的排名已锁定，无法提交复评。")
+        hint.setFont(QFont("Arial", 12))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("background-color: transparent;")
+        layout.addWidget(hint)
+
+        # 说明
+        notice = QLabel(
+            "说明：\n"
+            "• 排名锁定后，该工作日的评分结果已确定\n"
+            "• 无法再通过复评修改评分\n"
+            "• 如需复评，请在排名锁定前提交"
+        )
+        notice.setFont(QFont("Arial", 10))
+        notice.setAlignment(Qt.AlignLeft)
+        notice.setStyleSheet("background-color: transparent; color: #666;")
+        layout.addWidget(notice)
 
         layout.addStretch()
         return page
@@ -575,6 +615,13 @@ class ReviewView(QWidget):
         if status != "success":
             # 查询失败，显示表单页面
             self.stack.setCurrentIndex(0)
+            return
+
+        # 检查排名是否已锁定
+        rank = resp.get("rank")
+        if rank is not None:
+            # 排名已锁定，显示锁定页面
+            self.stack.setCurrentIndex(3)  # 显示排名已锁定页面
             return
 
         is_reviewed = resp.get("is_reviewed", False)
