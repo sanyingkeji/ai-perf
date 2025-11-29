@@ -211,6 +211,7 @@ jobs:
         with:
           python-version: '3.10'
           architecture: 'x64'
+          cache: 'pip'  # 禁用自动 pip 升级，避免 SSL 错误
       
       - name: Verify Python installation
         run: |
@@ -282,68 +283,120 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
-          # 使用 setup-python 安装的 Python（如果可用）
+          # 优先使用 Homebrew Python（x86_64，位于 /usr/local）
+          # 明确使用 /usr/local 下的 Homebrew，避免使用 /opt/homebrew（ARM64）
+          HOMEBREW_PREFIX="/usr/local"
+          
+          # 检查 setup-python 的 Python 是否有 SSL 支持（如果存在）
           if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
-            PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
-          elif [ -n "${{ steps.setup-python.outputs.homebrew-python-path }}" ]; then
-            PYTHON_CMD="${{ steps.setup-python.outputs.homebrew-python-path }}"
-          else
-            # 最后尝试：使用 Homebrew Python（直接从路径查找）
-            # 注意：必须在 Rosetta 环境下查找 Homebrew Python
-            HOMEBREW_PREFIX=$(arch -x86_64 /bin/bash -c 'brew --prefix 2>/dev/null' || echo "/usr/local")
+            SETUP_PYTHON="${{ steps.setup-python.outputs.python-path }}"
+            # 检查是否是 /opt/homebrew（ARM64），如果是则跳过
+            if echo "$SETUP_PYTHON" | grep -q "/opt/homebrew"; then
+              echo "警告: setup-python 返回的是 ARM64 Python (/opt/homebrew)，跳过"
+              SETUP_PYTHON=""
+            elif arch -x86_64 "$SETUP_PYTHON" -c "import ssl; print('SSL OK')" 2>/dev/null; then
+              echo "✓ setup-python Python 有 SSL 支持"
+              PYTHON_CMD="$SETUP_PYTHON"
+            else
+              echo "警告: setup-python Python 缺少 SSL 支持，使用 Homebrew Python"
+              SETUP_PYTHON=""
+            fi
+          fi
+          
+          # 如果没有可用的 setup-python Python，使用 Homebrew Python
+          if [ -z "$PYTHON_CMD" ]; then
+            # 优先查找 /usr/local 下的 Homebrew Python（x86_64）
             HOMEBREW_PYTHON="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
             if [ -f "$HOMEBREW_PYTHON" ]; then
               PYTHON_CMD="$HOMEBREW_PYTHON"
+              echo "使用 Homebrew Python: $PYTHON_CMD"
+            elif [ -f "$HOMEBREW_PREFIX/bin/python3" ]; then
+              PYTHON_CMD="$HOMEBREW_PREFIX/bin/python3"
+              echo "使用 Homebrew Python (备用路径): $PYTHON_CMD"
             else
-              # 尝试其他可能的路径
-              HOMEBREW_PYTHON_ALT="$HOMEBREW_PREFIX/bin/python3"
-              if [ -f "$HOMEBREW_PYTHON_ALT" ]; then
-                PYTHON_CMD="$HOMEBREW_PYTHON_ALT"
+              echo "警告: 未找到 Homebrew Python，尝试安装..."
+              # 确保 Intel Homebrew 存在
+              if [ ! -f "/usr/local/bin/brew" ] && [ ! -f "/usr/local/Homebrew/bin/brew" ]; then
+                echo "在 Rosetta 环境下安装 Homebrew 到 /usr/local..."
+                export HOMEBREW_PREFIX="/usr/local"
+                export HOMEBREW_REPOSITORY="/usr/local/Homebrew"
+                arch -x86_64 /bin/bash -c '
+                  CI=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || true
+                '
+              fi
+              
+              BREW_CMD="/usr/local/bin/brew"
+              [ -f "$BREW_CMD" ] || BREW_CMD="/usr/local/Homebrew/bin/brew"
+              
+              if [ -f "$BREW_CMD" ]; then
+                echo "使用 Homebrew 安装 Python 3.10..."
+                arch -x86_64 /bin/bash -c "
+                  export PATH=\"/usr/local/bin:/usr/local/sbin:\$PATH\"
+                  export HOMEBREW_PREFIX=\"/usr/local\"
+                  $BREW_CMD install python@3.10 || $BREW_CMD upgrade python@3.10 || true
+                "
+                HOMEBREW_PYTHON="/usr/local/opt/python@3.10/bin/python3"
+                if [ -f "$HOMEBREW_PYTHON" ]; then
+                  PYTHON_CMD="$HOMEBREW_PYTHON"
+                  echo "✓ Homebrew Python 已安装: $PYTHON_CMD"
+                else
+                  echo "错误: 无法安装 Homebrew Python"
+                  exit 1
+                fi
               else
-                echo "错误: 无法找到可用的 x86_64 Python"
-                echo "尝试查找所有可能的 Python 路径..."
-                echo "Homebrew prefix: $HOMEBREW_PREFIX"
-                arch -x86_64 /bin/bash -c 'ls -la /usr/local/bin/python3* 2>/dev/null || echo "未找到 /usr/local/bin/python3"'
-                arch -x86_64 /bin/bash -c 'ls -la /usr/local/opt/python@3.10/bin/python3* 2>/dev/null || echo "未找到 /usr/local/opt/python@3.10/bin/python3"'
+                echo "错误: 无法找到或安装 Homebrew"
                 exit 1
               fi
             fi
+          fi
+          
+          # 验证 Python 路径不是 ARM64 版本
+          if echo "$PYTHON_CMD" | grep -q "/opt/homebrew"; then
+            echo "错误: 检测到 ARM64 Python 路径 (/opt/homebrew)，必须使用 x86_64 Python"
+            exit 1
           fi
           
           echo "使用 Python: $PYTHON_CMD"
           # 验证 Python 是否可用（必须在 Rosetta 环境下运行）
           arch -x86_64 "$PYTHON_CMD" --version || {
             echo "错误: Python 无法在 x86_64 架构下运行"
+            echo "Python 路径: $PYTHON_CMD"
+            file "$PYTHON_CMD" || echo "无法检查 Python 架构"
             exit 1
           }
+          
+          # 验证 SSL 支持
+          if ! arch -x86_64 "$PYTHON_CMD" -c "import ssl; print('SSL OK')" 2>/dev/null; then
+            echo "错误: Python 缺少 SSL 模块支持"
+            exit 1
+          fi
+          
           echo "Python 路径验证:"
           file "$PYTHON_CMD" || echo "无法检查 Python 架构"
           
-          # 安装依赖（必须在 Rosetta 环境下运行）
+          # 安装依赖（必须在 Rosetta 环境下运行，使用 pip3）
           arch -x86_64 "$PYTHON_CMD" -m pip install --upgrade pip --break-system-packages
           arch -x86_64 "$PYTHON_CMD" -m pip install -r requirements.txt --break-system-packages
       
       - name: Verify PyInstaller installation
         run: |
-          # 使用相同的 Python 命令
-          if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
+          # 使用相同的 Python 命令查找逻辑（优先使用 /usr/local 下的 Homebrew Python）
+          HOMEBREW_PREFIX="/usr/local"
+          if [ -f "$HOMEBREW_PREFIX/opt/python@3.10/bin/python3" ]; then
+            PYTHON_CMD="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
+          elif [ -f "$HOMEBREW_PREFIX/bin/python3" ]; then
+            PYTHON_CMD="$HOMEBREW_PREFIX/bin/python3"
+          elif [ -f "${{ steps.setup-python.outputs.python-path }}" ] && ! echo "${{ steps.setup-python.outputs.python-path }}" | grep -q "/opt/homebrew"; then
             PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
-          elif [ -n "${{ steps.setup-python.outputs.homebrew-python-path }}" ]; then
-            PYTHON_CMD="${{ steps.setup-python.outputs.homebrew-python-path }}"
           else
-            HOMEBREW_PREFIX=$(arch -x86_64 /bin/bash -c 'brew --prefix 2>/dev/null' || echo "/usr/local")
-            HOMEBREW_PYTHON="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
-            if [ -f "$HOMEBREW_PYTHON" ]; then
-              PYTHON_CMD="$HOMEBREW_PYTHON"
-            else
-              HOMEBREW_PYTHON_ALT="$HOMEBREW_PREFIX/bin/python3"
-              if [ -f "$HOMEBREW_PYTHON_ALT" ]; then
-                PYTHON_CMD="$HOMEBREW_PYTHON_ALT"
-              else
-                echo "错误: 无法找到可用的 x86_64 Python"
-                exit 1
-              fi
-            fi
+            echo "错误: 无法找到可用的 x86_64 Python"
+            exit 1
+          fi
+          
+          # 验证不是 ARM64 版本
+          if echo "$PYTHON_CMD" | grep -q "/opt/homebrew"; then
+            echo "错误: 检测到 ARM64 Python 路径"
+            exit 1
           fi
           
           echo "验证 PyInstaller 安装..."
@@ -409,28 +462,31 @@ jobs:
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
-          # 使用 setup-python 安装的 Python（如果可用）
-          if [ -f "${{ steps.setup-python.outputs.python-path }}" ]; then
+          # 使用 Homebrew Python（x86_64，位于 /usr/local）
+          HOMEBREW_PREFIX="/usr/local"
+          if [ -f "$HOMEBREW_PREFIX/opt/python@3.10/bin/python3" ]; then
+            PYTHON_CMD="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
+          elif [ -f "$HOMEBREW_PREFIX/bin/python3" ]; then
+            PYTHON_CMD="$HOMEBREW_PREFIX/bin/python3"
+          elif [ -f "${{ steps.setup-python.outputs.python-path }}" ] && ! echo "${{ steps.setup-python.outputs.python-path }}" | grep -q "/opt/homebrew"; then
             PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
           else
-            # 使用 Homebrew Python
-            HOMEBREW_PREFIX=$(arch -x86_64 /bin/bash -c 'brew --prefix 2>/dev/null' || echo "/usr/local")
-            HOMEBREW_PYTHON="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
-            if [ -f "$HOMEBREW_PYTHON" ]; then
-              PYTHON_CMD="$HOMEBREW_PYTHON"
-            else
-              HOMEBREW_PYTHON_ALT="$HOMEBREW_PREFIX/bin/python3"
-              if [ -f "$HOMEBREW_PYTHON_ALT" ]; then
-                PYTHON_CMD="$HOMEBREW_PYTHON_ALT"
-              else
-                echo "错误: 无法找到可用的 x86_64 Python"
-                exit 1
-              fi
-            fi
+            echo "错误: 无法找到可用的 x86_64 Python"
+            exit 1
+          fi
+          
+          # 验证不是 ARM64 版本
+          if echo "$PYTHON_CMD" | grep -q "/opt/homebrew"; then
+            echo "错误: 检测到 ARM64 Python 路径 (/opt/homebrew)，必须使用 x86_64 Python"
+            exit 1
           fi
           
           echo "使用 Python: $PYTHON_CMD"
-          arch -x86_64 "$PYTHON_CMD" --version
+          arch -x86_64 "$PYTHON_CMD" --version || {
+            echo "错误: Python 无法在 x86_64 架构下运行"
+            file "$PYTHON_CMD" || echo "无法检查 Python 架构"
+            exit 1
+          }
           echo "开始构建..."
           arch -x86_64 "$PYTHON_CMD" ../scripts/build_client.py ${{ matrix.client }} macos
       

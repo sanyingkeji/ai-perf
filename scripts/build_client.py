@@ -739,6 +739,32 @@ def main():
             log_info("=" * 50)
             log_warn("开始代码签名（使用改进的签名流程）...")
             log_info(f"  签名身份: {codesign_identity}")
+            
+            # 测试时间戳服务器连接（可选，用于诊断）
+            log_info("  测试时间戳服务器连接...")
+            try:
+                import socket
+                # Apple 的时间戳服务器
+                timestamp_servers = [
+                    ("timestamp.apple.com", 443),
+                    ("timestamp.sectigo.com", 443),  # 备用服务器
+                ]
+                timestamp_available = False
+                for host, port in timestamp_servers:
+                    try:
+                        sock = socket.create_connection((host, port), timeout=5)
+                        sock.close()
+                        log_info(f"  ✓ 时间戳服务器 {host}:{port} 可访问")
+                        timestamp_available = True
+                        break
+                    except (socket.timeout, socket.error, OSError):
+                        log_warn(f"  ⚠ 时间戳服务器 {host}:{port} 不可访问")
+                if not timestamp_available:
+                    log_warn("  ⚠ 警告: 所有时间戳服务器都不可访问，签名可能会很慢或失败")
+                    log_warn("     这可能是网络问题，签名过程可能需要更长时间")
+            except Exception as e:
+                log_warn(f"  ⚠ 无法测试时间戳服务器连接: {e}")
+            
             print()  # 空行分隔
             
             # 创建基本的 entitlements 文件（如果需要）
@@ -763,7 +789,7 @@ def main():
                 log_info("✓ 创建 entitlements.plist")
             
             # 辅助函数：带时间戳签名（带重试机制）
-            def sign_with_timestamp(file_path, codesign_identity, max_retries=3, retry_delay=2, extra_args=None):
+            def sign_with_timestamp(file_path, codesign_identity, max_retries=3, retry_delay=5, extra_args=None, timeout=180):
                 """
                 带时间戳签名，如果失败则重试（不使用无时间戳签名，因为无法通过公证）
                 
@@ -771,8 +797,9 @@ def main():
                     file_path: 要签名的文件路径
                     codesign_identity: 签名身份
                     max_retries: 最大重试次数
-                    retry_delay: 重试延迟（秒）
+                    retry_delay: 初始重试延迟（秒），会指数退避
                     extra_args: 额外的 codesign 参数列表
+                    timeout: 单次签名超时时间（秒），默认180秒
                 
                 Returns:
                     (success: bool, error_msg: str)
@@ -780,6 +807,7 @@ def main():
                 if extra_args is None:
                     extra_args = []
                 
+                current_delay = retry_delay
                 for attempt in range(1, max_retries + 1):
                     try:
                         sign_result = subprocess.run([
@@ -788,27 +816,30 @@ def main():
                             "--timestamp",
                             *extra_args,
                             str(file_path)
-                        ], check=False, capture_output=True, text=True, timeout=60)
+                        ], check=False, capture_output=True, text=True, timeout=timeout)
                         
                         if sign_result.returncode == 0:
                             return (True, None)
                         else:
                             error_msg = sign_result.stderr[:200] if sign_result.stderr else '未知错误'
                             if attempt < max_retries:
-                                log_warn(f"      带时间戳签名失败（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试: {error_msg}")
-                                time.sleep(retry_delay)
+                                log_warn(f"      带时间戳签名失败（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {error_msg}")
+                                time.sleep(current_delay)
+                                current_delay *= 2  # 指数退避
                             else:
                                 return (False, error_msg)
                     except subprocess.TimeoutExpired:
                         if attempt < max_retries:
-                            log_warn(f"      签名超时（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试...")
-                            time.sleep(retry_delay)
+                            log_warn(f"      签名超时（尝试 {attempt}/{max_retries}，超时 {timeout} 秒），{current_delay} 秒后重试...")
+                            time.sleep(current_delay)
+                            current_delay *= 2  # 指数退避
                         else:
-                            return (False, "签名超时")
+                            return (False, f"签名超时（超过 {timeout} 秒）")
                     except Exception as e:
                         if attempt < max_retries:
-                            log_warn(f"      签名出错（尝试 {attempt}/{max_retries}），{retry_delay} 秒后重试: {e}")
-                            time.sleep(retry_delay)
+                            log_warn(f"      签名出错（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {e}")
+                            time.sleep(current_delay)
+                            current_delay *= 2  # 指数退避
                         else:
                             return (False, str(e))
                 
@@ -953,7 +984,7 @@ def main():
                                     pass
                         
                         # 然后签名整个框架目录
-                        success, error_msg = sign_with_timestamp(framework_dir, codesign_identity, max_retries=3, retry_delay=3)
+                        success, error_msg = sign_with_timestamp(framework_dir, codesign_identity, max_retries=3, retry_delay=5, timeout=300)
                         if not success:
                             log_error(f"      框架签名失败（已重试）: {framework_dir.relative_to(app_bundle)}: {error_msg}")
                             raise Exception(f"框架签名失败: {error_msg}")
@@ -1037,7 +1068,7 @@ def main():
             # 使用带重试的带时间戳签名
             success, error_msg = sign_with_timestamp(
                 app_bundle, codesign_identity,
-                max_retries=3, retry_delay=5,
+                max_retries=3, retry_delay=10, timeout=300,
                 extra_args=["--strict", "--verify"]
             )
             if not success:
@@ -1093,7 +1124,7 @@ def main():
                 # 使用带重试的带时间戳签名
                 success, error_msg = sign_with_timestamp(
                     app_bundle, codesign_identity,
-                    max_retries=3, retry_delay=5,
+                    max_retries=3, retry_delay=10, timeout=300,
                     extra_args=["--verify", "--verbose", "--strict"]
                 )
                 if not success:
@@ -1252,7 +1283,7 @@ def main():
                 log_warn("⚠ 时间戳服务不可用，尝试重试...")
                 log_warn("   注意：无时间戳签名无法通过公证，必须使用时间戳签名")
                 # 重试带时间戳的签名
-                success, error_msg = sign_with_timestamp(dmg_path, codesign_identity, max_retries=3, retry_delay=5)
+                success, error_msg = sign_with_timestamp(dmg_path, codesign_identity, max_retries=3, retry_delay=10, timeout=300)
                 if not success:
                     log_error("✗ DMG 签名失败：时间戳服务不可用（已重试）")
                     log_error(f"   错误信息: {error_msg}")
