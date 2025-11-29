@@ -109,8 +109,6 @@ jobs:
           # 示例: http://user:pass@192.168.1.100:8080
           HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
           HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
-          http_proxy: ${{ secrets.HTTP_PROXY }}
-          https_proxy: ${{ secrets.HTTPS_PROXY }}
           NO_PROXY: 'localhost,127.0.0.1'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
@@ -462,8 +460,6 @@ jobs:
           # 示例: http://user:pass@192.168.1.100:8080
           HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
           HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
-          http_proxy: ${{ secrets.HTTP_PROXY }}
-          https_proxy: ${{ secrets.HTTPS_PROXY }}
           NO_PROXY: 'localhost,127.0.0.1'
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           INSTALLER_CODESIGN_IDENTITY: ${{ secrets.INSTALLER_CODESIGN_IDENTITY }}
