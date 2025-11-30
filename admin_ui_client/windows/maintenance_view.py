@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QFrame, QTabWidget, QHeaderView, QAbstractItemView,
     QFileDialog, QMessageBox, QLineEdit, QCheckBox, QTextEdit, QPlainTextEdit,
     QSplitter, QComboBox, QProgressDialog, QDialog, QListWidget,
-    QListWidgetItem, QProgressBar
+    QListWidgetItem, QProgressBar, QMenu
 )
 from PySide6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QTimer, QProcess
@@ -3939,6 +3939,71 @@ class _UploadFileWorkerSignals(QObject):
     progress = Signal(int, int)  # 已上传字节数, 总字节数
 
 
+class _DownloadAssetsWorkerSignals(QObject):
+    """下载 Assets Worker 信号"""
+    finished = Signal(list)  # List[str] - 保存的文件路径列表
+    error = Signal(str)
+    progress = Signal(int, int)  # current, total
+
+
+class _DownloadAssetsWorker(QRunnable):
+    """后台线程：下载 GitHub Release 的 assets"""
+    def __init__(self, assets: List[Dict[str, Any]], save_dir: str, tag_name: str):
+        super().__init__()
+        self.signals = _DownloadAssetsWorkerSignals()
+        self._assets = assets
+        self._save_dir = Path(save_dir)
+        self._tag_name = tag_name
+        self._canceled = False
+    
+    def cancel(self):
+        """取消下载"""
+        self._canceled = True
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            saved_files = []
+            total = len(self._assets)
+            
+            for i, asset in enumerate(self._assets):
+                if self._canceled:
+                    self.signals.error.emit("下载已取消")
+                    return
+                
+                asset_name = asset.get("name", "")
+                download_url = asset.get("browser_download_url", "")
+                
+                if not download_url:
+                    continue
+                
+                # 保存文件
+                save_path = self._save_dir / asset_name
+                
+                try:
+                    # 下载文件
+                    response = httpx.get(download_url, timeout=300.0, follow_redirects=True)
+                    if response.status_code == 200:
+                        with open(save_path, "wb") as f:
+                            f.write(response.content)
+                        saved_files.append(str(save_path))
+                    else:
+                        self.signals.error.emit(f"下载 {asset_name} 失败: HTTP {response.status_code}")
+                        continue
+                except Exception as e:
+                    self.signals.error.emit(f"下载 {asset_name} 失败: {e}")
+                    continue
+                
+                # 更新进度
+                self.signals.progress.emit(i + 1, total)
+            
+            if not self._canceled:
+                self.signals.finished.emit(saved_files)
+        
+        except Exception as e:
+            self.signals.error.emit(f"下载失败：{type(e).__name__}: {e}")
+
+
 class _UploadFileWorker(QRunnable):
     """后台线程：上传文件"""
     def __init__(self, file_path: str, platform: str, version: str, upload_api_url: str):
@@ -4017,6 +4082,8 @@ class PackageTab(QWidget):
         self._versions = []  # 存储版本列表
         self._push_step = None  # 跟踪 git push 的执行步骤：'check', 'add', 'commit', 'push'
         self._git_status_output = ""  # 存储 git status 的输出
+        self._download_progress = None  # 下载进度对话框
+        self._sign_process = None  # 签名脚本进程
         
         # 获取项目根目录
         current_file = Path(__file__).resolve()
@@ -4111,8 +4178,8 @@ class PackageTab(QWidget):
         
         # 版本列表表格
         self.version_table = QTableWidget()
-        self.version_table.setColumnCount(5)
-        self.version_table.setHorizontalHeaderLabels(["版本号", "发布时间", "Assets", "状态", "操作"])
+        self.version_table.setColumnCount(4)
+        self.version_table.setHorizontalHeaderLabels(["版本号", "发布时间", "Assets", "状态"])
         self.version_table.horizontalHeader().setStretchLastSection(True)
         self.version_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.version_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -4125,7 +4192,10 @@ class PackageTab(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 发布时间
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Assets
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 状态
-        header.setSectionResizeMode(4, QHeaderView.Stretch)  # 操作
+        
+        # 启用右键菜单
+        self.version_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.version_table.customContextMenuRequested.connect(self._on_version_table_context_menu)
         
         left_layout.addWidget(self.version_table, 1)
         
@@ -4285,24 +4355,249 @@ class PackageTab(QWidget):
             status_item = QTableWidgetItem(status_text)
             self.version_table.setItem(row, 3, status_item)
             
-            # 操作按钮（上传）
-            upload_btn = QPushButton("上传")
-            upload_btn.setFixedWidth(60)
-            upload_btn.setFixedHeight(28)
-            # 存储版本数据到按钮的属性中
-            upload_btn.setProperty("version_data", release_data)
-            upload_btn.clicked.connect(self._on_upload_clicked)
-            self.version_table.setCellWidget(row, 4, upload_btn)
+            # 存储版本数据到行的 UserRole 中，供右键菜单使用
+            version_item.setData(Qt.UserRole, release_data)
     
-    def _on_upload_clicked(self):
-        """上传按钮点击事件"""
-        btn = self.sender()
-        if not btn:
+    def _on_version_table_context_menu(self, position):
+        """版本列表右键菜单"""
+        item = self.version_table.itemAt(position)
+        if not item:
             return
         
-        version_data = btn.property("version_data")
+        row = item.row()
+        # 获取版本数据
+        version_item = self.version_table.item(row, 0)
+        if not version_item:
+            return
+        
+        version_data = version_item.data(Qt.UserRole)
         if not version_data:
             return
+        
+        # 检查是否有 macOS 的 assets（只有 macOS 版本才显示"下载并签名"）
+        download_urls = version_data.get("download_urls", {})
+        has_macos = bool(download_urls.get("darwin"))
+        
+        # 创建右键菜单
+        menu = QMenu(self)
+        
+        # 仅下载选项
+        download_action = menu.addAction("仅下载")
+        download_action.triggered.connect(lambda: self._on_download_only(version_data))
+        
+        # 下载并签名选项（仅 macOS 版本显示）
+        if has_macos:
+            sign_action = menu.addAction("下载并签名")
+            sign_action.triggered.connect(lambda: self._on_download_and_sign(version_data))
+        
+        # 显示菜单
+        menu.exec_(self.version_table.viewport().mapToGlobal(position))
+    
+    def _on_download_only(self, version_data: Dict[str, Any]):
+        """仅下载：下载版本的所有 assets 到本地"""
+        # 选择保存目录
+        save_dir = QFileDialog.getExistingDirectory(
+            self,
+            "选择保存目录",
+            str(Path.home() / "Downloads")
+        )
+        
+        if not save_dir:
+            return
+        
+        # 获取版本信息
+        tag_name = version_data.get("tag_name", "")
+        assets = version_data.get("assets", [])
+        
+        if not assets:
+            QMessageBox.warning(self, "错误", "该版本没有可下载的文件")
+            return
+        
+        # 创建下载 Worker
+        worker = _DownloadAssetsWorker(assets, save_dir, tag_name)
+        worker.signals.finished.connect(self._on_download_finished)
+        worker.signals.error.connect(self._on_download_error)
+        worker.signals.progress.connect(self._on_download_progress)
+        
+        # 创建进度对话框
+        self._download_progress = QProgressDialog(
+            f"正在下载版本 {tag_name} 的文件...",
+            "取消",
+            0,
+            len(assets),
+            self
+        )
+        self._download_progress.setWindowTitle("下载文件")
+        self._download_progress.setWindowModality(Qt.WindowModal)
+        self._download_progress.setMinimumDuration(0)
+        self._download_progress.setValue(0)
+        self._download_progress.canceled.connect(worker.cancel)
+        
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_download_and_sign(self, version_data: Dict[str, Any]):
+        """下载并签名：执行 sign_and_notarize_from_github.py 脚本"""
+        # 获取版本信息
+        tag_name = version_data.get("tag_name", "")
+        if not tag_name:
+            QMessageBox.warning(self, "错误", "版本号为空")
+            return
+        
+        # 从配置读取仓库信息
+        cfg = ConfigManager.load()
+        repo_owner = cfg.get("packaging_github_repo_owner", "sanyingkeji")
+        repo_name = cfg.get("packaging_github_repo_name", "ai-perf")
+        api_key = cfg.get("packaging_github_api_key", "")
+        
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "需要配置",
+                "私有仓库需要 GitHub API Key 才能下载。\n\n"
+                "请在 设置 → 打包配置 中配置 GitHub API Key。"
+            )
+            return
+        
+        # 询问客户端类型（employee 或 admin）
+        from PySide6.QtWidgets import QInputDialog
+        client_type, ok = QInputDialog.getItem(
+            self,
+            "选择客户端类型",
+            "请选择要签名和公证的客户端类型：",
+            ["employee", "admin"],
+            1,  # 默认选择 admin
+            False
+        )
+        
+        if not ok:
+            return
+        
+        # 获取脚本路径
+        script_path = Path(self._project_root) / "scripts" / "sign_and_notarize_from_github.py"
+        if not script_path.exists():
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"找不到脚本文件：\n{script_path}"
+            )
+            return
+        
+        # 构建命令
+        python_cmd = sys.executable
+        cmd = [
+            python_cmd,
+            str(script_path),
+            client_type,
+            tag_name,
+            repo_owner,
+            repo_name,
+            api_key
+        ]
+        
+        # 显示确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认执行",
+            f"将执行以下操作：\n\n"
+            f"1. 从 GitHub Release {tag_name} 下载 .app 文件\n"
+            f"2. 自动签名和公证\n"
+            f"3. 打包成 DMG 和 PKG\n"
+            f"4. 自动区分 Intel 和 M 芯片，保存到对应目录\n\n"
+            f"客户端类型：{client_type}\n\n"
+            f"是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 执行脚本（在后台线程中执行，并显示输出）
+        self._execute_sign_script(cmd)
+    
+    def _execute_sign_script(self, cmd: List[str]):
+        """执行签名脚本并显示输出"""
+        # 清空输出区域
+        self.output_text.clear()
+        self._append_output("=" * 50)
+        self._append_output(f"执行签名和公证脚本...")
+        self._append_output(f"命令: {' '.join(cmd)}")
+        self._append_output("=" * 50)
+        self._append_output("")
+        
+        # 创建进程
+        self._sign_process = QProcess(self)
+        self._sign_process.readyReadStandardOutput.connect(
+            lambda: self._append_output(self._sign_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+        )
+        self._sign_process.readyReadStandardError.connect(
+            lambda: self._append_output(self._sign_process.readAllStandardError().data().decode('utf-8', errors='replace'), is_error=True)
+        )
+        self._sign_process.finished.connect(self._on_sign_script_finished)
+        
+        # 启动进程
+        self._sign_process.start(cmd[0], cmd[1:])
+        
+        if not self._sign_process.waitForStarted(5000):
+            QMessageBox.warning(self, "错误", "无法启动签名脚本")
+            return
+    
+    def _on_sign_script_finished(self, exit_code: int, exit_status: int):
+        """签名脚本执行完成"""
+        self._append_output("")
+        self._append_output("=" * 50)
+        if exit_code == 0:
+            self._append_output("✓ 签名和公证完成")
+            QMessageBox.information(
+                self,
+                "完成",
+                "签名和公证流程已完成！\n\n"
+                "请查看输出日志了解详细信息。"
+            )
+        else:
+            self._append_output(f"✗ 签名和公证失败（退出码：{exit_code}）")
+            QMessageBox.warning(
+                self,
+                "失败",
+                f"签名和公证流程失败（退出码：{exit_code}）\n\n"
+                "请查看输出日志了解错误详情。"
+            )
+        self._append_output("=" * 50)
+    
+    def _on_download_finished(self, saved_files: List[str]):
+        """下载完成"""
+        if self._download_progress:
+            self._download_progress.close()
+            self._download_progress = None
+        
+        file_list = "\n".join([f"  • {f}" for f in saved_files[:10]])
+        if len(saved_files) > 10:
+            file_list += f"\n  ... 还有 {len(saved_files) - 10} 个文件"
+        
+        QMessageBox.information(
+            self,
+            "下载完成",
+            f"已下载 {len(saved_files)} 个文件：\n\n{file_list}"
+        )
+    
+    def _on_download_error(self, error_msg: str):
+        """下载错误"""
+        if self._download_progress:
+            self._download_progress.close()
+            self._download_progress = None
+        
+        QMessageBox.warning(self, "下载失败", f"下载失败：{error_msg}")
+    
+    def _on_download_progress(self, current: int, total: int):
+        """下载进度更新"""
+        if self._download_progress:
+            self._download_progress.setValue(current)
+            self._download_progress.setLabelText(f"正在下载文件 {current}/{total}...")
+    
+    def _on_upload_clicked(self):
+        """上传按钮点击事件（保留此方法以兼容旧代码，但不再使用）"""
+        # 此方法已不再使用，保留以避免错误
+        pass
         
         # 使用 tag_name 或 version（tag_name 可能包含 v 前缀）
         version = version_data.get("tag_name", version_data.get("version", ""))
@@ -4664,11 +4959,19 @@ class PackageTab(QWidget):
         scrollbar = self.output_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
     
-    def _append_output(self, text: str):
+    def _append_output(self, text: str, is_error: bool = False):
         """追加输出文本"""
         cursor = self.output_text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.setCharFormat(self._default_format)
+        
+        # 如果是错误，使用红色格式
+        if is_error:
+            error_format = QTextCharFormat(self._default_format)
+            error_format.setForeground(QColor("#FF6B6B"))
+            cursor.setCharFormat(error_format)
+        else:
+            cursor.setCharFormat(self._default_format)
+        
         cursor.insertText(text)
         
         scrollbar = self.output_text.verticalScrollBar()

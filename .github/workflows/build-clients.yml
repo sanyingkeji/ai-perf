@@ -613,12 +613,57 @@ jobs:
           
           # 复制 .app 目录并打包成 ZIP（macOS 应用包是目录，需要打包）
           # 只保留主应用，过滤掉 QtWebEngineProcess.app 等辅助应用
+          # 根据路径判断架构（m/ 表示 arm64，intel/ 表示 intel）
           find artifacts -type d -name "*.app" | while read app_path; do
             app_name=$(basename "$app_path")
             # 过滤掉 QtWebEngineProcess.app 等辅助应用
             if [[ "$app_name" != "QtWebEngineProcess.app" ]]; then
-              echo "打包 $app_name..."
-              zip -r "release_files/${app_name}.zip" "$app_path" -q
+              # 判断架构
+              if echo "$app_path" | grep -q "/m/"; then
+                arch="arm64"
+              elif echo "$app_path" | grep -q "/intel/"; then
+                arch="intel"
+              else
+                arch="unknown"
+              fi
+              
+              # 生成带架构信息的 ZIP 文件名
+              if [[ "$arch" != "unknown" ]]; then
+                zip_name="${app_name}-${arch}.zip"
+              else
+                zip_name="${app_name}.zip"
+              fi
+              
+              echo "打包 $app_name ($arch) -> $zip_name..."
+              # 使用最高压缩级别（-9）和排除不必要的文件
+              zip -r -9 "release_files/${zip_name}" "$app_path" -q \
+                -x "*.DS_Store" \
+                -x "*__pycache__*" \
+                -x "*.pyc" \
+                -x "*.pyo" \
+                -x "*.pyd" \
+                -x ".git/*" \
+                -x ".gitignore" \
+                -x "*.log" \
+                -x "*.tmp" \
+                -x "*.bak"
+              
+              # 检查文件大小（GitHub 限制 2 GB = 2147483648 字节）
+              if command -v stat >/dev/null 2>&1; then
+                # macOS 使用 stat -f%z，Linux 使用 stat -c%s
+                file_size=$(stat -f%z "release_files/${zip_name}" 2>/dev/null || stat -c%s "release_files/${zip_name}" 2>/dev/null || echo "0")
+                file_size_mb=$(echo "scale=2; $file_size / 1048576" | bc 2>/dev/null || awk "BEGIN {printf \"%.2f\", $file_size / 1048576}")
+                
+                # 检查是否超过 2 GB（2147483648 字节）
+                if [ "$file_size" -gt 2147483648 ] 2>/dev/null; then
+                  echo "⚠ 警告: $zip_name 大小 ${file_size_mb} MB (${file_size} 字节)，超过 GitHub 2 GB 限制，将跳过上传"
+                  rm -f "release_files/${zip_name}"
+                else
+                  echo "✓ $zip_name 大小: ${file_size_mb} MB"
+                fi
+              else
+                echo "⚠ 无法检查文件大小，继续上传 $zip_name"
+              fi
             fi
           done
           
@@ -633,8 +678,29 @@ jobs:
           \) -exec cp {} release_files/ \;
           
           # 显示要上传的文件
+          echo ""
           echo "准备上传的文件："
           ls -lh release_files/ || echo "未找到安装包文件"
+          
+          # 检查是否有文件超过 2 GB
+          echo ""
+          echo "文件大小检查："
+          for file in release_files/*; do
+            if [ -f "$file" ]; then
+              file_name=$(basename "$file")
+              # macOS 使用 stat -f%z，Linux 使用 stat -c%s
+              file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+              file_size_mb=$(echo "scale=2; $file_size / 1048576" | bc 2>/dev/null || awk "BEGIN {printf \"%.2f\", $file_size / 1048576}")
+              
+              # 检查是否超过 2 GB（2147483648 字节）
+              if [ "$file_size" -gt 2147483648 ] 2>/dev/null; then
+                echo "✗ $file_name: ${file_size_mb} MB (超过 2 GB 限制，将被跳过)"
+                rm -f "$file"
+              else
+                echo "✓ $file_name: ${file_size_mb} MB"
+              fi
+            fi
+          done
       
       - name: Create Release
         uses: softprops/action-gh-release@v1

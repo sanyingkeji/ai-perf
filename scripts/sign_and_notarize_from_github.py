@@ -404,7 +404,7 @@ def main():
             
             # 签名和公证
             log_warn(f"开始签名和公证 {arch} .app...")
-            sign_and_notarize_app(app_bundle, client_type, arch)
+            sign_and_notarize_app_from_existing(app_bundle, client_type, arch)
             
             log_info(f"✓ {arch} 架构处理完成")
             print()
