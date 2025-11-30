@@ -611,9 +611,11 @@ jobs:
           # 创建 release_files 目录
           mkdir -p release_files
           
-          # 只复制安装包文件（.app, .dmg, .pkg, .exe, .msi, .deb, .rpm）
+          # 复制 .app 目录（macOS 应用包是目录，不是文件）
+          find artifacts -type d -name "*.app" -exec cp -R {} release_files/ \;
+          
+          # 复制安装包文件（.dmg, .pkg, .exe, .msi, .deb, .rpm）
           find artifacts -type f \( \
-            -name "*.app" -o \
             -name "*.dmg" -o \
             -name "*.pkg" -o \
             -name "*.exe" -o \
