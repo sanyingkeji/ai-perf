@@ -611,8 +611,16 @@ jobs:
           # 创建 release_files 目录
           mkdir -p release_files
           
-          # 复制 .app 目录（macOS 应用包是目录，不是文件）
-          find artifacts -type d -name "*.app" -exec cp -R {} release_files/ \;
+          # 复制 .app 目录并打包成 ZIP（macOS 应用包是目录，需要打包）
+          # 只保留主应用，过滤掉 QtWebEngineProcess.app 等辅助应用
+          find artifacts -type d -name "*.app" | while read app_path; do
+            app_name=$(basename "$app_path")
+            # 过滤掉 QtWebEngineProcess.app 等辅助应用
+            if [[ "$app_name" != "QtWebEngineProcess.app" ]]; then
+              echo "打包 $app_name..."
+              zip -r "release_files/${app_name}.zip" "$app_path" -q
+            fi
+          done
           
           # 复制安装包文件（.dmg, .pkg, .exe, .msi, .deb, .rpm）
           find artifacts -type f \( \
