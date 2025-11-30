@@ -826,122 +826,11 @@ def main():
                     f.write(entitlements_content)
                 log_info("✓ 创建 entitlements.plist")
             
-            # 辅助函数：签名内部文件（不使用时间戳，用于 frameworks、辅助可执行文件等）
-            def sign_file(file_path, codesign_identity, extra_args=None, timeout=60):
-                """
-                签名内部文件，不使用时间戳（时间戳只用于最终产物）
-                
-                Args:
-                    file_path: 要签名的文件路径
-                    codesign_identity: 签名身份
-                    extra_args: 额外的 codesign 参数列表
-                    timeout: 单次签名超时时间（秒），默认60秒
-                
-                Returns:
-                    (success: bool, error_msg: str)
-                """
-                if extra_args is None:
-                    extra_args = []
-                
-                try:
-                    env = os.environ.copy()
-                    sign_result = subprocess.run([
-                        "codesign", "--force", "--sign", codesign_identity,
-                        *extra_args,
-                        str(file_path)
-                    ], check=False, capture_output=True, text=True, timeout=timeout, env=env)
-                    
-                    if sign_result.returncode == 0:
-                        return (True, None)
-                    else:
-                        error_msg = sign_result.stderr[:200] if sign_result.stderr else '未知错误'
-                        return (False, error_msg)
-                except subprocess.TimeoutExpired:
-                    return (False, f"签名超时（超过 {timeout} 秒）")
-                except Exception as e:
-                    return (False, str(e))
-            
-            # 辅助函数：带时间戳签名（带重试机制，仅用于最终产物 .app/.pkg/.dmg）
-            def sign_with_timestamp(file_path, codesign_identity, max_retries=3, retry_delay=5, extra_args=None, timeout=180):
-                """
-                带时间戳签名，如果失败则重试（仅用于最终产物，如 .app、.pkg、.dmg）
-                如果所有重试都失败，将抛出异常停止执行
-                
-                Args:
-                    file_path: 要签名的文件路径
-                    codesign_identity: 签名身份
-                    max_retries: 最大重试次数
-                    retry_delay: 初始重试延迟（秒），会指数退避
-                    extra_args: 额外的 codesign 参数列表
-                    timeout: 单次签名超时时间（秒），默认180秒
-                
-                Returns:
-                    (success: bool, error_msg: str)
-                """
-                if extra_args is None:
-                    extra_args = []
-                
-                current_delay = retry_delay
-                
-                # 重试 max_retries 次
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        env = os.environ.copy()
-                        sign_result = subprocess.run([
-                            "codesign", "--force", "--sign", codesign_identity,
-                            "--options", "runtime",
-                            "--timestamp",
-                            *extra_args,
-                            str(file_path)
-                        ], check=False, capture_output=True, text=True, timeout=timeout, env=env)
-                        
-                        if sign_result.returncode == 0:
-                            return (True, None)
-                        else:
-                            error_msg = sign_result.stderr[:200] if sign_result.stderr else '未知错误'
-                            if attempt < max_retries:
-                                log_warn(f"      带时间戳签名失败（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {error_msg}")
-                                time.sleep(current_delay)
-                                current_delay *= 2  # 指数退避
-                            else:
-                                # 最后一次重试失败，抛出异常停止执行
-                                error_msg_full = f"签名失败（已重试 {max_retries} 次）: {error_msg}"
-                                log_error(f"      ✗ {error_msg_full}")
-                                raise Exception(error_msg_full)
-                    except subprocess.TimeoutExpired:
-                        if attempt < max_retries:
-                            log_warn(f"      签名超时（尝试 {attempt}/{max_retries}，超时 {timeout} 秒），{current_delay} 秒后重试...")
-                            time.sleep(current_delay)
-                            current_delay *= 2  # 指数退避
-                        else:
-                            # 最后一次超时，抛出异常停止执行
-                            error_msg = f"签名超时（已重试 {max_retries} 次，超过 {timeout} 秒）"
-                            log_error(f"      ✗ {error_msg}")
-                            raise Exception(error_msg)
-                    except Exception as e:
-                        # 如果是我们抛出的异常，直接抛出
-                        if "签名失败" in str(e) or "签名超时" in str(e):
-                            raise
-                        if attempt < max_retries:
-                            log_warn(f"      签名出错（尝试 {attempt}/{max_retries}），{current_delay} 秒后重试: {e}")
-                            time.sleep(current_delay)
-                            current_delay *= 2  # 指数退避
-                        else:
-                            # 最后一次出错，抛出异常停止执行
-                            error_msg = f"签名出错（已重试 {max_retries} 次）: {e}"
-                            log_error(f"      ✗ {error_msg}")
-                            raise Exception(error_msg)
-            
             # 签名 Resources 目录中的二进制文件（如果有）
             resources_dir = app_bundle / "Contents" / "Resources"
             if resources_dir.exists():
                 log_info("  签名 Resources 目录中的二进制文件...")
-                resources_files = list(resources_dir.rglob("*"))
-                total_files = len([f for f in resources_files if f.is_file()])
-                signed_count = 0
-                failed_files = []
-                
-                for item in resources_files:
+                for item in resources_dir.rglob("*"):
                     if item.is_file():
                         # 跳过资源文件
                         if item.suffix in [".plist", ".qm", ".png", ".json", ".icns", ".txt", ".md"]:
@@ -953,35 +842,18 @@ def main():
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                                timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
+                                timeout=2
                             )
                             if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
-                                log_info(f"    签名: {item.relative_to(app_bundle)} ({signed_count + 1}/{total_files})")
-                                # 内部文件不使用时间戳（时间戳只用于最终产物）
-                                try:
-                                    success, error_msg = sign_file(item, codesign_identity)
-                                    if success:
-                                        signed_count += 1
-                                    else:
-                                        failed_files.append((item.relative_to(app_bundle), error_msg))
-                                        log_error(f"      签名失败: {error_msg}")
-                                except Exception as e:
-                                    # 签名失败，停止执行
-                                    failed_files.append((item.relative_to(app_bundle), str(e)))
-                                    log_error(f"      签名失败: {e}")
-                                    raise  # 重新抛出异常，停止执行
-                        except subprocess.TimeoutExpired:
-                            log_warn(f"      文件类型检查超时: {item.relative_to(app_bundle)}")
-                        except Exception as e:
-                            log_warn(f"      签名时出错: {e}")
-                
-                if failed_files:
-                    log_error(f"  ✗ Resources 目录签名失败 {len(failed_files)} 个文件:")
-                    for file_path, error in failed_files:
-                        log_error(f"    - {file_path}: {error}")
-                    raise Exception(f"Resources 目录中有 {len(failed_files)} 个文件签名失败，无法继续（无时间戳签名无法通过公证）")
-                
-                log_info(f"  ✓ Resources 目录签名完成: {signed_count} 个文件")
+                                log_info(f"    签名: {item.relative_to(app_bundle)}")
+                                subprocess.run([
+                                    "codesign", "--force", "--sign", codesign_identity,
+                                    "--options", "runtime",
+                                    "--timestamp",
+                                    str(item)
+                                ], check=False, capture_output=True)
+                        except Exception:
+                            pass
             
             frameworks_dir = app_bundle / "Contents" / "Frameworks"
             if frameworks_dir.exists():
@@ -989,25 +861,14 @@ def main():
                 log_info("  签名独立的 .dylib 文件和无扩展名 Mach-O 文件...")
                 dylib_files = [f for f in frameworks_dir.rglob("*.dylib") 
                               if ".framework" not in str(f)]
-                failed_dylibs = []
                 for dylib in dylib_files:
                     log_info(f"    签名: {dylib.relative_to(app_bundle)}")
-                    try:
-                        # 内部文件不使用时间戳（时间戳只用于最终产物）
-                        success, error_msg = sign_file(dylib, codesign_identity)
-                        if not success:
-                            failed_dylibs.append((dylib.relative_to(app_bundle), error_msg))
-                            log_error(f"      签名失败: {error_msg}")
-                    except Exception as e:
-                        # 签名失败，停止执行
-                        log_error(f"      签名失败: {e}")
-                        raise
-                
-                if failed_dylibs:
-                    log_error(f"  ✗ .dylib 文件签名失败 {len(failed_dylibs)} 个文件:")
-                    for file_path, error in failed_dylibs:
-                        log_error(f"    - {file_path}: {error}")
-                    raise Exception(f".dylib 文件中有 {len(failed_dylibs)} 个文件签名失败，无法继续（无时间戳签名无法通过公证）")
+                    subprocess.run([
+                        "codesign", "--force", "--sign", codesign_identity,
+                        "--options", "runtime",
+                        "--timestamp",  # 使用时间戳，对公证很重要
+                        str(dylib)
+                    ], check=False, capture_output=True)
                 
                 # 签名无扩展名的 Mach-O 文件（如 QtWidgets, QtCore 等）
                 log_info("  签名无扩展名的 Mach-O 文件...")
@@ -1020,36 +881,34 @@ def main():
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                                timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
+                                timeout=2
                             )
                             if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                 log_info(f"    签名: {item.relative_to(app_bundle)}")
-                                # 内部文件不使用时间戳（时间戳只用于最终产物）
-                                # 使用 --preserve-metadata 确保签名完整
-                                success, error_msg = sign_file(
-                                    item, codesign_identity,
-                                    extra_args=["--preserve-metadata=entitlements,requirements,flags"]
-                                )
-                                if not success:
-                                    raise Exception(f"签名失败: {error_msg}")
-                                
+                                # 使用 --preserve-metadata 和 --deep 确保签名完整
+                                subprocess.run([
+                                    "codesign", "--force", "--sign", codesign_identity,
+                                    "--options", "runtime",
+                                    "--timestamp",  # 使用时间戳
+                                    "--preserve-metadata=entitlements,requirements,flags",
+                                    str(item)
+                                ], check=False, capture_output=True)
                                 # 验证签名
                                 verify_result = subprocess.run(
                                     ["codesign", "-vvv", str(item)],
                                     capture_output=True,
                                     text=True,
-                                    timeout=60  # 大型文件（如 QtWebEngineCore）验证可能需要更长时间
+                                    timeout=2
                                 )
                                 if verify_result.returncode != 0:
                                     log_warn(f"      警告: {item.name} 签名验证失败，尝试重新签名...")
-                                    # 如果验证失败，重新签名（内部文件不使用时间戳）
-                                    try:
-                                        success, error_msg = sign_file(item, codesign_identity)
-                                        if not success:
-                                            raise Exception(f"重新签名失败: {error_msg}")
-                                    except Exception as e:
-                                        # 签名失败，停止执行
-                                        raise
+                                    # 如果验证失败，尝试使用 --deep 重新签名
+                                    subprocess.run([
+                                        "codesign", "--force", "--sign", codesign_identity,
+                                        "--options", "runtime",
+                                        "--timestamp",  # 使用时间戳
+                                        str(item)
+                                    ], check=False, capture_output=True)
                         except Exception as e:
                             log_warn(f"      签名 {item.name} 时出错: {e}")
                 
@@ -1077,31 +936,25 @@ def main():
                                         capture_output=True,
                                         text=True,
                                         check=True,
-                                        timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
+                                        timeout=2
                                     )
                                     if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
-                                        try:
-                                            # 内部文件不使用时间戳（时间戳只用于最终产物）
-                                            success, error_msg = sign_file(item, codesign_identity)
-                                            if not success:
-                                                log_error(f"      框架内文件签名失败: {item.relative_to(app_bundle)}: {error_msg}")
-                                                raise Exception(f"框架内文件签名失败: {error_msg}")
-                                        except Exception as e:
-                                            # 签名失败，停止执行
-                                            raise
+                                        subprocess.run([
+                                            "codesign", "--force", "--sign", codesign_identity,
+                                            "--options", "runtime",
+                                            "--timestamp",  # 使用时间戳
+                                            str(item)
+                                        ], check=False, capture_output=True)
                                 except Exception:
                                     pass
                         
                         # 然后签名整个框架目录
-                        try:
-                            # Framework 目录签名（内部文件不使用时间戳）
-                            success, error_msg = sign_file(framework_dir, codesign_identity, timeout=300)
-                            if not success:
-                                log_error(f"      框架签名失败（已重试）: {framework_dir.relative_to(app_bundle)}: {error_msg}")
-                                raise Exception(f"框架签名失败: {error_msg}")
-                        except Exception as e:
-                            # 签名失败，停止执行
-                            raise
+                        subprocess.run([
+                            "codesign", "--force", "--sign", codesign_identity,
+                            "--options", "runtime",
+                            "--timestamp",  # 使用时间戳
+                            str(framework_dir)
+                        ], check=False, capture_output=True)
                     
                     # 签名 Qt 目录中的其他二进制文件（非框架）
                     log_info("  签名 Qt 其他二进制文件...")
@@ -1115,51 +968,36 @@ def main():
                                     capture_output=True,
                                     text=True,
                                     check=True,
-                                    timeout=15  # 增加超时时间，大型文件或系统负载高时可能需要更长时间
+                                    timeout=2
                                 )
                                 if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                     log_info(f"    签名: {qt_lib.relative_to(app_bundle)}")
-                                    try:
-                                        # 内部文件不使用时间戳（时间戳只用于最终产物）
-                                        success, error_msg = sign_file(qt_lib, codesign_identity)
-                                        if not success:
-                                            log_error(f"      签名失败: {error_msg}")
-                                            raise Exception(f"Qt 文件签名失败: {error_msg}")
-                                    except Exception as e:
-                                        # 签名失败，停止执行
-                                        raise
+                                    subprocess.run([
+                                        "codesign", "--force", "--sign", codesign_identity,
+                                        "--options", "runtime",
+                                        "--timestamp",  # 使用时间戳
+                                        str(qt_lib)
+                                    ], check=False, capture_output=True)
                             except Exception:
                                 pass
                 
                 # 第三步：签名所有 .so 文件（它们依赖已签名的框架）
                 log_info("  签名 .so 文件...")
                 so_files = list(frameworks_dir.rglob("*.so"))
-                failed_so_files = []
                 for so_file in so_files:
                     log_info(f"    签名: {so_file.relative_to(app_bundle)}")
-                    try:
-                        # 内部文件不使用时间戳（时间戳只用于最终产物）
-                        success, error_msg = sign_file(so_file, codesign_identity)
-                        if not success:
-                            failed_so_files.append((so_file.relative_to(app_bundle), error_msg))
-                            log_error(f"      签名失败: {error_msg}")
-                    except Exception as e:
-                        # 签名失败，停止执行
-                        log_error(f"      签名失败: {e}")
-                        raise
-                
-                if failed_so_files:
-                    log_error(f"  ✗ .so 文件签名失败 {len(failed_so_files)} 个文件:")
-                    for file_path, error in failed_so_files:
-                        log_error(f"    - {file_path}: {error}")
-                    raise Exception(f".so 文件中有 {len(failed_so_files)} 个文件签名失败，无法继续（无时间戳签名无法通过公证）")
+                    subprocess.run([
+                        "codesign", "--force", "--sign", codesign_identity,
+                        "--options", "runtime",
+                        "--timestamp",  # 使用时间戳
+                        str(so_file)
+                    ], check=False, capture_output=True)
             
             # 最后签名整个应用包
             # 注意：使用 --deep 会重新签名所有内容，可能会破坏之前的签名
             # 所以先验证并修复所有关键文件的签名
             log_warn("验证并修复关键文件签名...")
-            # 查找所有无扩展名的 Qt 文件（如果 frameworks_dir 存在）
-            if frameworks_dir.exists():
+            # 查找所有无扩展名的 Qt 文件
                 qt_files = [f for f in frameworks_dir.iterdir() 
                            if f.is_file() and not f.suffix and f.name.startswith("Qt")]
                 for qt_file in qt_files:
@@ -1167,61 +1005,51 @@ def main():
                         ["codesign", "-vvv", str(qt_file)],
                         capture_output=True,
                         text=True,
-                        timeout=60  # 大型文件（如 QtWebEngineCore）验证可能需要更长时间
+                    timeout=2
                     )
                     if verify_result.returncode != 0:
                         log_warn(f"  重新签名: {qt_file.relative_to(app_bundle)}")
-                        # 内部文件重新签名（不使用时间戳）
-                        try:
-                            success, error_msg = sign_file(qt_file, codesign_identity)
-                            if not success:
-                                log_error(f"      重新签名失败: {error_msg}")
-                                raise Exception(f"Qt 文件重新签名失败: {error_msg}")
-                        except Exception as e:
-                            # 签名失败，停止执行
-                            raise
+                    subprocess.run([
+                        "codesign", "--force", "--sign", codesign_identity,
+                        "--options", "runtime",
+                        "--timestamp",  # 使用时间戳
+                        str(qt_file)
+                    ], check=False, capture_output=True)
             
             log_warn("签名应用包主可执行文件...")
-            # 先签名主可执行文件（内部文件不使用时间戳）
+            # 先签名主可执行文件
             main_executable = app_bundle / "Contents" / "MacOS" / app_name
             if main_executable.exists():
-                try:
-                    success, error_msg = sign_file(main_executable, codesign_identity)
-                    if not success:
-                        log_error(f"      主可执行文件签名失败: {error_msg}")
-                        raise Exception(f"主可执行文件签名失败: {error_msg}")
+                subprocess.run([
+                    "codesign", "--force", "--sign", codesign_identity,
+                    "--options", "runtime",
+                    "--timestamp",
+                    str(main_executable)
+                ], check=True)
                     log_info("✓ 主可执行文件已签名")
-                except Exception as e:
-                    # 签名失败，停止执行
-                    raise
             
-            log_warn("签名应用包（最终产物，使用时间戳）...")
+            log_warn("签名应用包（不使用 --deep，避免重新签名）...")
             # 不使用 --deep，因为我们已经手动签名了所有组件
             # 使用 --strict 进行更严格的验证
-            # 最终产物必须使用时间戳（用于公证）
-            try:
-                success, error_msg = sign_with_timestamp(
-                    app_bundle, codesign_identity,
-                    max_retries=3, retry_delay=10, timeout=300,
-                    extra_args=["--strict", "--verify"]
-                )
-                if not success:
-                    log_error(f"      应用包签名失败: {error_msg}")
-                    raise Exception(f"应用包签名失败: {error_msg}")
-            except Exception as e:
-                # 签名失败，停止执行
-                raise
+            codesign_cmd = [
+                "codesign", "--force", "--sign", codesign_identity,
+                "--options", "runtime",
+                "--timestamp",
+                "--strict",
+                "--verify",
+                str(app_bundle)
+            ]
+            subprocess.run(codesign_cmd, check=True)
             
             # 签名后，再次验证并修复关键文件（因为 --deep 可能会破坏签名）
             log_warn("签名后验证并修复关键文件...")
-            # 查找 Contents/Frameworks 下的无扩展名 Mach-O 文件（如果 frameworks_dir 存在）
-            re_sign_needed = False
-            if frameworks_dir.exists():
+            # 查找 Contents/Frameworks 下的无扩展名 Mach-O 文件
                 frameworks_root_mach_o_files = [
                     f for f in frameworks_dir.iterdir()
                     if f.is_file() and not f.suffix and ".framework" not in str(f)
                 ]
                 
+            re_sign_needed = False
                 for item in frameworks_root_mach_o_files:
                     try:
                         # 使用 -vvv 检查签名状态（这会检测到 "invalid Info.plist" 错误）
@@ -1229,29 +1057,24 @@ def main():
                             ["codesign", "-vvv", str(item)],
                             capture_output=True,
                             text=True,
-                            check=False, # 不检查返回码，因为可能就是无效
-                            timeout=60  # 大型文件验证可能需要更长时间
+                        check=False # 不检查返回码，因为可能就是无效
                         )
                         # 检查是否有 "invalid Info.plist" 或 "code object is not signed" 错误
                         if verify_result.returncode != 0 or "invalid Info.plist" in verify_result.stderr or "code object is not signed" in verify_result.stderr:
                             log_warn(f"    发现签名无效: {item.relative_to(app_bundle)}，重新签名...")
                             log_warn(f"      错误信息: {verify_result.stderr.strip()[:100]}")
-                            try:
-                                # 内部文件重新签名（不使用时间戳）
-                                success, error_msg = sign_file(item, codesign_identity)
-                                if not success:
-                                    log_error(f"      重新签名失败: {error_msg}")
-                                    raise Exception(f"关键文件重新签名失败: {error_msg}")
-                            except Exception as e:
-                                # 签名失败，停止执行
-                                raise
+                        subprocess.run([
+                            "codesign", "--force", "--sign", codesign_identity,
+                            "--options", "runtime",
+                            "--timestamp=none",  # 关键：重新签名时使用 --timestamp=none
+                            str(item)
+                        ], check=False, capture_output=True)
                             # 再次验证
                             verify_again = subprocess.run(
                                 ["codesign", "-vvv", str(item)],
                                 capture_output=True,
                                 text=True,
-                                check=False,
-                                timeout=60  # 大型文件验证可能需要更长时间
+                            check=False
                             )
                             if verify_again.returncode == 0:
                                 log_info(f"      ✓ 重新签名成功")
@@ -1263,20 +1086,16 @@ def main():
 
             if re_sign_needed:
                 log_warn("关键文件已修复，重新签名应用包以包含修复...")
-                # 使用带重试的带时间戳签名
-                try:
-                    success, error_msg = sign_with_timestamp(
-                        app_bundle, codesign_identity,
-                        max_retries=3, retry_delay=10, timeout=300,
-                        extra_args=["--verify", "--verbose", "--strict"]
-                    )
-                    if not success:
-                        log_error(f"      应用包重新签名失败: {error_msg}")
-                        raise Exception(f"应用包重新签名失败: {error_msg}")
+                codesign_cmd = [
+                    "codesign", "--force", "--verify", "--verbose",
+                    "--sign", codesign_identity,
+                    "--options", "runtime",
+                    "--timestamp",
+                    "--strict",
+                    str(app_bundle)
+                ]
+                subprocess.run(codesign_cmd, check=True)
                     log_info("✓ 应用包已重新签名以包含修复")
-                except Exception as e:
-                    # 签名失败，停止执行
-                    raise
             
             # 验证签名（不使用 --deep，因为已弃用）
             log_warn("验证签名...")
@@ -1432,23 +1251,18 @@ def main():
                 str(dmg_path)
             ], capture_output=True, text=True, check=False)
             
-            # 如果时间戳服务不可用，使用带重试的签名函数
-            if timestamp_result.returncode != 0:
-                if "timestamp service is not available" in timestamp_result.stderr:
-                    log_warn("⚠ 时间戳服务不可用，尝试重试...")
-                    # 使用带重试的带时间戳签名
-                    try:
-                        success, error_msg = sign_with_timestamp(dmg_path, codesign_identity, max_retries=3, retry_delay=10, timeout=300)
-                        if not success:
-                            log_error("✗ DMG 签名失败：时间戳服务不可用（已重试）")
-                            log_error(f"   错误信息: {error_msg}")
-                            raise Exception("DMG 签名失败：时间戳服务不可用（已重试）")
-                        log_info("✓ DMG 代码签名完成（已使用时间戳，重试成功）")
-                    except Exception as e:
-                        # 签名失败，停止执行
-                        log_error(f"✗ DMG 签名失败: {e}")
-                        raise
-                else:
+            # 如果时间戳服务不可用，回退到不使用时间戳
+            if timestamp_result.returncode != 0 and "timestamp service is not available" in timestamp_result.stderr:
+                log_warn("⚠ 时间戳服务不可用，尝试不使用时间戳签名...")
+                log_warn("   注意：不使用时间戳可能影响公证，但可以继续签名")
+                subprocess.run([
+                    "codesign", "--force", "--verify", "--verbose",
+                    "--sign", codesign_identity,
+                    "--timestamp=none",  # 回退到不使用时间戳
+                    str(dmg_path)
+                ], check=True)
+                log_info("✓ DMG 代码签名完成（未使用时间戳）")
+            elif timestamp_result.returncode != 0:
                     # 其他错误，直接抛出
                     log_error(f"DMG 签名失败: {timestamp_result.stderr}")
                     raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)

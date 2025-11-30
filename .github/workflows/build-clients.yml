@@ -3,6 +3,9 @@ name: Build Clients
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - 'v*'  # 支持 tag push 触发（如 v1.0.0）
   workflow_dispatch:
     inputs:
       client_type:
@@ -30,14 +33,14 @@ jobs:
     name: Build macOS (Apple Silicon)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
     timeout-minutes: 180  # 3小时超时
-    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -61,6 +64,7 @@ jobs:
         id: check_build
         run: |
           if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event_name }}" == "push" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -92,7 +96,7 @@ jobs:
     name: Build macOS (Intel)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
     timeout-minutes: 180  # 3小时超时
-    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -359,6 +363,7 @@ jobs:
         id: check_build
         run: |
           if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event_name }}" == "push" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -416,7 +421,7 @@ jobs:
     name: Build Windows
     runs-on: windows-latest
     timeout-minutes: 120  # 2小时超时
-    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -495,7 +500,7 @@ jobs:
     name: Build Linux (Ubuntu/Debian)
     runs-on: ubuntu-22.04
     timeout-minutes: 120  # 2小时超时
-    if: github.event_name == 'release' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''
     strategy:
       matrix:
         client: [employee, admin]
@@ -541,6 +546,7 @@ jobs:
         id: check_build
         run: |
           if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event_name }}" == "push" ] || \
              [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
@@ -580,16 +586,29 @@ jobs:
     name: Create Release
     needs: [build-macos-arm64, build-macos-intel, build-windows, build-linux-ubuntu]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
       
+      - name: Determine tag name
+        id: tag_name
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            # 从 refs/tags/v1.0.0 提取 v1.0.0
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+            echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          fi
+      
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.tag_name.outputs.tag }}
+          name: Release ${{ steps.tag_name.outputs.tag }}
           files: artifacts/**/*
           draft: false
           prerelease: false
