@@ -4738,8 +4738,8 @@ class PackageTab(QWidget):
         elif self._push_step == 'add':
             # git add 完成，执行 git commit
             self._push_step = 'commit'
-            self._append_output("\n$ git commit -m \"更新代码\"\n")
-            self._process.start("git", ["commit", "-m", "更新代码"])
+            self._append_output("\n$ git commit -m \"update some code\"\n")
+            self._process.start("git", ["commit", "-m", "update some code"])
         
         elif self._push_step == 'commit':
             # git commit 完成，执行 git push

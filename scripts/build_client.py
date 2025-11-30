@@ -842,7 +842,7 @@ def main():
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                                timeout=2
+                                timeout=30  # 大型文件可能需要更长时间
                             )
                             if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                 log_info(f"    签名: {item.relative_to(app_bundle)}")
@@ -881,7 +881,7 @@ def main():
                                 capture_output=True,
                                 text=True,
                                 check=True,
-                                timeout=2
+                                timeout=30  # 大型文件可能需要更长时间
                             )
                             if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                 log_info(f"    签名: {item.relative_to(app_bundle)}")
@@ -898,7 +898,7 @@ def main():
                                     ["codesign", "-vvv", str(item)],
                                     capture_output=True,
                                     text=True,
-                                    timeout=2
+                                    timeout=60  # 大型文件（如 QtWebEngineCore）验证可能需要更长时间
                                 )
                                 if verify_result.returncode != 0:
                                     log_warn(f"      警告: {item.name} 签名验证失败，尝试重新签名...")
@@ -936,7 +936,7 @@ def main():
                                         capture_output=True,
                                         text=True,
                                         check=True,
-                                        timeout=2
+                                        timeout=30  # 大型文件可能需要更长时间
                                     )
                                     if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                         subprocess.run([
@@ -968,7 +968,7 @@ def main():
                                     capture_output=True,
                                     text=True,
                                     check=True,
-                                    timeout=2
+                                    timeout=30  # 大型文件可能需要更长时间
                                 )
                                 if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
                                     log_info(f"    签名: {qt_lib.relative_to(app_bundle)}")
@@ -998,17 +998,17 @@ def main():
             # 所以先验证并修复所有关键文件的签名
             log_warn("验证并修复关键文件签名...")
             # 查找所有无扩展名的 Qt 文件
-                qt_files = [f for f in frameworks_dir.iterdir() 
-                           if f.is_file() and not f.suffix and f.name.startswith("Qt")]
-                for qt_file in qt_files:
-                    verify_result = subprocess.run(
-                        ["codesign", "-vvv", str(qt_file)],
-                        capture_output=True,
-                        text=True,
-                    timeout=2
-                    )
-                    if verify_result.returncode != 0:
-                        log_warn(f"  重新签名: {qt_file.relative_to(app_bundle)}")
+            qt_files = [f for f in frameworks_dir.iterdir() 
+                       if f.is_file() and not f.suffix and f.name.startswith("Qt")]
+            for qt_file in qt_files:
+                verify_result = subprocess.run(
+                    ["codesign", "-vvv", str(qt_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60  # 大型文件（如 QtWebEngineCore）验证可能需要更长时间
+                )
+                if verify_result.returncode != 0:
+                    log_warn(f"  重新签名: {qt_file.relative_to(app_bundle)}")
                     subprocess.run([
                         "codesign", "--force", "--sign", codesign_identity,
                         "--options", "runtime",
@@ -1026,7 +1026,7 @@ def main():
                     "--timestamp",
                     str(main_executable)
                 ], check=True)
-                    log_info("✓ 主可执行文件已签名")
+                log_info("✓ 主可执行文件已签名")
             
             log_warn("签名应用包（不使用 --deep，避免重新签名）...")
             # 不使用 --deep，因为我们已经手动签名了所有组件
@@ -1044,37 +1044,38 @@ def main():
             # 签名后，再次验证并修复关键文件（因为 --deep 可能会破坏签名）
             log_warn("签名后验证并修复关键文件...")
             # 查找 Contents/Frameworks 下的无扩展名 Mach-O 文件
-                frameworks_root_mach_o_files = [
-                    f for f in frameworks_dir.iterdir()
-                    if f.is_file() and not f.suffix and ".framework" not in str(f)
-                ]
-                
+            frameworks_root_mach_o_files = [
+                f for f in frameworks_dir.iterdir()
+                if f.is_file() and not f.suffix and ".framework" not in str(f)
+            ]
+            
             re_sign_needed = False
-                for item in frameworks_root_mach_o_files:
+            for item in frameworks_root_mach_o_files:
                     try:
                         # 使用 -vvv 检查签名状态（这会检测到 "invalid Info.plist" 错误）
                         verify_result = subprocess.run(
                             ["codesign", "-vvv", str(item)],
                             capture_output=True,
                             text=True,
-                        check=False # 不检查返回码，因为可能就是无效
+                            check=False, # 不检查返回码，因为可能就是无效
+                            timeout=60  # 大型文件验证可能需要更长时间
                         )
                         # 检查是否有 "invalid Info.plist" 或 "code object is not signed" 错误
                         if verify_result.returncode != 0 or "invalid Info.plist" in verify_result.stderr or "code object is not signed" in verify_result.stderr:
                             log_warn(f"    发现签名无效: {item.relative_to(app_bundle)}，重新签名...")
                             log_warn(f"      错误信息: {verify_result.stderr.strip()[:100]}")
-                        subprocess.run([
-                            "codesign", "--force", "--sign", codesign_identity,
-                            "--options", "runtime",
-                            "--timestamp=none",  # 关键：重新签名时使用 --timestamp=none
-                            str(item)
-                        ], check=False, capture_output=True)
+                            subprocess.run([
+                                "codesign", "--force", "--sign", codesign_identity,
+                                "--options", "runtime",
+                                "--timestamp=none",  # 关键：重新签名时使用 --timestamp=none
+                                str(item)
+                            ], check=False, capture_output=True)
                             # 再次验证
                             verify_again = subprocess.run(
                                 ["codesign", "-vvv", str(item)],
                                 capture_output=True,
                                 text=True,
-                            check=False
+                                check=False
                             )
                             if verify_again.returncode == 0:
                                 log_info(f"      ✓ 重新签名成功")
@@ -1095,7 +1096,7 @@ def main():
                     str(app_bundle)
                 ]
                 subprocess.run(codesign_cmd, check=True)
-                    log_info("✓ 应用包已重新签名以包含修复")
+                log_info("✓ 应用包已重新签名以包含修复")
             
             # 验证签名（不使用 --deep，因为已弃用）
             log_warn("验证签名...")
