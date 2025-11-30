@@ -613,18 +613,35 @@ jobs:
           
           # 复制 .app 目录并打包成 ZIP（macOS 应用包是目录，需要打包）
           # 只保留主应用，过滤掉 QtWebEngineProcess.app 等辅助应用
-          # 根据路径判断架构（m/ 表示 arm64，intel/ 表示 intel）
+          # 根据 artifact 目录名判断架构（格式：{client}-macos-{arch}-app）
           find artifacts -type d -name "*.app" | while read app_path; do
             app_name=$(basename "$app_path")
             # 过滤掉 QtWebEngineProcess.app 等辅助应用
             if [[ "$app_name" != "QtWebEngineProcess.app" ]]; then
-              # 判断架构
-              if echo "$app_path" | grep -q "/m/"; then
-                arch="arm64"
-              elif echo "$app_path" | grep -q "/intel/"; then
-                arch="intel"
-              else
-                arch="unknown"
+              # 从完整路径中提取 artifact 目录名
+              # 路径格式：artifacts/{client}-macos-{arch}-app/.../{app_name}.app
+              arch="unknown"
+              
+              # 方法1: 从 artifact 目录名提取（优先级最高）
+              # 查找路径中的 artifact 目录（包含 -macos- 的目录）
+              artifact_dir=$(echo "$app_path" | grep -oE "artifacts/[^/]+-macos-[^/]+-app" | head -1)
+              if [[ -n "$artifact_dir" ]]; then
+                # 提取架构部分：{client}-macos-{arch}-app
+                artifact_name=$(basename "$artifact_dir")
+                if echo "$artifact_name" | grep -qE "-macos-arm64-app$"; then
+                  arch="arm64"
+                elif echo "$artifact_name" | grep -qE "-macos-intel-app$"; then
+                  arch="intel"
+                fi
+              fi
+              
+              # 方法2: 如果方法1失败，尝试从路径中查找架构目录
+              if [[ "$arch" == "unknown" ]]; then
+                if echo "$app_path" | grep -qE "/(arm64|m)/"; then
+                  arch="arm64"
+                elif echo "$app_path" | grep -q "/intel/"; then
+                  arch="intel"
+                fi
               fi
               
               # 生成带架构信息的 ZIP 文件名

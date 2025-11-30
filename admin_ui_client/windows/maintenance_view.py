@@ -3884,7 +3884,7 @@ class _VersionListWorker(QRunnable):
                         asset_name = asset.get("name", "")
                         asset_url = asset.get("browser_download_url", "")
                         # 根据文件名判断平台
-                        if any(ext in asset_name.lower() for ext in [".dmg", ".pkg"]):
+                        if any(ext in asset_name.lower() for ext in [".dmg", ".pkg", ".app.zip"]):
                             platform = "darwin"
                         elif any(ext in asset_name.lower() for ext in [".exe", ".msi"]):
                             platform = "windows"
@@ -4375,8 +4375,20 @@ class PackageTab(QWidget):
             return
         
         # 检查是否有 macOS 的 assets（只有 macOS 版本才显示"下载并签名"）
+        # 检查 download_urls 和 assets 列表
         download_urls = version_data.get("download_urls", {})
+        assets = version_data.get("assets", [])
+        
+        # 检查 download_urls 中是否有 darwin 平台
         has_macos = bool(download_urls.get("darwin"))
+        
+        # 如果没有，检查 assets 列表中是否有 .app.zip 文件
+        if not has_macos:
+            for asset in assets:
+                asset_name = asset.get("name", "").lower()
+                if ".app.zip" in asset_name or asset_name.endswith(".dmg") or asset_name.endswith(".pkg"):
+                    has_macos = True
+                    break
         
         # 创建右键菜单
         menu = QMenu(self)
