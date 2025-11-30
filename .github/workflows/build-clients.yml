@@ -624,7 +624,8 @@ jobs:
               
               # 方法1: 从 artifact 目录名提取（优先级最高）
               # 查找路径中的 artifact 目录（包含 -macos- 的目录）
-              artifact_dir=$(echo "$app_path" | grep -oE "artifacts/[^/]+-macos-[^/]+-app" | head -1)
+              # 使用 sed 替代 grep -oE，避免兼容性问题
+              artifact_dir=$(echo "$app_path" | sed -n 's|.*\(artifacts/[^/]*-macos-[^/]*-app\).*|\1|p' | head -n 1)
               if [[ -n "$artifact_dir" ]]; then
                 # 提取架构部分：{client}-macos-{arch}-app
                 artifact_name=$(basename "$artifact_dir")
@@ -645,13 +646,59 @@ jobs:
               fi
               
               # 生成带架构信息的 ZIP 文件名
+              # 如果架构未知，尝试从路径中提取更多信息
+              if [[ "$arch" == "unknown" ]]; then
+                # 尝试从完整路径中提取更多信息
+                if echo "$app_path" | grep -q "employee-macos-arm64-app"; then
+                  arch="arm64"
+                elif echo "$app_path" | grep -q "employee-macos-intel-app"; then
+                  arch="intel"
+                elif echo "$app_path" | grep -q "admin-macos-arm64-app"; then
+                  arch="arm64"
+                elif echo "$app_path" | grep -q "admin-macos-intel-app"; then
+                  arch="intel"
+                fi
+              fi
+              
+              # 生成 ZIP 文件名（确保唯一性）
               if [[ "$arch" != "unknown" ]]; then
                 zip_name="${app_name}-${arch}.zip"
               else
-                zip_name="${app_name}.zip"
+                # 如果架构仍然未知，使用路径中的信息生成唯一文件名
+                # 从路径中提取客户端类型和可能的架构
+                if echo "$app_path" | grep -q "employee"; then
+                  client_suffix="employee"
+                elif echo "$app_path" | grep -q "admin"; then
+                  client_suffix="admin"
+                else
+                  client_suffix="unknown"
+                fi
+                zip_name="${app_name}-${client_suffix}.zip"
+                echo "⚠ 警告: 无法确定架构，使用 ${client_suffix} 作为后缀"
               fi
               
               echo "打包 $app_name ($arch) -> $zip_name..."
+              echo "  路径: $app_path"
+              
+              # 检查是否已存在同名文件（避免覆盖）
+              if [[ -f "release_files/${zip_name}" ]]; then
+                echo "⚠ 警告: ${zip_name} 已存在，生成唯一文件名..."
+                # 从路径中提取更多信息生成唯一文件名
+                if echo "$app_path" | grep -q "employee-macos-arm64-app"; then
+                  zip_name="${app_name}-employee-arm64.zip"
+                elif echo "$app_path" | grep -q "employee-macos-intel-app"; then
+                  zip_name="${app_name}-employee-intel.zip"
+                elif echo "$app_path" | grep -q "admin-macos-arm64-app"; then
+                  zip_name="${app_name}-admin-arm64.zip"
+                elif echo "$app_path" | grep -q "admin-macos-intel-app"; then
+                  zip_name="${app_name}-admin-intel.zip"
+                else
+                  # 使用时间戳确保唯一性
+                  zip_name="${app_name}-$(date +%s).zip"
+                fi
+                echo "  使用唯一文件名: $zip_name"
+              fi
+              
               # 使用最高压缩级别（-9）和排除不必要的文件
               zip -r -9 "release_files/${zip_name}" "$app_path" -q \
                 -x "*.DS_Store" \
