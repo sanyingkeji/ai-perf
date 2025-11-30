@@ -587,6 +587,8 @@ jobs:
     needs: [build-macos-arm64, build-macos-intel, build-windows, build-linux-ubuntu]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -604,13 +606,34 @@ jobs:
             echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
           fi
       
+      - name: Filter release files
+        run: |
+          # 创建 release_files 目录
+          mkdir -p release_files
+          
+          # 只复制安装包文件（.app, .dmg, .pkg, .exe, .msi, .deb, .rpm）
+          find artifacts -type f \( \
+            -name "*.app" -o \
+            -name "*.dmg" -o \
+            -name "*.pkg" -o \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.deb" -o \
+            -name "*.rpm" \
+          \) -exec cp {} release_files/ \;
+          
+          # 显示要上传的文件
+          echo "准备上传的文件："
+          ls -lh release_files/ || echo "未找到安装包文件"
+      
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag_name.outputs.tag }}
           name: Release ${{ steps.tag_name.outputs.tag }}
-          files: artifacts/**/*
+          files: release_files/*
           draft: false
           prerelease: false
+          fail_on_unmatched_files: false  # 如果没有文件也不失败
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
