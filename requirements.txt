@@ -66,3 +66,6 @@ pyinstaller>=6.0.0
 # macOS 系统通知和原生功能（macOS 客户端推荐安装）
 pyobjc>=10.0; sys_platform == "darwin"  # macOS 原生功能：隐藏/显示 Dock 图标、窗口主题适配等
 
+# ==================== 局域网文件传输（员工端需要）====================
+zeroconf>=0.131.0  # mDNS/Bonjour 服务发现
+

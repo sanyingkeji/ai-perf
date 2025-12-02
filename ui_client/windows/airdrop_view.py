@@ -1,0 +1,733 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+隔空投送界面（模仿苹果 AirDrop 风格）
+支持拖放文件到设备头像进行传输
+支持窗口拖拽到边缘自动变成图标
+"""
+
+import os
+from pathlib import Path
+from typing import Optional, Dict
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QListWidget, QListWidgetItem, QProgressBar, QMessageBox,
+    QScrollArea, QApplication, QGraphicsDropShadowEffect
+)
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, QMimeData, QPoint, QPropertyAnimation, QEasingCurve, QRect, QEvent
+from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QBrush, QDragEnterEvent, QDropEvent, QMouseEvent
+import httpx
+import logging
+
+from utils.lan_transfer.manager import TransferManager
+from utils.lan_transfer.discovery import DeviceInfo
+from utils.api_client import ApiClient
+from widgets.toast import Toast
+from widgets.transfer_confirm_dialog import TransferConfirmDialog
+from utils.notification import send_notification
+
+logger = logging.getLogger(__name__)
+
+
+class DeviceItemWidget(QWidget):
+    """设备列表项（支持拖放，苹果风格）"""
+    
+    file_dropped = Signal(Path, DeviceInfo)  # 文件拖放信号
+    
+    def __init__(self, device: DeviceInfo, parent=None):
+        super().__init__(parent)
+        self._device = device
+        self._setup_ui()
+        self.setAcceptDrops(True)
+    
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(16)
+        
+        # 头像（可拖放区域，更大）
+        self.avatar_label = QLabel()
+        self.avatar_label.setFixedSize(80, 80)
+        self.avatar_label.setScaledContents(True)
+        self.avatar_label.setAcceptDrops(True)
+        self.avatar_label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed transparent;
+                border-radius: 40px;
+                background-color: #f5f5f5;
+            }
+            QLabel:hover {
+                border-color: #007AFF;
+                background-color: rgba(0, 122, 255, 0.1);
+            }
+        """)
+        self._load_avatar()
+        layout.addWidget(self.avatar_label)
+        
+        # 信息区域
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(6)
+        info_layout.setAlignment(Qt.AlignVCenter)
+        
+        # 用户名
+        self.name_label = QLabel(self._device.name)
+        self.name_label.setFont(QFont("SF Pro Display", 15, QFont.Normal))
+        info_layout.addWidget(self.name_label)
+        
+        # 设备名（如果有）
+        if self._device.device_name:
+            device_label = QLabel(self._device.device_name)
+            device_label.setStyleSheet("color: #8E8E93; font-size: 13px;")
+            info_layout.addWidget(device_label)
+        
+        layout.addLayout(info_layout)
+        layout.addStretch()
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """拖拽进入事件"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.avatar_label.setStyleSheet("""
+                QLabel {
+                    border: 2px solid #007AFF;
+                    border-radius: 40px;
+                    background-color: rgba(0, 122, 255, 0.15);
+                }
+            """)
+    
+    def dragLeaveEvent(self, event):
+        """拖拽离开事件"""
+        self.avatar_label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed transparent;
+                border-radius: 40px;
+                background-color: #f5f5f5;
+            }
+            QLabel:hover {
+                border-color: #007AFF;
+                background-color: rgba(0, 122, 255, 0.1);
+            }
+        """)
+    
+    def dropEvent(self, event: QDropEvent):
+        """拖放事件"""
+        self.avatar_label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed transparent;
+                border-radius: 40px;
+                background-color: #f5f5f5;
+            }
+            QLabel:hover {
+                border-color: #007AFF;
+                background-color: rgba(0, 122, 255, 0.1);
+            }
+        """)
+        
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                file_path = Path(urls[0].toLocalFile())
+                if file_path.is_file():
+                    self.file_dropped.emit(file_path, self._device)
+        event.acceptProposedAction()
+    
+    def _load_avatar(self):
+        """加载头像"""
+        if self._device.avatar_url:
+            self._load_avatar_async(self._device.avatar_url)
+        else:
+            self._set_default_avatar()
+    
+    def _load_avatar_async(self, url: str):
+        """异步加载头像"""
+        def load():
+            try:
+                response = httpx.get(url, timeout=5)
+                if response.status_code == 200:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(response.content)
+                    if not pixmap.isNull():
+                        circular_pixmap = self._make_circular(pixmap, 80)
+                        self.avatar_label.setPixmap(circular_pixmap)
+                        return
+            except Exception as e:
+                logger.error(f"加载头像失败: {e}")
+            self._set_default_avatar()
+        
+        import threading
+        thread = threading.Thread(target=load, daemon=True)
+        thread.start()
+    
+    def _set_default_avatar(self):
+        """设置默认头像"""
+        pixmap = QPixmap(80, 80)
+        pixmap.fill(QColor(220, 220, 220))
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QBrush(QColor(142, 142, 147)))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(0, 0, 80, 80)
+        
+        painter.setPen(QColor(255, 255, 255))
+        painter.setFont(QFont("SF Pro Display", 32, QFont.Medium))
+        first_char = self._device.name[0].upper() if self._device.name else "?"
+        painter.drawText(0, 0, 80, 80, Qt.AlignCenter, first_char)
+        painter.end()
+        
+        self.avatar_label.setPixmap(pixmap)
+    
+    @staticmethod
+    def _make_circular(pixmap: QPixmap, size: int) -> QPixmap:
+        """将头像转换为圆形"""
+        circular = QPixmap(size, size)
+        circular.fill(Qt.transparent)
+        
+        painter = QPainter(circular)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QBrush(pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(0, 0, size, size)
+        painter.end()
+        
+        return circular
+    
+    @property
+    def device(self) -> DeviceInfo:
+        return self._device
+
+
+class AirDropView(QWidget):
+    """隔空投送主界面（苹果风格）"""
+    
+    # 信号：窗口需要隐藏（变成图标）
+    should_hide_to_icon = Signal()
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._transfer_manager: Optional[TransferManager] = None
+        self._transferring = False
+        self._current_target: Optional[DeviceInfo] = None
+        self._pending_requests: Dict[str, dict] = {}  # 待处理的传输请求
+        self._setup_ui()
+        self._init_transfer_manager()
+        self._setup_drag_detection()
+    
+    def _setup_ui(self):
+        """设置UI（苹果风格）"""
+        # 设置窗口样式
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #FFFFFF;
+            }
+            QLabel {
+                color: #000000;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 顶部导航栏（苹果风格）
+        nav_frame = QFrame()
+        nav_frame.setFixedHeight(44)
+        nav_frame.setStyleSheet("""
+            QFrame {
+                background-color: #F5F5F5;
+                border-bottom: 1px solid #E5E5E5;
+            }
+        """)
+        nav_layout = QHBoxLayout(nav_frame)
+        nav_layout.setContentsMargins(16, 0, 16, 0)
+        nav_layout.setSpacing(0)
+        
+        # 标题
+        title = QLabel("隔空投送")
+        title.setFont(QFont("SF Pro Display", 17, QFont.Medium))
+        nav_layout.addWidget(title)
+        nav_layout.addStretch()
+        
+        layout.addWidget(nav_frame)
+        
+        # 主内容区域
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(20, 20, 20, 20)
+        content_layout.setSpacing(20)
+        
+        # AirDrop 信号图标区域（居中显示）
+        signal_frame = QFrame()
+        signal_frame.setFixedHeight(200)
+        signal_frame.setStyleSheet("background-color: transparent;")
+        signal_layout = QVBoxLayout(signal_frame)
+        signal_layout.setAlignment(Qt.AlignCenter)
+        
+        # 信号图标（使用文字模拟，实际可以用图片）
+        signal_label = QLabel("📡")
+        signal_label.setAlignment(Qt.AlignCenter)
+        signal_label.setFont(QFont("SF Pro Display", 64))
+        signal_layout.addWidget(signal_label)
+        
+        # 描述文字
+        desc_label = QLabel('"隔空投送"可让你与附近的用户立即共享。')
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setFont(QFont("SF Pro Display", 13))
+        desc_label.setStyleSheet("color: #000000;")
+        desc_label.setWordWrap(True)
+        signal_layout.addWidget(desc_label)
+        
+        # 发现设置（简化版）
+        discover_label = QLabel('允许这些人发现我: 所有人 ✓')
+        discover_label.setAlignment(Qt.AlignCenter)
+        discover_label.setFont(QFont("SF Pro Display", 13))
+        discover_label.setStyleSheet("color: #007AFF;")
+        signal_layout.addWidget(discover_label)
+        
+        content_layout.addWidget(signal_frame)
+        
+        # 设备列表
+        devices_label = QLabel("附近设备")
+        devices_label.setFont(QFont("SF Pro Display", 15, QFont.Medium))
+        content_layout.addWidget(devices_label)
+        
+        # 滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+        
+        self.devices_list = QListWidget()
+        self.devices_list.setSpacing(12)
+        self.devices_list.setStyleSheet("""
+            QListWidget {
+                background-color: transparent;
+                border: none;
+            }
+            QListWidget::item {
+                background-color: #F5F5F5;
+                border-radius: 12px;
+                margin: 4px;
+            }
+            QListWidget::item:hover {
+                background-color: #E5E5E5;
+            }
+        """)
+        scroll_area.setWidget(self.devices_list)
+        
+        content_layout.addWidget(scroll_area, 1)
+        
+        # 传输进度（初始隐藏）
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: none;
+                border-radius: 4px;
+                background-color: #E5E5E5;
+                height: 6px;
+            }
+            QProgressBar::chunk {
+                background-color: #007AFF;
+                border-radius: 4px;
+            }
+        """)
+        content_layout.addWidget(self.progress_bar)
+        
+        # 状态标签
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color: #8E8E93; font-size: 13px;")
+        self.status_label.setVisible(False)
+        content_layout.addWidget(self.status_label)
+        
+        layout.addWidget(content_widget)
+    
+    def _setup_drag_detection(self):
+        """设置拖拽检测（用于检测窗口拖到边缘）"""
+        self.setMouseTracking(True)
+        self._drag_start_pos = None
+        self._drag_window_pos = None
+        self._is_dragging = False
+        self._edge_triggered = False
+    
+    def mousePressEvent(self, event: QMouseEvent):
+        """鼠标按下"""
+        if event.button() == Qt.LeftButton:
+            # 检查是否在标题栏区域（顶部44像素）
+            if event.position().y() <= 44:
+                # 记录鼠标按下时的全局位置和窗口位置
+                self._drag_start_pos = event.globalPosition().toPoint()
+                self._drag_window_pos = self.pos()
+                self._is_dragging = False
+                self._edge_triggered = False
+            else:
+                super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """鼠标移动"""
+        if event.buttons() == Qt.LeftButton and self._drag_start_pos is not None:
+            if not self._is_dragging:
+                delta = (event.globalPosition().toPoint() - self._drag_start_pos).manhattanLength()
+                if delta > 5:
+                    self._is_dragging = True
+            
+            if self._is_dragging:
+                # 计算窗口新位置：鼠标移动距离 = 窗口移动距离
+                mouse_delta = event.globalPosition().toPoint() - self._drag_start_pos
+                new_pos = self._drag_window_pos + mouse_delta
+                self.move(new_pos)
+                
+                # 检查是否拖到屏幕边缘
+                screen = QApplication.primaryScreen().geometry()
+                window_rect = self.geometry()
+                
+                # 检查是否接近边缘（30像素内）
+                margin = 30
+                is_near_edge = (
+                    window_rect.left() <= screen.left() + margin or
+                    window_rect.right() >= screen.right() - margin or
+                    window_rect.top() <= screen.top() + margin or
+                    window_rect.bottom() >= screen.bottom() - margin
+                )
+                
+                if is_near_edge and not self._edge_triggered:
+                    # 触发隐藏到图标（只触发一次）
+                    self._edge_triggered = True
+                    QTimer.singleShot(150, self._animate_to_icon)  # 延迟一点，避免频繁触发
+        else:
+            super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        """鼠标释放"""
+        self._drag_start_pos = None
+        self._drag_window_pos = None
+        self._is_dragging = False
+        if self._edge_triggered:
+            self._edge_triggered = False
+        super().mouseReleaseEvent(event)
+    
+    def _animate_to_icon(self):
+        """动画：窗口切入边缘，变成图标"""
+        screen = QApplication.primaryScreen().geometry()
+        current_rect = self.geometry()
+        
+        # 确定目标位置（屏幕右侧边缘）
+        target_x = screen.right() - 36  # 图标宽度
+        target_y = current_rect.y() + current_rect.height() // 2 - 18  # 图标高度的一半
+        
+        # 创建动画
+        animation = QPropertyAnimation(self, b"geometry")
+        animation.setDuration(300)
+        animation.setStartValue(QRect(current_rect))
+        animation.setEndValue(QRect(target_x, target_y, 36, 36))
+        animation.setEasingCurve(QEasingCurve.InOutCubic)
+        
+        def on_finished():
+            self.should_hide_to_icon.emit()
+            self.hide()
+            # 重置标志
+            if hasattr(self, '_edge_triggered'):
+                self._edge_triggered = False
+        
+        animation.finished.connect(on_finished)
+        animation.start()
+    
+    def _init_transfer_manager(self):
+        """初始化传输管理器"""
+        try:
+            api_client = ApiClient.from_config()
+            user_info = api_client._get("/api/user_info")
+            
+            if isinstance(user_info, dict) and user_info.get("status") == "success":
+                data = user_info.get("data", {})
+                user_id = str(data.get("user_id", ""))
+                user_name = data.get("name", "Unknown")
+                avatar_url = data.get("avatar_url")
+                
+                self._transfer_manager = TransferManager(
+                    user_id=user_id,
+                    user_name=user_name,
+                    avatar_url=avatar_url
+                )
+                
+                self._transfer_manager.device_added.connect(self._on_device_added)
+                self._transfer_manager.device_removed.connect(self._on_device_removed)
+                self._transfer_manager.transfer_request_received.connect(self._on_transfer_request_received)
+                self._transfer_manager.file_received.connect(self._on_file_received)
+                self._transfer_manager.transfer_progress.connect(self._on_transfer_progress)
+                self._transfer_manager.transfer_completed.connect(self._on_transfer_completed)
+                
+                self._transfer_manager.start()
+                
+                self._refresh_timer = QTimer()
+                self._refresh_timer.timeout.connect(self._refresh_devices)
+                self._refresh_timer.start(2000)
+            else:
+                Toast.show_message(self, "无法获取用户信息，请先登录")
+        except Exception as e:
+            logger.error(f"初始化传输管理器失败: {e}")
+            Toast.show_message(self, f"初始化失败: {e}")
+    
+    def _on_device_added(self, device: DeviceInfo):
+        """设备添加"""
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget) and widget.device.user_id == device.user_id:
+                return
+        
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(200, 100))
+        widget = DeviceItemWidget(device)
+        widget.file_dropped.connect(self._on_file_dropped)
+        self.devices_list.addItem(item)
+        self.devices_list.setItemWidget(item, widget)
+    
+    def _on_device_removed(self, device_name: str):
+        """设备移除"""
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget) and widget.device.name == device_name:
+                self.devices_list.takeItem(i)
+                break
+    
+    def _on_file_dropped(self, file_path: Path, device: DeviceInfo):
+        """文件拖放到设备头像"""
+        if self._transferring:
+            Toast.show_message(self, "正在传输中，请稍候...")
+            return
+        
+        if not file_path.exists() or not file_path.is_file():
+            Toast.show_message(self, "无效的文件")
+            return
+        
+        self._send_transfer_request(file_path, device)
+    
+    def _send_transfer_request(self, file_path: Path, device: DeviceInfo):
+        """发送传输请求"""
+        if not self._transfer_manager:
+            return
+        
+        self._transferring = True
+        self._current_target = device
+        
+        self.status_label.setVisible(True)
+        self.status_label.setText(f"正在请求传输到 {device.name}...")
+        
+        def send_in_thread():
+            result = self._transfer_manager.send_transfer_request(file_path, device)
+            
+            if result["success"]:
+                request_id = result["request_id"]
+                self._wait_and_transfer(file_path, device, request_id)
+            else:
+                self._transferring = False
+                self.status_label.setVisible(False)
+                Toast.show_message(self, f"请求失败: {result['message']}")
+        
+        import threading
+        thread = threading.Thread(target=send_in_thread, daemon=True)
+        thread.start()
+    
+    def _wait_and_transfer(self, file_path: Path, device: DeviceInfo, request_id: str):
+        """等待确认后传输"""
+        def wait_in_thread():
+            result = self._transfer_manager._client.wait_for_confirm(
+                request_id=request_id,
+                target_ip=device.ip,
+                target_port=device.port,
+                timeout=30
+            )
+            
+            if result["success"] and result["accepted"]:
+                self._transfer_file(file_path, device, request_id)
+            else:
+                self._transferring = False
+                self.status_label.setVisible(False)
+                if result.get("accepted") is False:
+                    Toast.show_message(self, f"{device.name} 拒绝了传输请求")
+                else:
+                    Toast.show_message(self, "传输请求超时")
+        
+        import threading
+        thread = threading.Thread(target=wait_in_thread, daemon=True)
+        thread.start()
+    
+    def _transfer_file(self, file_path: Path, device: DeviceInfo, request_id: str):
+        """传输文件"""
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText(f"正在发送到 {device.name}...")
+        
+        self._transfer_manager.send_file_after_confirm(
+            file_path=file_path,
+            target_device=device,
+            request_id=request_id,
+            on_progress=self._on_transfer_progress
+        )
+    
+    def _on_transfer_request_received(self, request_id: str, sender_name: str, sender_id: str,
+                                     filename: str, file_size: int):
+        """收到传输请求"""
+        self._pending_requests[request_id] = {
+            'sender_name': sender_name,
+            'sender_id': sender_id,
+            'filename': filename,
+            'file_size': file_size
+        }
+        
+        size_str = self._format_file_size(file_size)
+        
+        def notification_callback():
+            if self.parent():
+                self.parent().show()
+                self.parent().raise_()
+                self.parent().activateWindow()
+            self._show_confirm_dialog(request_id)
+        
+        send_notification(
+            title="文件传输请求",
+            message=f"{sender_name} 想要发送文件给您",
+            subtitle=f"{filename} ({size_str})",
+            notification_id=hash(request_id),
+            click_callback=notification_callback
+        )
+        
+        if self.isVisible():
+            QTimer.singleShot(500, lambda: self._show_confirm_dialog(request_id))
+    
+    def _show_confirm_dialog(self, request_id: str):
+        """显示确认对话框"""
+        if request_id not in self._pending_requests:
+            return
+        
+        request_info = self._pending_requests[request_id]
+        
+        dialog = TransferConfirmDialog(
+            sender_name=request_info['sender_name'],
+            filename=request_info['filename'],
+            file_size=request_info['file_size'],
+            parent=self
+        )
+        
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        
+        def on_accepted():
+            if self._transfer_manager and self._transfer_manager._server:
+                request_data = self._transfer_manager._server.get_pending_request(request_id)
+                if request_data:
+                    sender_ip = request_data.get('sender_ip')
+                    sender_port = request_data.get('sender_port', 8765)
+                    
+                    if sender_ip:
+                        result = self._transfer_manager.accept_transfer(
+                            request_id, sender_ip, sender_port
+                        )
+                        if result["success"]:
+                            self._transfer_manager._server.confirm_transfer(request_id, True)
+                            Toast.show_message(self, "已接受传输请求，等待文件...")
+                        else:
+                            Toast.show_message(self, f"接受失败: {result['message']}")
+                    else:
+                        Toast.show_message(self, "无法获取发送端信息")
+                else:
+                    Toast.show_message(self, "请求已过期")
+            
+            if request_id in self._pending_requests:
+                del self._pending_requests[request_id]
+        
+        def on_rejected():
+            if self._transfer_manager and self._transfer_manager._server:
+                request_data = self._transfer_manager._server.get_pending_request(request_id)
+                if request_data:
+                    sender_ip = request_data.get('sender_ip')
+                    sender_port = request_data.get('sender_port', 8765)
+                    
+                    if sender_ip:
+                        result = self._transfer_manager.reject_transfer(
+                            request_id, sender_ip, sender_port
+                        )
+                        if result["success"]:
+                            self._transfer_manager._server.confirm_transfer(request_id, False)
+                            Toast.show_message(self, "已拒绝传输请求")
+            
+            if request_id in self._pending_requests:
+                del self._pending_requests[request_id]
+        
+        dialog.accepted.connect(on_accepted)
+        dialog.rejected.connect(on_rejected)
+    
+    def _on_transfer_progress(self, target_name: str, uploaded: int, total: int):
+        """传输进度更新"""
+        if self._current_target and target_name == self._current_target.name:
+            progress = int((uploaded / total) * 100) if total > 0 else 0
+            self.progress_bar.setValue(progress)
+    
+    def _on_transfer_completed(self, target_name: str, success: bool, message: str):
+        """传输完成"""
+        self._transferring = False
+        
+        self.progress_bar.setVisible(False)
+        self.status_label.setVisible(False)
+        
+        if success:
+            Toast.show_message(self, f"文件已成功发送到 {target_name}")
+        else:
+            Toast.show_message(self, f"发送失败: {message}")
+        
+        self._current_target = None
+    
+    def _on_file_received(self, save_path: Path, file_size: int, original_filename: str):
+        """文件接收"""
+        size_str = self._format_file_size(file_size)
+        Toast.show_message(
+            self,
+            f"收到文件: {original_filename} ({size_str})\n保存位置: {save_path.parent}",
+            duration=5000
+        )
+    
+    def _refresh_devices(self):
+        """刷新设备列表"""
+        if not self._transfer_manager:
+            return
+        
+        current_devices = {d.user_id for d in self._transfer_manager.get_devices()}
+        
+        for i in range(self.devices_list.count() - 1, -1, -1):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget):
+                if widget.device.user_id not in current_devices:
+                    self.devices_list.takeItem(i)
+    
+    @staticmethod
+    def _format_file_size(size: int) -> str:
+        """格式化文件大小"""
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+    
+    def closeEvent(self, event):
+        """关闭事件"""
+        if self._transfer_manager:
+            self._transfer_manager.stop()
+        # 触发显示图标
+        self.should_hide_to_icon.emit()
+        super().closeEvent(event)

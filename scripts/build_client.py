@@ -119,7 +119,7 @@ def print_environment_diagnostics():
     log_info(f"当前工作目录: {current_dir}")
     
     try:
-        # 获取文件系统类型
+        # 获取工作目录所在分区的文件系统信息
         df_result = subprocess.run(
             ["df", "-T", current_dir],
             capture_output=True,
@@ -127,7 +127,30 @@ def print_environment_diagnostics():
             timeout=10
         )
         if df_result.returncode == 0:
-            log_info(f"文件系统信息:\n{df_result.stdout}")
+            log_info(f"工作目录所在分区文件系统信息:\n{df_result.stdout}")
+        
+        # 获取详细的挂载信息（针对工作目录所在分区）
+        mount_result = subprocess.run(
+            ["mount"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if mount_result.returncode == 0:
+            # 找到工作目录所在分区的挂载信息
+            df_lines = df_result.stdout.strip().split('\n')
+            if len(df_lines) > 1:
+                # 获取设备名（第一列）
+                device = df_lines[1].split()[0]
+                log_info(f"工作目录所在设备: {device}")
+                # 查找该设备的挂载信息
+                for line in mount_result.stdout.split('\n'):
+                    if device in line:
+                        log_info(f"工作目录分区挂载信息: {line}")
+                        # 检查挂载选项
+                        if 'read-only' in line or 'ro,' in line or ',ro' in line:
+                            log_warn("  ⚠️ 工作目录所在分区是只读的！这可能导致 PyInstaller 无法创建符号链接")
+                        break
     except Exception as e:
         log_warn(f"无法获取文件系统信息: {e}")
     
@@ -145,22 +168,6 @@ def print_environment_diagnostics():
                 test_file.unlink()
             except Exception as e:
                 log_warn(f"无法测试文件系统大小写敏感性: {e}")
-            
-            # 检查挂载选项
-            mount_result = subprocess.run(
-                ["mount"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if mount_result.returncode == 0:
-                # 查找当前目录的挂载点
-                for line in mount_result.stdout.split('\n'):
-                    if ' on ' in line:
-                        mount_point = line.split(' on ')[1].split(' ')[0]
-                        if current_dir.startswith(mount_point):
-                            log_info(f"挂载信息: {line}")
-                            break
         except Exception as e:
             log_warn(f"无法获取 macOS 特定信息: {e}")
     

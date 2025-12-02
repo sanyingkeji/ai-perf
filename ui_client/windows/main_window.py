@@ -216,6 +216,11 @@ class MainWindow(QMainWindow):
         self._theme_check_timer.timeout.connect(self._check_and_update_title_bar_theme)
         self._theme_check_timer.start(1000)  # 每秒检查一次
         
+        # 创建悬浮图标（一直存在）
+        self._floating_icon = None
+        self._airdrop_window = None
+        self._setup_floating_icon()
+        
         # macOS: 确保应用在窗口关闭后仍然运行
         import platform
         if platform.system() == "Darwin":
@@ -609,6 +614,11 @@ class MainWindow(QMainWindow):
             tray_menu.addAction(show_action)
             MainWindow._app_tray_actions.append(show_action)  # 保存引用
             
+            airdrop_action = QAction("隔空投送")
+            airdrop_action.triggered.connect(self._show_airdrop)
+            tray_menu.addAction(airdrop_action)
+            MainWindow._app_tray_actions.append(airdrop_action)  # 保存引用
+            
             tray_menu.addSeparator()
             
             quit_action = QAction("退出")
@@ -622,6 +632,10 @@ class MainWindow(QMainWindow):
             show_action.triggered.connect(self.raise_)
             show_action.triggered.connect(self.activateWindow)
             tray_menu.addAction(show_action)
+            
+            airdrop_action = QAction("隔空投送", self)
+            airdrop_action.triggered.connect(self._show_airdrop)
+            tray_menu.addAction(airdrop_action)
             
             tray_menu.addSeparator()
             
@@ -644,38 +658,109 @@ class MainWindow(QMainWindow):
             self.show()
         self.raise_()
         self.activateWindow()
-        # macOS: 确保窗口显示在最前面，并恢复 Dock 图标
-        import platform
-        if platform.system() == "Darwin":
-            from PySide6.QtCore import Qt
-            self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
-            # 确保窗口获得焦点
-            self.setFocus()
-            # 恢复 Dock 图标（使用 PyObjC）
-            try:
-                from AppKit import NSApplication, NSImage
-                import os
-                app = NSApplication.sharedApplication()
-                # 0 = NSApplicationActivationPolicyRegular (显示 Dock 图标)
-                app.setActivationPolicy_(0)
-                # 重新设置应用图标，确保 Dock 图标正确显示
-                app_dir = Path(__file__).parent.parent
-                icon_path = app_dir / "resources" / "app_icon.icns"
-                if icon_path.exists() and os.path.exists(str(icon_path)):
-                    # 使用 NSImage 加载图标并设置
-                    icon_image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
-                    if icon_image is not None:
-                        app.setApplicationIconImage_(icon_image)
-                # 激活应用，确保 Dock 图标正确显示
-                app.activateIgnoringOtherApps_(True)
-            except ImportError as e:
-                # PyObjC 不可用
-                import sys
-                print(f"[WARNING] PyObjC not available, cannot show Dock icon: {e}", file=sys.stderr)
-            except Exception as e:
-                # 其他错误
-                import sys
-                print(f"[WARNING] Failed to show Dock icon: {type(e).__name__}: {e}", file=sys.stderr)
+    
+    def _setup_floating_icon(self):
+        """设置悬浮图标（一直存在，不随主窗口关闭）"""
+        try:
+            from widgets.floating_icon import FloatingIcon
+            # 使用类变量确保图标独立于主窗口实例
+            if not hasattr(MainWindow, '_global_floating_icon'):
+                MainWindow._global_floating_icon = FloatingIcon()
+                MainWindow._global_floating_icon.clicked.connect(self._show_airdrop_from_icon)
+                # 初始状态：显示图标（因为窗口还没创建）
+                MainWindow._global_floating_icon.animate_show()
+            else:
+                # 如果已经存在，连接信号
+                MainWindow._global_floating_icon.clicked.connect(self._show_airdrop_from_icon)
+            
+            self._floating_icon = MainWindow._global_floating_icon
+        except Exception as e:
+            import sys
+            print(f"[WARNING] 创建悬浮图标失败: {e}", file=sys.stderr)
+            self._floating_icon = None
+    
+    def _show_airdrop(self):
+        """显示隔空投送窗口（从系统托盘菜单调用）"""
+        self._show_airdrop_window()
+    
+    def _show_airdrop_from_icon(self):
+        """从悬浮图标显示窗口"""
+        self._show_airdrop_window()
+    
+    def _show_airdrop_window(self):
+        """显示隔空投送窗口（内部方法）"""
+        from windows.airdrop_view import AirDropView
+        
+        if self._airdrop_window is None:
+            self._airdrop_window = AirDropView()
+            self._airdrop_window.setWindowTitle("隔空投送")
+            # 使用正常的窗口标题栏（有关闭、最小化、最大化按钮）
+            self._airdrop_window.setWindowFlags(
+                Qt.Window |
+                Qt.WindowStaysOnTopHint |
+                Qt.WindowCloseButtonHint |
+                Qt.WindowMinimizeButtonHint |
+                Qt.WindowMaximizeButtonHint
+            )
+            # 设置窗口大小和位置
+            self._airdrop_window.resize(420, 600)
+            # 居中显示
+            screen = QApplication.primaryScreen().geometry()
+            window_geometry = self._airdrop_window.frameGeometry()
+            window_geometry.moveCenter(screen.center())
+            self._airdrop_window.move(window_geometry.topLeft())
+            
+            # 连接信号：窗口拖到边缘时隐藏并显示图标
+            self._airdrop_window.should_hide_to_icon.connect(self._hide_airdrop_to_icon)
+            # 监听窗口关闭事件
+            self._airdrop_window.destroyed.connect(self._on_airdrop_window_destroyed)
+            # 重写关闭事件
+            original_close_event = self._airdrop_window.closeEvent
+            def custom_close_event(event):
+                # 不真正关闭，而是隐藏到图标
+                event.ignore()
+                self._hide_airdrop_to_icon()
+            self._airdrop_window.closeEvent = custom_close_event
+            
+            # 重写changeEvent处理最小化
+            original_change_event = self._airdrop_window.changeEvent
+            def custom_change_event(event):
+                from PySide6.QtCore import QEvent
+                if event.type() == QEvent.WindowStateChange:
+                    if self._airdrop_window.isMinimized():
+                        # 最小化时也隐藏到图标
+                        event.ignore()
+                        self._airdrop_window.setWindowState(Qt.WindowNoState)  # 恢复窗口状态
+                        self._hide_airdrop_to_icon()
+                        return
+                original_change_event(event)
+            self._airdrop_window.changeEvent = custom_change_event
+        
+        # 显示窗口，隐藏图标
+        self._airdrop_window.show()
+        self._airdrop_window.raise_()
+        self._airdrop_window.activateWindow()
+        
+        # 隐藏悬浮图标（确保互斥）
+        if self._floating_icon:
+            self._floating_icon.animate_hide()
+    
+    
+    def _hide_airdrop_to_icon(self):
+        """窗口拖到边缘/关闭/最小化，隐藏窗口并显示图标"""
+        if self._airdrop_window:
+            self._airdrop_window.hide()
+        
+        # 显示悬浮图标（带动画，确保互斥）
+        if self._floating_icon:
+            self._floating_icon.animate_show()
+    
+    def _on_airdrop_window_destroyed(self):
+        """隔空投送窗口被销毁"""
+        self._airdrop_window = None
+        # 显示悬浮图标（确保互斥）
+        if self._floating_icon:
+            self._floating_icon.animate_show()
     
     def _on_tray_icon_activated(self, reason):
         """托盘图标激活事件"""
@@ -724,6 +809,14 @@ class MainWindow(QMainWindow):
                 polling_service.stop_polling()
         except Exception:
             pass
+        
+        # 关闭隔空投送窗口
+        if self._airdrop_window:
+            self._airdrop_window.close()
+            self._airdrop_window = None
+        
+        # 注意：悬浮图标不关闭，让它一直存在
+        # 如果用户关闭了主窗口，悬浮图标仍然可以显示隔空投送窗口
         
         # 隐藏加载遮罩
         self.hide_loading()

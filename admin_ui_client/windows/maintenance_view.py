@@ -5131,25 +5131,6 @@ class PackageTab(QWidget):
         """隐藏下载进度"""
         if self._download_progress_label:
             self._download_progress_label.hide()
-        worker.signals.finished.connect(self._on_download_finished)
-        worker.signals.error.connect(self._on_download_error)
-        worker.signals.progress.connect(self._on_download_progress)
-        
-        # 创建进度对话框
-        self._download_progress = QProgressDialog(
-            f"正在下载版本 {tag_name} 的文件...",
-            "取消",
-            0,
-            len(assets),
-            self
-        )
-        self._download_progress.setWindowTitle("下载文件")
-        self._download_progress.setWindowModality(Qt.WindowModal)
-        self._download_progress.setMinimumDuration(0)
-        self._download_progress.setValue(0)
-        self._download_progress.canceled.connect(worker.cancel)
-        
-        QThreadPool.globalInstance().start(worker)
     
     def _on_download_and_sign(self, asset_data: Dict[str, Any]):
         """下载并签名：执行 sign_and_notarize_from_github.py 脚本"""
