@@ -91,6 +91,181 @@ def check_cancel():
     if _cancel_requested.is_set():
         raise KeyboardInterrupt("构建已取消")
 
+def print_environment_diagnostics():
+    """打印环境诊断信息，用于调试 PyInstaller 行为差异"""
+    log_warn("========================================")
+    log_warn("环境诊断信息")
+    log_warn("========================================")
+    
+    # Python 版本
+    log_info(f"Python 版本: {sys.version}")
+    log_info(f"Python 可执行文件: {sys.executable}")
+    
+    # PyInstaller 版本
+    try:
+        import PyInstaller
+        log_info(f"PyInstaller 版本: {PyInstaller.__version__}")
+    except Exception as e:
+        log_warn(f"无法获取 PyInstaller 版本: {e}")
+    
+    # 操作系统信息
+    import platform
+    log_info(f"操作系统: {platform.system()} {platform.release()}")
+    log_info(f"系统版本: {platform.version()}")
+    log_info(f"机器类型: {platform.machine()}")
+    
+    # 文件系统信息
+    current_dir = os.getcwd()
+    log_info(f"当前工作目录: {current_dir}")
+    
+    try:
+        # 获取文件系统类型
+        df_result = subprocess.run(
+            ["df", "-T", current_dir],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if df_result.returncode == 0:
+            log_info(f"文件系统信息:\n{df_result.stdout}")
+    except Exception as e:
+        log_warn(f"无法获取文件系统信息: {e}")
+    
+    # macOS 特定：检查 APFS 特性
+    if platform.system() == "Darwin":
+        try:
+            # 检查文件系统是否区分大小写
+            test_file = Path(current_dir) / ".fs_test_case_sensitive"
+            try:
+                test_file.write_text("test")
+                if (Path(current_dir) / ".FS_TEST_CASE_SENSITIVE").exists():
+                    log_info("文件系统: 不区分大小写")
+                else:
+                    log_info("文件系统: 区分大小写")
+                test_file.unlink()
+            except Exception as e:
+                log_warn(f"无法测试文件系统大小写敏感性: {e}")
+            
+            # 检查挂载选项
+            mount_result = subprocess.run(
+                ["mount"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if mount_result.returncode == 0:
+                # 查找当前目录的挂载点
+                for line in mount_result.stdout.split('\n'):
+                    if ' on ' in line:
+                        mount_point = line.split(' on ')[1].split(' ')[0]
+                        if current_dir.startswith(mount_point):
+                            log_info(f"挂载信息: {line}")
+                            break
+        except Exception as e:
+            log_warn(f"无法获取 macOS 特定信息: {e}")
+    
+    # 环境变量
+    log_info("相关环境变量:")
+    env_vars = [
+        "MACOSX_DEPLOYMENT_TARGET",
+        "TMPDIR",
+        "HOME",
+        "PATH",
+        "PYTHONPATH",
+        "PYINSTALLER_LOG_LEVEL",
+        "SKIP_SIGNING"
+    ]
+    for var in env_vars:
+        value = os.environ.get(var, "(未设置)")
+        log_info(f"  {var} = {value}")
+    
+    # 测试符号链接创建能力
+    log_info("测试符号链接创建能力:")
+    test_dir = Path(current_dir) / ".symlink_test"
+    test_dir.mkdir(exist_ok=True)
+    test_file = test_dir / "test_file.txt"
+    try:
+        test_file.write_text("test")
+        test_link = test_dir / "test_link"
+        test_link.symlink_to("test_file.txt")
+        if test_link.is_symlink():
+            log_info("  ✓ 可以创建符号链接")
+            # 检查符号链接是否被解析
+            if test_link.resolve() == test_file.resolve():
+                log_info("  ✓ 符号链接可以正常解析")
+            else:
+                log_warn("  ⚠ 符号链接解析异常")
+        test_link.unlink()
+    except Exception as e:
+        log_warn(f"  ✗ 无法创建符号链接: {e}")
+    finally:
+        try:
+            if test_file.exists():
+                test_file.unlink()
+            if test_dir.exists():
+                test_dir.rmdir()
+        except:
+            pass
+    
+    # 路径信息
+    log_info(f"工作目录绝对路径: {Path(current_dir).resolve()}")
+    log_info(f"工作目录路径长度: {len(str(Path(current_dir).resolve()))}")
+    
+    log_warn("========================================")
+    print()  # 空行
+
+def check_pyinstaller_output_structure(app_bundle: Path):
+    """检查 PyInstaller 输出的文件结构"""
+    log_warn("检查 PyInstaller 输出结构...")
+    if not app_bundle.exists():
+        log_warn("  应用包不存在，跳过结构检查")
+        return
+    
+    frameworks_dir = app_bundle / "Contents" / "Frameworks"
+    if frameworks_dir.exists():
+        log_info("Frameworks 目录内容:")
+        items_info = []
+        for item in sorted(frameworks_dir.iterdir()):
+            if item.is_symlink():
+                items_info.append(f"  {item.name} -> {item.readlink()} (符号链接)")
+            elif item.is_file():
+                size = item.stat().st_size / 1024 / 1024  # MB
+                items_info.append(f"  {item.name} ({size:.2f}MB) (真实文件)")
+            elif item.is_dir():
+                items_info.append(f"  {item.name}/ (目录)")
+        
+        for info in items_info[:30]:  # 只显示前30个
+            log_info(info)
+        if len(items_info) > 30:
+            log_info(f"  ... 还有 {len(items_info) - 30} 个项目")
+        
+        # 检查 Qt 文件
+        qt_files = [f for f in frameworks_dir.iterdir() 
+                   if f.is_file() and f.name.startswith("Qt")]
+        if qt_files:
+            log_warn(f"发现 {len(qt_files)} 个 Qt 文件:")
+            for qt_file in qt_files[:10]:  # 只显示前10个
+                file_type = "符号链接" if qt_file.is_symlink() else "真实文件"
+                size = qt_file.stat().st_size / 1024 / 1024 if qt_file.is_file() else 0
+                log_info(f"  {qt_file.name}: {file_type} ({size:.2f}MB)")
+            if len(qt_files) > 10:
+                log_info(f"  ... 还有 {len(qt_files) - 10} 个 Qt 文件")
+    
+    # 检查 Resources 目录
+    resources_dir = app_bundle / "Contents" / "Resources"
+    if resources_dir.exists():
+        resources_pyside6 = resources_dir / "PySide6"
+        if resources_pyside6.exists():
+            log_info("Resources/PySide6 目录:")
+            qt_lib_in_resources = resources_pyside6 / "Qt" / "lib"
+            if qt_lib_in_resources.exists():
+                lib_size = sum(f.stat().st_size for f in qt_lib_in_resources.rglob('*') if f.is_file())
+                log_warn(f"  Resources/PySide6/Qt/lib 存在: {lib_size / 1024 / 1024:.2f}MB")
+            else:
+                log_info("  Resources/PySide6/Qt/lib 不存在（正常）")
+    
+    print()  # 空行
+
 def main():
     # 注册信号处理器，以便能够响应取消操作
     # Windows 只支持 SIGINT，Unix 系统支持 SIGINT 和 SIGTERM
@@ -504,6 +679,9 @@ def main():
             
             log_info(f"✓ spec 文件已更新，target_arch={target_arch}")
         
+        # 打印环境诊断信息（用于调试）
+        print_environment_diagnostics()
+        
         # 打包
         log_warn("执行 PyInstaller 打包...")
         # 确保 PyInstaller 使用部署目标环境变量
@@ -580,6 +758,9 @@ def main():
         
         log_info(f"✓ 应用包生成成功: {app_bundle}")
         print()  # 空行分隔
+        
+        # 检查 PyInstaller 输出的文件结构（用于调试）
+        check_pyinstaller_output_structure(app_bundle)
         
         # 后处理：清理 Frameworks 目录下的非二进制文件和目录
         # PyInstaller 的 BUNDLE 阶段在不同环境下行为可能不同：

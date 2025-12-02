@@ -26,6 +26,7 @@ import zipfile
 import tempfile
 import argparse
 from enum import Enum
+import stat
 
 # Windows 编码修复
 if sys.platform == "win32":
@@ -317,11 +318,14 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
     # 复制 .app 到输出目录（如果 app_bundle 不在输出目录中）
     target_app = dist_dir / f"{app_name}.app"
     
-    # 如果 app_bundle 就是 target_app，不需要复制
+    # 如果 app_bundle 就是 target_app，检查是否需要更新
     if app_bundle.resolve() == target_app.resolve():
-        log_info(f".app 已在输出目录，跳过复制: {target_app}")
+        log_info(f".app 已在输出目录: {target_app}")
+        # 即使路径相同，也确保使用最新的文件（这里假设调用者已经处理了更新逻辑）
     else:
+        # 如果 target_app 已存在，删除它以确保使用最新文件
         if target_app.exists():
+            log_warn(f"删除旧的 .app: {target_app}")
             shutil.rmtree(target_app)
         
         log_info(f"复制 .app 到输出目录: {target_app}")
@@ -335,6 +339,9 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
     log_warn("后处理：清理 Frameworks 目录结构...")
     frameworks_dir = target_app / "Contents" / "Frameworks"
     if frameworks_dir.exists():
+        # 先收集要处理的项，避免在迭代时修改目录
+        items_to_check = list(frameworks_dir.iterdir())
+        
         # 检查 Frameworks/resources 是否是真实目录（需要清理）
         resources_in_frameworks = frameworks_dir / "resources"
         needs_cleanup = False
@@ -349,10 +356,99 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 needs_cleanup = True
                 log_warn(f"  发现 Frameworks 目录下的 resources 真实目录（PyInstaller 打包问题），需要清理")
         
-        # 只在需要清理时执行清理操作
+        # 处理应该移动到 Resources 的文件：无论是否需要清理 resources，都要处理这些文件
+        # base_library.zip、config.json 和 google_client_secret.json 应该在 Resources 目录，与本地打包一致
+        resources_dir = target_app / "Contents" / "Resources"
+        files_to_move_to_resources = []  # 收集需要移动的文件
+        
+        for item in items_to_check:
+            if item.is_file() and not item.is_symlink():
+                # 需要移动到 Resources 的文件类型
+                if item.suffix in [".zip", ".json"]:
+                    files_to_move_to_resources.append(item)
+        
+        # 批量处理需要移动的文件
+        for item in files_to_move_to_resources:
+            if not item.exists():
+                continue  # 文件可能已被删除
+            if resources_dir.exists():
+                target_file = resources_dir / item.name
+                if not target_file.exists():
+                    log_warn(f"  移动 {item.suffix.upper()[1:]} 文件到 Resources 目录: {item.relative_to(target_app)} -> Resources/{item.name}")
+                    try:
+                        shutil.move(str(item), str(target_file))
+                        log_info(f"    ✓ 已移动: {item.name}")
+                    except Exception as e:
+                        log_warn(f"    移动失败: {e}")
+                        # 如果移动失败，尝试删除
+                        try:
+                            item.unlink()
+                            log_info(f"    ✓ 已删除（移动失败后的回退）: {item.name}")
+                        except Exception as e2:
+                            log_warn(f"    删除也失败: {e2}")
+                else:
+                    log_warn(f"  删除 Frameworks 下的 {item.suffix.upper()[1:]} 文件（Resources 目录已存在）: {item.relative_to(target_app)}")
+                    try:
+                        item.unlink()
+                        log_info(f"    ✓ 已删除: {item.name}")
+                    except Exception as e:
+                        log_warn(f"    删除失败: {e}")
+                        # 尝试强制删除
+                        try:
+                            import stat
+                            os.chmod(item, stat.S_IWRITE | stat.S_IREAD)
+                            item.unlink()
+                            log_info(f"    ✓ 已强制删除: {item.name}")
+                        except Exception as e2:
+                            log_error(f"    强制删除也失败: {e2}")
+            else:
+                # Resources 目录不存在，直接删除 Frameworks 下的文件
+                log_warn(f"  Resources 目录不存在，删除 Frameworks 下的 {item.suffix.upper()[1:]} 文件: {item.relative_to(target_app)}")
+                try:
+                    item.unlink()
+                    log_info(f"    ✓ 已删除: {item.name}")
+                except Exception as e:
+                    log_warn(f"    删除失败: {e}")
+        
+        # 递归检查并移除 Frameworks 目录下（包括子目录）的所有非二进制文件
+        # 这些文件会导致 codesign 签名失败
+        # 注意：PySide6/Qt/translations/ 下的 .qm 文件也需要清理
+        log_warn("  递归清理 Frameworks 目录下的非二进制文件...")
+        other_non_binary_extensions = [".png", ".txt", ".md", ".yml", ".yaml", ".xml", ".plist", ".icns", ".qm", ".html", ".css", ".js", ".pyc", ".pyo"]
+        
+        # 递归遍历 Frameworks 目录下的所有文件
+        for root, dirs, files in os.walk(frameworks_dir):
+            root_path = Path(root)
+            # 跳过 .framework 目录（这些目录内的文件由框架签名处理）
+            dirs[:] = [d for d in dirs if not d.endswith('.framework')]
+            
+            for file_name in files:
+                file_path = root_path / file_name
+                # 跳过符号链接
+                if file_path.is_symlink():
+                    continue
+                # 跳过已处理的文件（第一层的 ZIP 和 JSON 文件）
+                if file_path in files_to_move_to_resources:
+                    continue
+                # 跳过二进制文件
+                if file_path.suffix in [".dylib", ".so"]:
+                    continue
+                # 跳过无扩展名的文件（可能是 Mach-O 二进制文件）
+                if not file_path.suffix:
+                    continue
+                # 移除其他非二进制文件
+                if file_path.suffix in other_non_binary_extensions:
+                    log_warn(f"  移除非二进制文件: {file_path.relative_to(target_app)}")
+                    try:
+                        file_path.unlink()
+                        log_info(f"    ✓ 已移除: {file_path.relative_to(frameworks_dir)}")
+                    except Exception as e:
+                        log_warn(f"    移除失败: {e}")
+        
+        # 处理 Frameworks 下的 resources 目录（只在需要时清理）
         if needs_cleanup:
             log_warn("  清理 Frameworks 目录结构...")
-            # 先收集要处理的项，避免在迭代时修改目录
+            # 重新收集要处理的项（文件已处理，这里主要处理目录）
             items_to_check = list(frameworks_dir.iterdir())
             
             # 处理 Frameworks 下的 resources
@@ -365,10 +461,13 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 except Exception as e:
                     log_warn(f"  删除失败: {e}")
             
-            # 移除其他非二进制文件和目录（但保留 PySide6 和 .framework 目录）
+            # 移除其他不应该在 Frameworks 的目录（但保留 PySide6 和 .framework 目录）
             for item in items_to_check:
                 # 跳过已处理的 resources
                 if item.name == "resources":
+                    continue
+                # 跳过文件（已在上面处理）
+                if item.is_file():
                     continue
                     
                 if item.is_dir():
@@ -385,24 +484,172 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                         log_info(f"    ✓ 已移除: {item.name}")
                     except Exception as e:
                         log_warn(f"    移除失败: {e}")
-                elif item.is_file():
-                    # 跳过符号链接
-                    if item.is_symlink():
-                        continue
-                    # 跳过二进制文件扩展名
-                    if item.suffix in [".dylib", ".so"]:
-                        continue
-                    # 跳过无扩展名的文件（可能是 Mach-O 二进制文件）
-                    if not item.suffix:
-                        continue
-                    # 移除非二进制文件（PNG、文本文件等，但保留 JSON 文件，因为 config.json 和 google_client_secret.json 可能需要在 Frameworks 下）
-                    if item.suffix in [".png", ".txt", ".md", ".yml", ".yaml", ".xml", ".plist", ".icns", ".qm"]:
-                        log_warn(f"  移除非二进制文件: {item.relative_to(target_app)}")
+        
+        # 修复 Frameworks 目录结构：将真实文件转换为符号链接（与本地打包一致）
+        log_warn("  修复 Frameworks 目录结构（转换为符号链接）...")
+        qt_lib_dir = frameworks_dir / "PySide6" / "Qt" / "lib"
+        if qt_lib_dir.exists():
+            # 重新收集 Frameworks 目录下的项（在清理之后）
+            items_to_fix = list(frameworks_dir.iterdir())
+            
+            # 已知的 Qt 库文件名列表（用于快速匹配）
+            known_qt_libs = {
+                "QtCore", "QtDBus", "QtGui", "QtNetwork", "QtOpenGL", "QtPdf",
+                "QtQml", "QtQmlMeta", "QtQmlModels", "QtQmlWorkerScript",
+                "QtQuick", "QtSvg", "QtVirtualKeyboard", "QtVirtualKeyboardQml", "QtWidgets"
+            }
+            
+            for item in items_to_fix:
+                # 跳过目录和符号链接
+                if item.is_dir() or item.is_symlink():
+                    continue
+                
+                # 跳过 Python.framework 和 PySide6 目录
+                if item.name == "Python.framework" or item.name == "PySide6":
+                    continue
+                
+                # 快速检查：如果是已知的 Qt 库文件名，直接转换
+                if item.name in known_qt_libs:
+                    framework_name = item.name
+                    framework_path = qt_lib_dir / f"{framework_name}.framework"
+                    
+                    if framework_path.exists():
+                        target_path = framework_path / "Versions" / "A" / framework_name
+                        if target_path.exists():
+                            log_warn(f"  将 {item.name} 转换为符号链接: {item.relative_to(target_app)}")
+                            try:
+                                # 删除真实文件
+                                item.unlink()
+                                # 创建符号链接
+                                item.symlink_to(f"PySide6/Qt/lib/{framework_name}.framework/Versions/A/{framework_name}")
+                                log_info(f"    ✓ 已转换: {item.name} -> PySide6/Qt/lib/{framework_name}.framework/Versions/A/{framework_name}")
+                                continue  # 已处理，跳过后续检查
+                            except Exception as e:
+                                log_warn(f"    转换失败: {e}")
+                
+                # 对于其他文件，检查是否是 Qt 库文件（无扩展名或特定扩展名）
+                if not item.suffix or item.suffix in [".dylib", ".so"]:
+                    # 检查是否是 Mach-O 二进制文件
+                    try:
+                        result = subprocess.run(
+                            ["file", "-b", str(item)],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                            timeout=10
+                        )
+                        if "Mach-O" in result.stdout:
+                            # 这是一个 Qt 库文件，需要转换为符号链接
+                            # 查找对应的 framework
+                            framework_name = item.name
+                            framework_path = qt_lib_dir / f"{framework_name}.framework"
+                            
+                            if framework_path.exists():
+                                # 找到对应的 framework，创建符号链接
+                                target_path = framework_path / "Versions" / "A" / framework_name
+                                if target_path.exists():
+                                    log_warn(f"  将 {item.name} 转换为符号链接: {item.relative_to(target_app)}")
+                                    try:
+                                        # 删除真实文件
+                                        item.unlink()
+                                        # 创建符号链接
+                                        item.symlink_to(f"PySide6/Qt/lib/{framework_name}.framework/Versions/A/{framework_name}")
+                                        log_info(f"    ✓ 已转换: {item.name} -> PySide6/Qt/lib/{framework_name}.framework/Versions/A/{framework_name}")
+                                    except Exception as e:
+                                        log_warn(f"    转换失败: {e}")
+                    except Exception:
+                        pass
+            
+            # 修复 Resources/PySide6 目录中的文件（转换为符号链接）
+            resources_dir = target_app / "Contents" / "Resources"
+            if resources_dir.exists():
+                resources_pyside6 = resources_dir / "PySide6"
+                if resources_pyside6.exists():
+                    log_warn("  修复 Resources/PySide6 目录结构（转换为符号链接）...")
+                    # 修复 .abi3.so 和 .dylib 文件
+                    pyside6_files = list(resources_pyside6.iterdir())
+                    for item in pyside6_files:
+                        if item.is_file() and not item.is_symlink():
+                            if item.suffix in [".so", ".dylib"] or item.name.endswith(".abi3.so"):
+                                # 查找 Frameworks/PySide6 中对应的文件
+                                frameworks_pyside6_file = frameworks_dir / "PySide6" / item.name
+                                if frameworks_pyside6_file.exists():
+                                    log_warn(f"  将 Resources/PySide6/{item.name} 转换为符号链接")
+                                    try:
+                                        item.unlink()
+                                        item.symlink_to(f"../../Frameworks/PySide6/{item.name}")
+                                        log_info(f"    ✓ 已转换: {item.name} -> ../../Frameworks/PySide6/{item.name}")
+                                    except Exception as e:
+                                        log_warn(f"    转换失败: {e}")
+                    
+                    # 检查 Resources/PySide6/Qt/lib 目录（应该是空的或符号链接）
+                    resources_qt_lib = resources_pyside6 / "Qt" / "lib"
+                    if resources_qt_lib.exists() and resources_qt_lib.is_dir():
+                        # 检查是否与 Frameworks/PySide6/Qt/lib 重复
+                        frameworks_qt_lib = frameworks_dir / "PySide6" / "Qt" / "lib"
+                        if frameworks_qt_lib.exists():
+                            # 如果 Resources 中的 lib 目录很大，可能是重复的，删除它
+                            lib_size = sum(f.stat().st_size for f in resources_qt_lib.rglob('*') if f.is_file())
+                            if lib_size > 10 * 1024 * 1024:  # 大于 10MB，可能是重复的
+                                log_warn(f"  删除重复的 Resources/PySide6/Qt/lib 目录（{lib_size / 1024 / 1024:.1f}MB）")
+                                try:
+                                    shutil.rmtree(resources_qt_lib)
+                                    log_info(f"    ✓ 已删除重复的 Resources/PySide6/Qt/lib 目录")
+                                except Exception as e:
+                                    log_warn(f"    删除失败: {e}")
+                
+                # 修复 Frameworks 中的资源文件符号链接
+                # 检查 base_library.zip
+                zip_file = frameworks_dir / "base_library.zip"
+                if zip_file.exists() and not zip_file.is_symlink():
+                    resources_zip = resources_dir / "base_library.zip"
+                    if resources_zip.exists():
+                        log_warn(f"  将 base_library.zip 转换为符号链接: {zip_file.relative_to(target_app)}")
                         try:
-                            item.unlink()
-                            log_info(f"    ✓ 已移除: {item.name}")
+                            zip_file.unlink()
+                            zip_file.symlink_to("../Resources/base_library.zip")
+                            log_info(f"    ✓ 已转换: base_library.zip -> ../Resources/base_library.zip")
                         except Exception as e:
-                            log_warn(f"    移除失败: {e}")
+                            log_warn(f"    转换失败: {e}")
+                
+                # 检查 config.json
+                config_file = frameworks_dir / "config.json"
+                if config_file.exists() and not config_file.is_symlink():
+                    resources_config = resources_dir / "config.json"
+                    if resources_config.exists():
+                        log_warn(f"  将 config.json 转换为符号链接: {config_file.relative_to(target_app)}")
+                        try:
+                            config_file.unlink()
+                            config_file.symlink_to("../Resources/config.json")
+                            log_info(f"    ✓ 已转换: config.json -> ../Resources/config.json")
+                        except Exception as e:
+                            log_warn(f"    转换失败: {e}")
+                
+                # 检查 google_client_secret.json
+                secret_file = frameworks_dir / "google_client_secret.json"
+                if secret_file.exists() and not secret_file.is_symlink():
+                    resources_secret = resources_dir / "google_client_secret.json"
+                    if resources_secret.exists():
+                        log_warn(f"  将 google_client_secret.json 转换为符号链接: {secret_file.relative_to(target_app)}")
+                        try:
+                            secret_file.unlink()
+                            secret_file.symlink_to("../Resources/google_client_secret.json")
+                            log_info(f"    ✓ 已转换: google_client_secret.json -> ../Resources/google_client_secret.json")
+                        except Exception as e:
+                            log_warn(f"    转换失败: {e}")
+                
+                # 检查 resources 目录
+                resources_in_frameworks = frameworks_dir / "resources"
+                if resources_in_frameworks.exists() and not resources_in_frameworks.is_symlink():
+                    resources_resources = resources_dir / "resources"
+                    if resources_resources.exists():
+                        log_warn(f"  将 resources 目录转换为符号链接: {resources_in_frameworks.relative_to(target_app)}")
+                        try:
+                            shutil.rmtree(resources_in_frameworks)
+                            resources_in_frameworks.symlink_to("../Resources/resources")
+                            log_info(f"    ✓ 已转换: resources -> ../Resources/resources")
+                        except Exception as e:
+                            log_warn(f"    转换失败: {e}")
     
     # 切换到客户端目录（build_client.py 需要）
     original_cwd = os.getcwd()
@@ -569,12 +816,106 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                     # 签名 Qt 框架（.framework 目录）
                     qt_dir = frameworks_dir / "PySide6" / "Qt"
                     if qt_dir.exists():
-                        log_info("  签名 Qt 框架...")
+                        log_info("  修复并签名 Qt 框架...")
                         framework_dirs = [d for d in qt_dir.rglob("*.framework") if d.is_dir()]
                         for framework_dir in framework_dirs:
-                            log_info(f"    签名框架: {framework_dir.relative_to(target_app)}")
+                            log_info(f"    处理框架: {framework_dir.relative_to(target_app)}")
                             
-                            # 先签名框架内的所有文件
+                            # 修复框架结构（确保符号链接和 Info.plist 存在）
+                            framework_name = framework_dir.stem  # 例如 "QtQmlMeta"
+                            versions_dir = framework_dir / "Versions"
+                            current_dir = versions_dir / "Current"
+                            resources_dir = framework_dir / "Resources"
+                            
+                            # 修复 Versions/Current 符号链接
+                            if versions_dir.exists():
+                                version_dirs = [d for d in versions_dir.iterdir() if d.is_dir() and d.name != "Current"]
+                                if version_dirs:
+                                    target_version = version_dirs[0].name  # 通常是 "A"
+                                    if current_dir.exists() and not current_dir.is_symlink():
+                                        # 删除真实目录，创建符号链接
+                                        shutil.rmtree(current_dir)
+                                    if not current_dir.exists():
+                                        current_dir.symlink_to(target_version)
+                                        log_info(f"      ✓ 修复 Versions/Current 符号链接 -> {target_version}")
+                            
+                            # 修复根目录的可执行文件符号链接
+                            executable_link = framework_dir / framework_name
+                            if executable_link.exists() and not executable_link.is_symlink():
+                                # 删除真实文件，创建符号链接
+                                executable_link.unlink()
+                            if not executable_link.exists() and current_dir.exists():
+                                executable_link.symlink_to(f"Versions/Current/{framework_name}")
+                                log_info(f"      ✓ 修复 {framework_name} 符号链接")
+                            
+                            # 修复 Resources 目录符号链接
+                            resources_link = framework_dir / "Resources"
+                            if resources_link.exists() and not resources_link.is_symlink():
+                                # 删除真实目录，创建符号链接
+                                shutil.rmtree(resources_link)
+                            if not resources_link.exists() and current_dir.exists():
+                                resources_link.symlink_to("Versions/Current/Resources")
+                                log_info(f"      ✓ 修复 Resources 符号链接")
+                            
+                            # 第一步：彻底清理框架根目录（在修复符号链接之前）
+                            # 嵌入式框架的根目录应该只包含符号链接和 Versions 目录
+                            # 删除所有非符号链接的文件（包括 Info.plist）
+                            log_info(f"      清理框架根目录...")
+                            for item in list(framework_dir.iterdir()):  # 使用 list() 避免迭代时修改
+                                item_name = item.name
+                                # 跳过 Versions 目录和符号链接
+                                if item_name == "Versions" or item.is_symlink():
+                                    continue
+                                # 删除所有非符号链接的文件（包括 Info.plist）
+                                if item.is_file():
+                                    try:
+                                        item.unlink()
+                                        log_info(f"      ✓ 删除根目录文件: {item_name}")
+                                    except Exception as e:
+                                        log_warn(f"      ⚠ 删除根目录文件 {item_name} 失败: {e}")
+                                # 如果 Resources 是真实目录（不是符号链接），也需要删除（后面会创建符号链接）
+                                elif item_name == "Resources" and item.is_dir() and not item.is_symlink():
+                                    try:
+                                        shutil.rmtree(item)
+                                        log_info(f"      ✓ 删除根目录 Resources 真实目录（将创建符号链接）")
+                                    except Exception as e:
+                                        log_warn(f"      ⚠ 删除根目录 Resources 目录失败: {e}")
+                            
+                            # 第二步：确保 Info.plist 在正确位置（Versions/Current/Resources/Info.plist）
+                            # 如果根目录还有 Info.plist（清理后不应该有，但为了安全再检查一次），移动到正确位置
+                            info_plist_root = framework_dir / "Info.plist"
+                            if info_plist_root.exists() and info_plist_root.is_file():
+                                if current_dir.exists():
+                                    actual_resources = current_dir / "Resources"
+                                    info_plist_correct = actual_resources / "Info.plist"
+                                    if not info_plist_correct.exists():
+                                        # 正确位置没有，移动到正确位置
+                                        try:
+                                            actual_resources.mkdir(parents=True, exist_ok=True)
+                                            shutil.move(str(info_plist_root), str(info_plist_correct))
+                                            log_info(f"      ✓ 移动 Info.plist 到正确位置: Versions/Current/Resources/")
+                                        except Exception as e:
+                                            log_warn(f"      ⚠ 移动 Info.plist 失败: {e}")
+                                # 无论正确位置是否有，都删除根目录的 Info.plist（嵌入式框架不需要）
+                                if info_plist_root.exists():
+                                    try:
+                                        info_plist_root.unlink()
+                                        log_info(f"      ✓ 删除根目录下的 Info.plist（嵌入式框架不需要）")
+                                    except Exception as e:
+                                        log_warn(f"      ⚠ 删除根目录 Info.plist 失败: {e}")
+                            
+                            # 第三步：验证框架根目录是否干净（签名前最后检查）
+                            root_files = [f for f in framework_dir.iterdir() if f.is_file() and not f.is_symlink()]
+                            if root_files:
+                                log_warn(f"      ⚠ 警告：框架根目录仍有非符号链接文件，强制删除:")
+                                for root_file in root_files:
+                                    try:
+                                        root_file.unlink()
+                                        log_info(f"      ✓ 强制删除: {root_file.name}")
+                                    except Exception as e:
+                                        log_warn(f"      ⚠ 删除失败 {root_file.name}: {e}")
+                            
+                            # 第四步：先签名框架内的所有文件
                             for item in framework_dir.rglob("*"):
                                 if item.is_file():
                                     # 跳过 Info.plist 和资源文件
@@ -599,13 +940,23 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                     except Exception:
                                         pass
                             
-                            # 然后签名整个框架目录
-                            subprocess.run([
+                            # 第五步：签名整个框架目录（不使用 --deep，避免重新签名）
+                            # 注意：嵌入式框架不应该使用 --deep，因为我们已经手动签名了所有文件
+                            result = subprocess.run([
                                 "codesign", "--force", "--sign", codesign_identity,
                                 "--options", "runtime",
                                 "--timestamp",
                                 str(framework_dir)
-                            ], check=False, capture_output=True)
+                            ], capture_output=True, text=True)
+                            if result.returncode != 0:
+                                log_warn(f"    框架签名失败: {framework_dir.relative_to(target_app)}")
+                                log_warn(f"    错误: {result.stderr}")
+                                # 如果签名失败，检查根目录是否还有问题文件
+                                remaining_files = [f.name for f in framework_dir.iterdir() if f.is_file() and not f.is_symlink()]
+                                if remaining_files:
+                                    log_warn(f"    根目录仍有文件: {remaining_files}")
+                            else:
+                                log_info(f"    ✓ 框架已签名: {framework_dir.name}")
                         
                         # 签名 Qt 目录中的其他二进制文件（非框架）
                         log_info("  签名 Qt 其他二进制文件...")
@@ -674,6 +1025,13 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 log_step(Step.SIGN_MAIN, "签名应用包主可执行文件...")
                 main_executable = target_app / "Contents" / "MacOS" / app_name
                 if main_executable.exists():
+                    # 修复主可执行文件的权限（GitHub Actions 打包的文件可能没有执行权限）
+                    current_mode = main_executable.stat().st_mode
+                    # 确保有执行权限：所有者、组、其他用户都有执行权限 (755)
+                    if not (current_mode & stat.S_IXUSR):
+                        os.chmod(main_executable, 0o755)
+                        log_info("✓ 修复主可执行文件权限 (755)")
+                    
                     # 先签名主可执行文件（使用 check=True，失败会立即报错，与 build_client.py 保持一致）
                     subprocess.run([
                         "codesign", "--force", "--sign", codesign_identity,
@@ -847,6 +1205,21 @@ def main():
         choices=[s.value for s in Step],
         help="从指定步骤开始执行（跳过之前的步骤，用于调试）"
     )
+    parser.add_argument(
+        "--download-url",
+        dest="download_url",
+        help="直接指定下载URL（如果提供，将跳过从GitHub获取assets的步骤）"
+    )
+    parser.add_argument(
+        "--arch",
+        choices=["arm64", "intel"],
+        help="指定架构（arm64 或 intel），如果提供--download-url则必须指定"
+    )
+    parser.add_argument(
+        "--dir",
+        dest="app_dir",
+        help="直接指定 .app 路径（如果提供，将跳过下载和解压步骤，直接开始签名）"
+    )
     
     args = parser.parse_args()
     
@@ -856,6 +1229,19 @@ def main():
     repo_name = args.repo_name
     # 优先使用 --api-key 选项，否则使用位置参数
     api_key = args.api_key_option or args.api_key
+    download_url = args.download_url
+    arch = args.arch
+    app_dir = args.app_dir
+    
+    # 如果提供了 --dir，必须提供架构
+    if app_dir and not arch:
+        log_error("错误: 使用 --dir 时必须指定 --arch (arm64 或 intel)")
+        sys.exit(1)
+    
+    # 如果提供了下载URL，必须提供架构
+    if download_url and not arch:
+        log_error("错误: 使用 --download-url 时必须指定 --arch (arm64 或 intel)")
+        sys.exit(1)
     
     # 解析 start_from_step
     start_from_step = None
@@ -880,107 +1266,183 @@ def main():
         app_name = "Ai Perf Admin"
     
     log_info("=" * 50)
-    log_info(f"从 GitHub Release 下载并签名 {app_name}")
-    log_info(f"Release: {tag_name}")
-    log_info(f"仓库: {repo_owner}/{repo_name}")
+    if app_dir:
+        log_info(f"直接签名指定的 .app: {app_name}")
+        log_info(f".app 路径: {app_dir}")
+        log_info(f"架构: {arch}")
+    else:
+        log_info(f"从 GitHub Release 下载并签名 {app_name}")
+        log_info(f"Release: {tag_name}")
+        if download_url:
+            log_info(f"直接下载URL: {download_url}")
+            log_info(f"架构: {arch}")
+        else:
+            log_info(f"仓库: {repo_owner}/{repo_name}")
     log_info("=" * 50)
     print()
     
-    # 获取 Release assets
-    assets = get_github_release_assets(repo_owner, repo_name, tag_name, api_key)
-    if not assets:
-        log_error("未找到 Release assets")
-        sys.exit(1)
-    
-    # 查找 .app 文件（arm64 和 intel）
-    # 根据客户端类型匹配文件名（支持多种格式：空格、点号、连字符）
-    client_patterns = {
-        "employee": [
-            r"client",  # 包含 client
-            r"employee",  # 包含 employee
-            r"ai\s*perf\s*client",  # Ai Perf Client（空格或点号）
-            r"ai\.perf\.client",  # Ai.Perf.Client（点号）
-        ],
-        "admin": [
-            r"admin",  # 包含 admin
-            r"ai\s*perf\s*admin",  # Ai Perf Admin（空格或点号）
-            r"ai\.perf\.admin",  # Ai.Perf.Admin（点号）
-        ]
-    }
-    patterns = client_patterns.get(client_type, [])
-    
-    log_info(f"查找 {client_type} 客户端的 .app 文件...")
-    log_info(f"匹配模式: {patterns}")
-    
-    # 先列出所有 assets（用于调试）
-    log_info(f"所有 assets ({len(assets)} 个):")
-    for asset in assets:
-        asset_name = asset.get("name", "")
-        log_info(f"  - {asset_name}")
-    
-    app_assets = {}
-    for asset in assets:
-        asset_name = asset.get("name", "")
-        asset_url = asset.get("browser_download_url", "")
-        asset_name_lower = asset_name.lower()
+    # 如果提供了 --dir，直接使用指定的 .app 路径，跳过下载和解压
+    if app_dir:
+        app_path = Path(app_dir)
+        if not app_path.exists():
+            log_error(f"错误: .app 路径不存在: {app_path}")
+            sys.exit(1)
+        if not app_path.is_dir():
+            log_error(f"错误: 指定的路径不是目录: {app_path}")
+            sys.exit(1)
+        if not app_path.name.endswith('.app'):
+            log_error(f"错误: 指定的路径不是 .app 文件: {app_path}")
+            sys.exit(1)
         
-        # 检查是否匹配客户端类型
-        matches_client = False
-        if patterns:
-            import re
-            for pattern in patterns:
-                if re.search(pattern, asset_name_lower):
-                    matches_client = True
-                    log_info(f"  ✓ 匹配客户端类型: {asset_name} (模式: {pattern})")
-                    break
+        # 直接开始签名流程
+        log_info("=" * 50)
+        log_info(f"处理 {arch} 架构")
+        log_info("=" * 50)
+        print()
+        
+        # 检查输出目录是否已有 DMG 文件（说明签名成功）
+        script_dir = Path(__file__).parent
+        project_root = script_dir.parent
+        if client_type == "employee":
+            client_dir = project_root / "ui_client"
         else:
-            matches_client = True  # 如果没有模式，匹配所有
+            client_dir = project_root / "admin_ui_client"
         
-        if not matches_client:
-            log_info(f"  ✗ 不匹配客户端类型: {asset_name}")
-            continue
+        output_dir = client_dir / "dist" / "from_github" / client_type / arch
+        dmg_files = list(output_dir.glob("*.dmg")) if output_dir.exists() else []
         
-        # 查找 .app.zip 文件（macOS 应用包都是 ZIP 格式）
-        # 支持多种格式：.app.zip, -arm64.app.zip, -intel.app.zip 等
-        if asset_name.endswith(".app.zip") or (asset_name.endswith(".zip") and ".app" in asset_name_lower):
-            # ZIP 文件，包含 .app
-            # 检查架构（优先级：明确的架构标识 > 推测）
-            arch = None
+        if dmg_files and not start_from_step:
+            log_info(f"✓ 发现已签名的 DMG 文件，跳过整个流程: {dmg_files[0].name}")
+            log_info(f"  如需重新签名，请删除 DMG 文件后重试，或使用 --start-from 参数")
+            log_info(f"✓ {arch} 架构处理完成（已跳过）")
+            print()
+        else:
+            # 直接调用签名函数
+            sign_and_notarize_app_from_existing(app_path, client_type, arch, start_from_step)
+            log_info(f"✓ {arch} 架构处理完成")
+            print()
+        
+        log_info("=" * 50)
+        log_info("✓ 所有架构处理完成")
+        log_info("=" * 50)
+        return
+    
+    # 如果提供了下载URL，跳过从GitHub获取assets的步骤
+    if download_url:
+        # 直接使用提供的URL和架构
+        app_assets = {arch: download_url}
+        log_info(f"使用指定的下载URL和架构: {arch}")
+        log_info(f"下载URL: {download_url}")
+    else:
+        # 获取 Release assets
+        assets = get_github_release_assets(repo_owner, repo_name, tag_name, api_key)
+        if not assets:
+            log_error("未找到 Release assets")
+            sys.exit(1)
+        
+        # 查找 .app 文件（arm64 和 intel）
+        # 根据客户端类型匹配文件名（支持多种格式：空格、点号、连字符）
+        client_patterns = {
+            "employee": [
+                r"client",  # 包含 client
+                r"employee",  # 包含 employee
+                r"ai\s*perf\s*client",  # Ai Perf Client（空格或点号）
+                r"ai\.perf\.client",  # Ai.Perf.Client（点号）
+            ],
+            "admin": [
+                r"admin",  # 包含 admin
+                r"ai\s*perf\s*admin",  # Ai Perf Admin（空格或点号）
+                r"ai\.perf\.admin",  # Ai.Perf.Admin（点号）
+            ]
+        }
+        patterns = client_patterns.get(client_type, [])
+        
+        log_info(f"查找 {client_type} 客户端的 .app 文件...")
+        log_info(f"匹配模式: {patterns}")
+        
+        # 先列出所有 assets（用于调试）
+        log_info(f"所有 assets ({len(assets)} 个):")
+        for asset in assets:
+            asset_name = asset.get("name", "")
+            log_info(f"  - {asset_name}")
+        
+        app_assets = {}
+        for asset in assets:
+            asset_name = asset.get("name", "")
+            asset_url = asset.get("browser_download_url", "")
+            asset_name_lower = asset_name.lower()
             
-            # 方法1: 明确的架构标识（-arm64 或 -intel）
-            if "-arm64" in asset_name_lower or asset_name_lower.endswith("-arm64.app.zip") or asset_name_lower.endswith("-arm64.zip"):
-                arch = "arm64"
-            elif "-intel" in asset_name_lower or asset_name_lower.endswith("-intel.app.zip") or asset_name_lower.endswith("-intel.zip"):
-                arch = "intel"
-            # 方法2: 从文件名中查找架构关键词（更精确的匹配）
-            elif "arm64" in asset_name_lower:
-                arch = "arm64"
-            elif "intel" in asset_name_lower or "x86" in asset_name_lower:
-                arch = "intel"
-            # 方法3: 如果无法确定架构，但文件名包含 .app.zip，尝试推测
-            elif ".app.zip" in asset_name_lower:
-                # 如果还没有找到对应架构的文件，尝试推测
-                if "arm64" not in app_assets:
+            # 检查是否匹配客户端类型
+            matches_client = False
+            if patterns:
+                import re
+                for pattern in patterns:
+                    if re.search(pattern, asset_name_lower):
+                        matches_client = True
+                        log_info(f"  ✓ 匹配客户端类型: {asset_name} (模式: {pattern})")
+                        break
+            else:
+                matches_client = True  # 如果没有模式，匹配所有
+            
+            if not matches_client:
+                log_info(f"  ✗ 不匹配客户端类型: {asset_name}")
+                continue
+            
+            # 查找 .app.zip 文件（macOS 应用包都是 ZIP 格式）
+            # 支持多种格式：.app.zip, -arm64.app.zip, -intel.app.zip 等
+            if asset_name.endswith(".app.zip") or (asset_name.endswith(".zip") and ".app" in asset_name_lower):
+                # ZIP 文件，包含 .app
+                # 检查架构（优先级：明确的架构标识 > 推测）
+                arch = None
+                
+                # 方法1: 明确的架构标识（-arm64 或 -intel）
+                if "-arm64" in asset_name_lower or asset_name_lower.endswith("-arm64.app.zip") or asset_name_lower.endswith("-arm64.zip"):
                     arch = "arm64"
-                elif "intel" not in app_assets:
+                elif "-intel" in asset_name_lower or asset_name_lower.endswith("-intel.app.zip") or asset_name_lower.endswith("-intel.zip"):
                     arch = "intel"
-            
-            if arch:
-                if arch not in app_assets:
-                    app_assets[arch] = asset_url
-                    log_info(f"✓ 找到 {arch} .app (ZIP): {asset_name}")
-                else:
-                    log_warn(f"  跳过重复的 {arch} .app: {asset_name}")
-        elif asset_name.endswith(".app"):
-            # 直接是 .app 文件（不太可能，因为 GitHub 不支持上传目录）
-            log_warn(f"找到 .app 文件: {asset_name}（GitHub 不支持直接上传目录，可能是 ZIP）")
+                # 方法2: 从文件名中查找架构关键词（更精确的匹配）
+                elif "arm64" in asset_name_lower:
+                    arch = "arm64"
+                elif "intel" in asset_name_lower or "x86" in asset_name_lower:
+                    arch = "intel"
+                # 方法3: 如果无法确定架构，但文件名包含 .app.zip，尝试推测
+                elif ".app.zip" in asset_name_lower:
+                    # 如果还没有找到对应架构的文件，尝试推测
+                    if "arm64" not in app_assets:
+                        arch = "arm64"
+                    elif "intel" not in app_assets:
+                        arch = "intel"
+                
+                if arch:
+                    if arch not in app_assets:
+                        app_assets[arch] = asset_url
+                        log_info(f"✓ 找到 {arch} .app (ZIP): {asset_name}")
+                    else:
+                        log_warn(f"  跳过重复的 {arch} .app: {asset_name}")
+            elif asset_name.endswith(".app"):
+                # 直接是 .app 文件（不太可能，因为 GitHub 不支持上传目录）
+                log_warn(f"找到 .app 文件: {asset_name}（GitHub 不支持直接上传目录，可能是 ZIP）")
+        
+        if not app_assets:
+            log_error("未找到 .app 文件")
+            log_error(f"可用的 assets: {[a.get('name', '') for a in assets]}")
+            sys.exit(1)
+        
+        log_info(f"✓ 找到 {len(app_assets)} 个架构的 .app 文件: {list(app_assets.keys())}")
     
     if not app_assets:
-        log_error("未找到 .app 文件")
-        log_error(f"可用的 assets: {[a.get('name', '') for a in assets]}")
+        if download_url:
+            log_error("未找到 .app 文件（使用指定的下载URL）")
+        else:
+            log_error("未找到 .app 文件")
+            if 'assets' in locals():
+                log_error(f"可用的 assets: {[a.get('name', '') for a in assets]}")
         sys.exit(1)
     
-    log_info(f"✓ 找到 {len(app_assets)} 个架构的 .app 文件: {list(app_assets.keys())}")
+    if download_url:
+        log_info(f"✓ 使用指定的下载URL和架构: {list(app_assets.keys())}")
+    else:
+        log_info(f"✓ 找到 {len(app_assets)} 个架构的 .app 文件: {list(app_assets.keys())}")
     
     # 创建临时目录
     temp_dir = Path(tempfile.gettempdir()) / f"sign_notarize_{int(time.time())}"
@@ -1035,10 +1497,29 @@ def main():
             app_bundle = None
             
             if not should_skip_step(Step.EXTRACT, start_from_step):
+                # 检查是否需要重新解压
+                need_extract = True
                 if target_app.exists() and target_app.is_dir():
-                    log_info(f"[跳过] 解压步骤（.app 已存在: {target_app}）")
-                    app_bundle = target_app
-                else:
+                    # 如果 ZIP 文件存在，检查 ZIP 文件是否比 .app 新
+                    if download_path.exists() and download_path.is_file():
+                        zip_mtime = download_path.stat().st_mtime
+                        app_mtime = target_app.stat().st_mtime
+                        if zip_mtime <= app_mtime:
+                            # ZIP 文件不比 .app 新，可以使用现有的 .app
+                            log_info(f"[跳过] 解压步骤（.app 已存在且 ZIP 文件未更新: {target_app}）")
+                            app_bundle = target_app
+                            need_extract = False
+                        else:
+                            # ZIP 文件比 .app 新，需要重新解压
+                            log_warn(f"ZIP 文件已更新（ZIP: {zip_mtime}, .app: {app_mtime}），将重新解压...")
+                            shutil.rmtree(target_app)
+                    else:
+                        # ZIP 文件不存在，使用现有的 .app
+                        log_info(f"[跳过] 解压步骤（.app 已存在且 ZIP 文件不存在: {target_app}）")
+                        app_bundle = target_app
+                        need_extract = False
+                
+                if need_extract:
                     log_step(Step.EXTRACT, f"解压 {arch} .app ZIP 文件...")
                     app_bundle = find_app_in_zip(download_path, app_name)
                     if not app_bundle:

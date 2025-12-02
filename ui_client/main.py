@@ -43,14 +43,39 @@ def main():
     win = MainWindow()
     win.show()
     
-    # 检查是否有命令行参数（通知点击）
+    # 检查是否有命令行参数
     notification_id = None
+    install_background_service = False
+    
     for arg in sys.argv:
         if arg.startswith("--notification-id="):
             try:
                 notification_id = int(arg.split("=")[1])
             except (ValueError, IndexError):
                 pass
+        elif arg == "--install-background-service":
+            install_background_service = True
+    
+    # 如果要求安装后台服务，先安装然后退出（不显示窗口）
+    if install_background_service:
+        try:
+            from utils.system_notification_service import SystemNotificationService
+            from utils.config_manager import ConfigManager
+            
+            # 检查用户是否启用了通知
+            config = ConfigManager.load()
+            if config.get("notifications", True):
+                service = SystemNotificationService()
+                if not service.is_installed():
+                    success, msg = service.install()
+                    if success:
+                        service.enable()
+                elif not service.is_enabled():
+                    service.enable()
+        except Exception:
+            # 静默失败
+            pass
+        sys.exit(0)
     
     # 如果有通知ID，显示通知详情
     if notification_id:

@@ -73,6 +73,45 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Print environment diagnostics
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          echo "========================================"
+          echo "GitHub Actions 环境诊断信息 (Apple Silicon)"
+          echo "========================================"
+          echo "Python 版本:"
+          python3 --version
+          echo "Python 路径:"
+          which python3
+          echo "PyInstaller 版本:"
+          python3 -m PyInstaller --version || echo "未安装"
+          echo "操作系统信息:"
+          sw_vers
+          echo "系统版本:"
+          uname -a
+          echo "文件系统信息:"
+          df -T $(pwd) || df $(pwd)
+          echo "挂载信息:"
+          mount | grep -E "$(df $(pwd) | tail -1 | awk '{print $1}')" || mount | head -5
+          echo "环境变量:"
+          echo "  MACOSX_DEPLOYMENT_TARGET = ${MACOSX_DEPLOYMENT_TARGET:-未设置}"
+          echo "  TMPDIR = ${TMPDIR:-未设置}"
+          echo "  HOME = ${HOME:-未设置}"
+          echo "  PWD = $(pwd)"
+          echo "工作目录路径长度:"
+          echo $(pwd) | wc -c
+          echo "测试符号链接创建:"
+          mkdir -p .symlink_test
+          echo "test" > .symlink_test/test_file.txt
+          if ln -s test_file.txt .symlink_test/test_link 2>&1; then
+            echo "  ✓ 可以创建符号链接"
+            ls -la .symlink_test/
+          else
+            echo "  ✗ 无法创建符号链接"
+          fi
+          rm -rf .symlink_test
+          echo "========================================"
+
       - name: Build client (Apple Silicon)
         if: steps.check_build.outputs.should_build == 'true'
         env:
@@ -83,6 +122,20 @@ jobs:
         run: |
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python3 ../scripts/build_client.py ${{ matrix.client }} macos
+      
+      - name: Fix executable permissions
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 修复 .app 包中主可执行文件的权限（GitHub Actions 打包的文件可能没有执行权限）
+          find dist -name "*.app" -type d | while read app_bundle; do
+            app_name=$(basename "$app_bundle" .app)
+            executable="$app_bundle/Contents/MacOS/$app_name"
+            if [ -f "$executable" ]; then
+              chmod +x "$executable"
+              echo "✓ 修复权限: $executable"
+            fi
+          done
       
       - name: Upload APP artifact
         if: steps.check_build.outputs.should_build == 'true'
@@ -372,6 +425,57 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
       
+      - name: Print environment diagnostics (Intel)
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          # 使用相同的 Python 命令查找逻辑
+          HOMEBREW_PREFIX="/usr/local"
+          if [ -f "$HOMEBREW_PREFIX/opt/python@3.10/bin/python3" ]; then
+            PYTHON_CMD="$HOMEBREW_PREFIX/opt/python@3.10/bin/python3"
+          elif [ -f "$HOMEBREW_PREFIX/bin/python3" ]; then
+            PYTHON_CMD="$HOMEBREW_PREFIX/bin/python3"
+          elif [ -f "${{ steps.setup-python.outputs.python-path }}" ] && ! echo "${{ steps.setup-python.outputs.python-path }}" | grep -q "/opt/homebrew"; then
+            PYTHON_CMD="${{ steps.setup-python.outputs.python-path }}"
+          else
+            PYTHON_CMD="python3"
+          fi
+          
+          echo "========================================"
+          echo "GitHub Actions 环境诊断信息 (Intel)"
+          echo "========================================"
+          echo "Python 版本:"
+          arch -x86_64 "$PYTHON_CMD" --version
+          echo "Python 路径:"
+          echo "$PYTHON_CMD"
+          echo "PyInstaller 版本:"
+          arch -x86_64 "$PYTHON_CMD" -m PyInstaller --version || echo "未安装"
+          echo "操作系统信息:"
+          sw_vers
+          echo "系统版本:"
+          uname -a
+          echo "文件系统信息:"
+          df -T $(pwd) || df $(pwd)
+          echo "挂载信息:"
+          mount | grep -E "$(df $(pwd) | tail -1 | awk '{print $1}')" || mount | head -5
+          echo "环境变量:"
+          echo "  MACOSX_DEPLOYMENT_TARGET = ${MACOSX_DEPLOYMENT_TARGET:-未设置}"
+          echo "  TMPDIR = ${TMPDIR:-未设置}"
+          echo "  HOME = ${HOME:-未设置}"
+          echo "  PWD = $(pwd)"
+          echo "工作目录路径长度:"
+          echo $(pwd) | wc -c
+          echo "测试符号链接创建:"
+          mkdir -p .symlink_test
+          echo "test" > .symlink_test/test_file.txt
+          if ln -s test_file.txt .symlink_test/test_link 2>&1; then
+            echo "  ✓ 可以创建符号链接"
+            ls -la .symlink_test/
+          else
+            echo "  ✗ 无法创建符号链接"
+          fi
+          rm -rf .symlink_test
+          echo "========================================"
+      
       - name: Build client (Intel)
         if: steps.check_build.outputs.should_build == 'true'
         env:
@@ -408,6 +512,20 @@ jobs:
           }
           echo "开始构建..."
           arch -x86_64 "$PYTHON_CMD" ../scripts/build_client.py ${{ matrix.client }} macos
+      
+      - name: Fix executable permissions
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 修复 .app 包中主可执行文件的权限（GitHub Actions 打包的文件可能没有执行权限）
+          find dist -name "*.app" -type d | while read app_bundle; do
+            app_name=$(basename "$app_bundle" .app)
+            executable="$app_bundle/Contents/MacOS/$app_name"
+            if [ -f "$executable" ]; then
+              chmod +x "$executable"
+              echo "✓ 修复权限: $executable"
+            fi
+          done
       
       - name: Upload APP artifact
         if: steps.check_build.outputs.should_build == 'true'

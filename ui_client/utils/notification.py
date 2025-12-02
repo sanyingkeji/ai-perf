@@ -15,8 +15,44 @@ class SystemNotification:
     """系统通知类，使用系统原生 API"""
     
     @staticmethod
+    def _get_default_app_icon() -> Optional[str]:
+        """获取应用默认图标路径"""
+        try:
+            # 尝试从应用资源目录获取图标
+            if hasattr(sys, 'frozen') and sys.frozen:
+                # 打包后的应用
+                if platform.system() == "Darwin":
+                    # macOS: 从应用包获取
+                    exe_path = Path(sys.executable)
+                    if exe_path.parts[-3:] == ('Contents', 'MacOS', 'Ai Perf Client'):
+                        app_bundle = exe_path.parent.parent.parent
+                        icon_path = app_bundle / "Contents" / "Resources" / "app_icon.icns"
+                        if icon_path.exists():
+                            return str(icon_path)
+                elif platform.system() == "Windows":
+                    # Windows: 从应用目录获取
+                    exe_dir = Path(sys.executable).parent
+                    icon_path = exe_dir / "app_icon.ico"
+                    if icon_path.exists():
+                        return str(icon_path)
+            else:
+                # 开发环境
+                project_root = Path(__file__).resolve().parents[1]
+                icon_paths = [
+                    project_root / "resources" / "app_icon.icns",  # macOS
+                    project_root / "resources" / "app_icon.ico",   # Windows
+                    project_root / "resources" / "app_icon.png",   # 通用
+                ]
+                for icon_path in icon_paths:
+                    if icon_path.exists():
+                        return str(icon_path)
+        except Exception:
+            pass
+        return None
+    
+    @staticmethod
     def send(title: str, message: str, subtitle: Optional[str] = None, 
-             sound: bool = True, timeout: int = 5) -> bool:
+             sound: bool = True, timeout: int = 5, icon_path: Optional[str] = None) -> bool:
         """
         发送系统通知（使用系统原生 API）
         
@@ -33,16 +69,16 @@ class SystemNotification:
         system = platform.system()
         
         if system == "Darwin":  # macOS
-            return SystemNotification._send_macos_native(title, message, subtitle, sound)
+            return SystemNotification._send_macos_native(title, message, subtitle, sound, icon_path)
         elif system == "Windows":  # Windows
-            return SystemNotification._send_windows_native(title, message, sound)
+            return SystemNotification._send_windows_native(title, message, sound, icon_path)
         else:
             print(f"不支持的操作系统: {system}")
             return False
     
     @staticmethod
     def _send_macos_native(title: str, message: str, subtitle: Optional[str] = None,
-                           sound: bool = True) -> bool:
+                           sound: bool = True, icon_path: Optional[str] = None) -> bool:
         """
         macOS 系统通知（使用 NSUserNotificationCenter / UserNotifications framework）
         类似 iOS 的 UNUserNotificationCenter
@@ -63,29 +99,45 @@ class SystemNotification:
                 if sound:
                     notification.setSoundName_("NSUserNotificationDefaultSoundName")
                 
+                # 设置图标（如果提供）
+                if icon_path:
+                    try:
+                        from AppKit import NSImage
+                        icon_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
+                        if icon_image:
+                            notification.setContentImage_(icon_image)
+                    except Exception:
+                        # 图标设置失败，忽略（使用默认图标）
+                        pass
+                
                 # 设置用户信息（用于点击回调）
                 # 注意：NSUserNotification 不支持直接回调，需要通过通知中心代理处理
                 # 这里先设置，后续可以通过通知中心代理处理点击事件
                 
                 # 发送通知（通过系统通知中心）
                 center = NSUserNotificationCenter.defaultUserNotificationCenter()
+                if center is None:
+                    # macOS 10.14+ 可能返回 None（NSUserNotificationCenter 已被废弃）
+                    # 回退到 osascript
+                    return SystemNotification._send_macos_fallback(title, message, subtitle, sound, icon_path)
+                
                 center.deliverNotification_(notification)
                 
                 return True
             except ImportError:
                 # 如果 PyObjC 不可用，回退到 osascript
-                return SystemNotification._send_macos_fallback(title, message, subtitle, sound)
+                return SystemNotification._send_macos_fallback(title, message, subtitle, sound, icon_path)
             except Exception as e:
                 print(f"macOS 原生通知 API 调用失败: {e}")
                 # 回退到 osascript
-                return SystemNotification._send_macos_fallback(title, message, subtitle, sound)
+                return SystemNotification._send_macos_fallback(title, message, subtitle, sound, icon_path)
         except Exception as e:
             print(f"macOS 通知发送失败: {e}")
             return False
     
     @staticmethod
     def _send_macos_fallback(title: str, message: str, subtitle: Optional[str] = None,
-                            sound: bool = True) -> bool:
+                            sound: bool = True, icon_path: Optional[str] = None) -> bool:
         """macOS 回退方案：使用 osascript（当 PyObjC 不可用时）"""
         import subprocess
         try:
@@ -107,7 +159,7 @@ class SystemNotification:
             return False
     
     @staticmethod
-    def _send_windows_native(title: str, message: str, sound: bool = True) -> bool:
+    def _send_windows_native(title: str, message: str, sound: bool = True, icon_path: Optional[str] = None) -> bool:
         """
         Windows 系统通知（使用 Windows.UI.Notifications API）
         类似 iOS 的 UNUserNotificationCenter
@@ -119,10 +171,23 @@ class SystemNotification:
                 import winrt.windows.data.xml.dom as dom
                 
                 # 创建 Toast 通知 XML
+                # 如果有图标，添加到 XML 中
+                icon_xml = ""
+                if icon_path:
+                    # Windows Toast 通知需要图标的绝对路径或应用资源路径
+                    # 如果是相对路径，转换为绝对路径
+                    import os
+                    if not os.path.isabs(icon_path):
+                        icon_path = os.path.abspath(icon_path)
+                    # 转义 XML 特殊字符
+                    icon_path_escaped = icon_path.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+                    icon_xml = f'<image id="1" src="{icon_path_escaped}" placement="appLogoOverride" hint-crop="circle"/>'
+                
                 toast_xml = f'''<?xml version="1.0"?>
 <toast>
     <visual>
-        <binding template="ToastText02">
+        <binding template="ToastGeneric">
+            {icon_xml}
             <text id="1">{title}</text>
             <text id="2">{message}</text>
         </binding>
@@ -143,16 +208,16 @@ class SystemNotification:
                 return True
             except ImportError:
                 # 如果 winrt 不可用，尝试 win10toast
-                return SystemNotification._send_windows_fallback(title, message, sound)
+                return SystemNotification._send_windows_fallback(title, message, sound, icon_path)
             except Exception as e:
                 print(f"Windows 原生通知 API 调用失败: {e}")
-                return SystemNotification._send_windows_fallback(title, message, sound)
+                return SystemNotification._send_windows_fallback(title, message, sound, icon_path)
         except Exception as e:
             print(f"Windows 通知发送失败: {e}")
             return False
     
     @staticmethod
-    def _send_windows_fallback(title: str, message: str, sound: bool = True) -> bool:
+    def _send_windows_fallback(title: str, message: str, sound: bool = True, icon_path: Optional[str] = None) -> bool:
         """Windows 回退方案：使用 win10toast 或 PowerShell"""
         import subprocess
         try:
@@ -218,7 +283,9 @@ $notifier.Show($toast)
                     from AppKit import NSUserNotificationCenter
                     center = NSUserNotificationCenter.defaultUserNotificationCenter()
                     if center is None:
-                        return False
+                        # macOS 10.14+ NSUserNotificationCenter 可能返回 None
+                        # 无法准确检查权限，返回 None 表示无法确定
+                        return None
                     
                     # 注意：macOS 10.14+ 需要用户授权，但 NSUserNotificationCenter 无法直接检查授权状态
                     # 这里只是检查通知中心是否可用，无法准确判断权限状态
@@ -226,7 +293,6 @@ $notifier.Show($toast)
                     return True
                 except ImportError:
                     # PyObjC 不可用，无法准确检查权限
-                    # 不发送测试通知，避免干扰用户
                     # 返回 None 表示无法确定，让用户主动测试
                     return None  # 返回 None 表示无法确定
             except Exception:
@@ -307,7 +373,8 @@ $notifier.Show($toast)
 def send_notification(title: str, message: str, subtitle: Optional[str] = None,
                      sound: bool = True, timeout: int = 5,
                      notification_id: Optional[int] = None,
-                     click_callback: Optional[callable] = None) -> bool:
+                     click_callback: Optional[callable] = None,
+                     icon_path: Optional[str] = None) -> bool:
     """
     便捷函数：发送系统通知
     
@@ -319,6 +386,8 @@ def send_notification(title: str, message: str, subtitle: Optional[str] = None,
         timeout: 通知显示时长（秒，仅 macOS）
         notification_id: 通知ID（用于点击回调）
         click_callback: 点击回调函数（应用运行时使用）
+        icon_path: 图标路径（可选，如果不提供则使用应用默认图标）
+                   支持格式：.png, .jpg, .icns (macOS), .ico (Windows)
     
     Returns:
         bool: 是否发送成功
@@ -329,7 +398,11 @@ def send_notification(title: str, message: str, subtitle: Optional[str] = None,
             send_notification._callbacks = {}
         send_notification._callbacks[notification_id] = click_callback
     
-    return SystemNotification.send(title, message, subtitle, sound, timeout)
+    # 如果没有提供图标路径，尝试使用应用默认图标
+    if icon_path is None:
+        icon_path = SystemNotification._get_default_app_icon()
+    
+    return SystemNotification.send(title, message, subtitle, sound, timeout, icon_path)
 
 
 def get_notification_callback(notification_id: int) -> Optional[callable]:

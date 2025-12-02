@@ -32,4 +32,5 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{APP_NAME}"; Filen
 
 [Run]
 Filename: "{app}\{EXE_NAME}.exe"; Description: "启动 {APP_NAME}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{EXE_NAME}.exe"; Parameters: "--install-background-service"; Description: "安装后台通知服务"; Flags: runhidden waituntilterminated
 

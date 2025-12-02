@@ -14,6 +14,7 @@ a = Analysis(
         ('resources', 'resources'),
         ('config.json', '.'),
         ('google_client_secret.json', '.'),
+        ('../scripts/notification_background_service.py', 'scripts'),
     ],
     hiddenimports=[
         'PySide6.QtCore',

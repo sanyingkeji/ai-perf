@@ -4419,6 +4419,82 @@ class _UploadFileWorkerSignals(QObject):
     progress = Signal(int, int)  # 已上传字节数, 总字节数
 
 
+class _DownloadSingleAssetWorkerSignals(QObject):
+    """下载单个 Asset Worker 信号"""
+    finished = Signal(str)  # 保存的文件路径
+    error = Signal(str)
+    progress = Signal(int, int)  # downloaded_bytes, total_bytes
+
+
+class _DownloadSingleAssetWorker(QRunnable):
+    """后台线程：下载单个 GitHub Release asset"""
+    def __init__(self, download_url: str, save_path: str):
+        super().__init__()
+        self.signals = _DownloadSingleAssetWorkerSignals()
+        self._download_url = download_url
+        self._save_path = Path(save_path)
+        self._canceled = False
+    
+    def cancel(self):
+        """取消下载"""
+        self._canceled = True
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self._canceled:
+                self.signals.error.emit("下载已取消")
+                return
+            
+            # 流式下载文件以支持进度更新
+            with httpx.stream("GET", self._download_url, timeout=300.0, follow_redirects=True) as response:
+                if response.status_code != 200:
+                    self.signals.error.emit(f"下载失败: HTTP {response.status_code}")
+                    return
+                
+                # 获取文件总大小
+                total_bytes = int(response.headers.get("content-length", 0))
+                
+                # 确保保存目录存在
+                self._save_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                downloaded_bytes = 0
+                with open(self._save_path, "wb") as f:
+                    for chunk in response.iter_bytes():
+                        if self._canceled:
+                            self.signals.error.emit("下载已取消")
+                            return
+                        
+                        f.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        
+                        # 发送进度更新
+                        if total_bytes > 0:
+                            # 如果已经达到或超过总大小，强制显示100%
+                            if downloaded_bytes >= total_bytes:
+                                self.signals.progress.emit(total_bytes, total_bytes)
+                            else:
+                                # 计算百分比，如果已经达到99%或更高，也强制显示100%（防止卡在99%）
+                                percent = (downloaded_bytes / total_bytes) * 100
+                                if percent >= 99.0:
+                                    self.signals.progress.emit(total_bytes, total_bytes)
+                                else:
+                                    self.signals.progress.emit(downloaded_bytes, total_bytes)
+                
+                # 循环结束后，确保发送100%进度更新（防止卡在99%）
+                if total_bytes > 0:
+                    # 文件已经下载完成，强制发送100%
+                    self.signals.progress.emit(total_bytes, total_bytes)
+                else:
+                    # 如果没有content-length，使用实际下载的字节数
+                    if downloaded_bytes > 0:
+                        self.signals.progress.emit(downloaded_bytes, downloaded_bytes)
+                
+                self.signals.finished.emit(str(self._save_path))
+        except Exception as e:
+            self.signals.error.emit(f"下载失败: {e}")
+
+
 class _DownloadAssetsWorkerSignals(QObject):
     """下载 Assets Worker 信号"""
     finished = Signal(list)  # List[str] - 保存的文件路径列表
@@ -4564,6 +4640,7 @@ class PackageTab(QWidget):
         self._git_status_output = ""  # 存储 git status 的输出
         self._download_progress = None  # 下载进度对话框
         self._sign_process = None  # 签名脚本进程
+        self._download_progress_label = None  # 右上角下载进度显示标签
         
         # 获取项目根目录
         current_file = Path(__file__).resolve()
@@ -4642,7 +4719,7 @@ class PackageTab(QWidget):
         
         # 标题和刷新按钮
         title_layout = QHBoxLayout()
-        title_label = QLabel("版本列表")
+        title_label = QLabel("Asset List")
         title_label.setFont(QFont("Arial", 14, QFont.Bold))
         title_layout.addWidget(title_label)
         title_layout.addStretch()
@@ -4678,7 +4755,7 @@ class PackageTab(QWidget):
         self.version_table.setColumnWidth(1, 100)  # 版本号
         self.version_table.setColumnWidth(2, 80)   # 平台
         self.version_table.setColumnWidth(3, 100)  # 大小
-        self.version_table.setColumnWidth(4, 80)   # 状态
+        self.version_table.setColumnWidth(4, 60)   # 状态（缩窄以给 Asset 名称列更多空间）
         
         # 启用右键菜单
         self.version_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -4748,6 +4825,31 @@ class PackageTab(QWidget):
         splitter.setSizes([300, 700])
         
         layout.addWidget(splitter, 1)
+        
+        # 创建右上角下载进度显示标签（初始隐藏）
+        self._download_progress_label = QLabel(self)
+        self._download_progress_label.setAlignment(Qt.AlignCenter)
+        self._download_progress_label.setFont(QFont("Arial", 10))
+        self._download_progress_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 200);
+                color: white;
+                padding: 8px 16px;
+                border-radius: 6px;
+            }
+        """)
+        self._download_progress_label.hide()
+        self._download_progress_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标事件
+    
+    def resizeEvent(self, event):
+        """窗口大小改变时，更新进度标签位置"""
+        super().resizeEvent(event)
+        if self._download_progress_label and self._download_progress_label.isVisible():
+            parent_w = self.width()
+            margin = 20
+            x = parent_w - self._download_progress_label.width() - margin
+            y = margin
+            self._download_progress_label.move(x, y)
     
     def reload_versions(self):
         """重新加载版本列表（从 GitHub Releases）"""
@@ -4915,40 +5017,120 @@ class PackageTab(QWidget):
         # 创建右键菜单
         menu = QMenu(self)
         
-        # 仅下载选项
+        # 仅下载选项（只下载选中的这一行）
         download_action = menu.addAction("仅下载")
-        download_action.triggered.connect(lambda: self._on_download_only(version_data))
+        download_action.triggered.connect(lambda: self._on_download_only(asset_data))
         
         # 下载并签名选项（仅 macOS 版本显示）
         if has_macos:
             sign_action = menu.addAction("下载并签名")
-            sign_action.triggered.connect(lambda: self._on_download_and_sign(version_data))
+            sign_action.triggered.connect(lambda: self._on_download_and_sign(asset_data))
         
         # 显示菜单
         menu.exec_(self.version_table.viewport().mapToGlobal(position))
     
-    def _on_download_only(self, version_data: Dict[str, Any]):
-        """仅下载：下载版本的所有 assets 到本地"""
-        # 选择保存目录
-        save_dir = QFileDialog.getExistingDirectory(
+    def _on_download_only(self, asset_data: Dict[str, Any]):
+        """仅下载：下载选中的单个 asset 到本地"""
+        # 获取 asset 信息
+        asset_name = asset_data.get("asset_name", "")
+        asset_url = asset_data.get("asset_url", "")
+        
+        if not asset_url:
+            QMessageBox.warning(self, "错误", "该文件没有下载链接")
+            return
+        
+        # 选择保存路径
+        save_path, _ = QFileDialog.getSaveFileName(
             self,
-            "选择保存目录",
-            str(Path.home() / "Downloads")
+            "保存文件",
+            str(Path.home() / "Downloads" / asset_name),
+            "All Files (*)"
         )
         
-        if not save_dir:
+        if not save_path:
             return
         
-        # 获取版本信息
-        tag_name = version_data.get("tag_name", "")
-        assets = version_data.get("assets", [])
+        # 显示右上角进度提示
+        self._show_download_progress(asset_name, 0, 0)
         
-        if not assets:
-            QMessageBox.warning(self, "错误", "该版本没有可下载的文件")
+        # 创建下载 Worker（只下载单个文件）
+        worker = _DownloadSingleAssetWorker(asset_url, save_path)
+        worker.signals.finished.connect(lambda path: self._on_download_single_finished(path, asset_name))
+        worker.signals.error.connect(lambda msg: self._on_download_single_error(msg, asset_name))
+        worker.signals.progress.connect(lambda downloaded, total: self._on_download_single_progress(asset_name, downloaded, total))
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_download_single_finished(self, save_path: str, asset_name: str):
+        """单个文件下载完成"""
+        # 先强制显示100%进度，然后显示完成提示
+        # 获取文件实际大小作为总大小
+        try:
+            file_size = Path(save_path).stat().st_size
+            if file_size > 0:
+                self._show_download_progress(asset_name, file_size, file_size)
+                # 短暂延迟后显示完成提示
+                QTimer.singleShot(200, lambda: self._show_download_progress(asset_name, completed=True))
+            else:
+                self._show_download_progress(asset_name, completed=True)
+        except Exception:
+            self._show_download_progress(asset_name, completed=True)
+        
+        QTimer.singleShot(1500, self._hide_download_progress)  # 1.5秒后自动隐藏
+    
+    def _on_download_single_error(self, error_msg: str, asset_name: str):
+        """单个文件下载失败"""
+        # 显示错误提示，然后自动消失
+        self._show_download_progress(asset_name, error=True, error_msg=error_msg)
+        QTimer.singleShot(2000, self._hide_download_progress)  # 2秒后自动隐藏
+    
+    def _on_download_single_progress(self, asset_name: str, downloaded_bytes: int, total_bytes: int):
+        """单个文件下载进度更新"""
+        self._show_download_progress(asset_name, downloaded_bytes, total_bytes)
+    
+    def _show_download_progress(self, filename: str, downloaded_bytes: int = 0, total_bytes: int = 0, error: bool = False, completed: bool = False, error_msg: str = ""):
+        """显示右上角下载进度"""
+        if not self._download_progress_label:
             return
         
-        # 创建下载 Worker
-        worker = _DownloadAssetsWorker(assets, save_dir, tag_name)
+        if error:
+            text = f"下载失败: {filename}"
+            if error_msg:
+                # 截断过长的错误消息
+                if len(error_msg) > 30:
+                    error_msg = error_msg[:27] + "..."
+                text = f"{filename}\n{error_msg}"
+        elif completed:
+            text = f"下载完成: {filename}"
+        elif total_bytes > 0:
+            # 计算百分比，确保不会超过100%
+            if downloaded_bytes >= total_bytes:
+                percent = 100
+                downloaded_bytes = total_bytes  # 确保不超过总大小
+            else:
+                percent = int((downloaded_bytes / total_bytes) * 100)
+            # 格式化文件大小
+            downloaded_mb = downloaded_bytes / (1024 * 1024)
+            total_mb = total_bytes / (1024 * 1024)
+            text = f"{filename}\n{downloaded_mb:.1f}MB / {total_mb:.1f}MB ({percent}%)"
+        else:
+            text = f"正在下载: {filename}\n准备中..."
+        
+        self._download_progress_label.setText(text)
+        self._download_progress_label.adjustSize()
+        
+        # 定位到右上角
+        parent_w = self.width()
+        margin = 20
+        x = parent_w - self._download_progress_label.width() - margin
+        y = margin
+        self._download_progress_label.move(x, y)
+        self._download_progress_label.show()
+        self._download_progress_label.raise_()  # 确保在最上层
+    
+    def _hide_download_progress(self):
+        """隐藏下载进度"""
+        if self._download_progress_label:
+            self._download_progress_label.hide()
         worker.signals.finished.connect(self._on_download_finished)
         worker.signals.error.connect(self._on_download_error)
         worker.signals.progress.connect(self._on_download_progress)
@@ -4969,15 +5151,70 @@ class PackageTab(QWidget):
         
         QThreadPool.globalInstance().start(worker)
     
-    def _on_download_and_sign(self, version_data: Dict[str, Any]):
+    def _on_download_and_sign(self, asset_data: Dict[str, Any]):
         """下载并签名：执行 sign_and_notarize_from_github.py 脚本"""
-        # 获取版本信息
+        # 从asset_data中获取信息
+        asset_name = asset_data.get("asset_name", "")
+        version_data = asset_data.get("release_data", {})
         tag_name = version_data.get("tag_name", "")
+        
         if not tag_name:
             QMessageBox.warning(self, "错误", "版本号为空")
             return
         
-        # 从配置读取仓库信息
+        # 从asset名称中提取客户端类型和架构
+        asset_name_lower = asset_name.lower()
+        client_type = None
+        arch = None
+        
+        # 检查是否包含employee或client（employee端命名可能是 Ai.Perf.Client.app-intel.zip）
+        if "employee" in asset_name_lower or "client" in asset_name_lower or "ai.perf.client" in asset_name_lower or "ai-perf-client" in asset_name_lower:
+            client_type = "employee"
+        # 检查是否包含admin
+        elif "admin" in asset_name_lower or "ai-perf-admin" in asset_name_lower or "ai.perf.admin" in asset_name_lower:
+            client_type = "admin"
+        
+        if not client_type:
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"无法从文件名中识别客户端类型：{asset_name}\n\n"
+                "文件名应包含 'employee'、'client' 或 'admin' 关键字。\n"
+                "employee端命名示例: Ai.Perf.Client.app-intel.zip\n"
+                "admin端命名示例: Ai.Perf.Admin.app-intel.zip"
+            )
+            return
+        
+        # 从文件名中提取架构
+        if "-arm64" in asset_name_lower or asset_name_lower.endswith("-arm64.app.zip") or asset_name_lower.endswith("-arm64.zip"):
+            arch = "arm64"
+        elif "-intel" in asset_name_lower or asset_name_lower.endswith("-intel.app.zip") or asset_name_lower.endswith("-intel.zip"):
+            arch = "intel"
+        elif "arm64" in asset_name_lower:
+            arch = "arm64"
+        elif "intel" in asset_name_lower or "x86" in asset_name_lower:
+            arch = "intel"
+        
+        if not arch:
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"无法从文件名中识别架构类型：{asset_name}\n\n"
+                "文件名应包含 'arm64' 或 'intel' 关键字。"
+            )
+            return
+        
+        # 获取下载URL
+        asset_url = asset_data.get("asset_url", "")
+        if not asset_url:
+            QMessageBox.warning(
+                self,
+                "错误",
+                "无法获取下载地址"
+            )
+            return
+        
+        # 从配置读取仓库信息（用于脚本参数，但实际不会使用，因为会使用--download-url）
         cfg = ConfigManager.load()
         repo_owner = cfg.get("packaging_github_repo_owner", "sanyingkeji")
         repo_name = cfg.get("packaging_github_repo_name", "ai-perf")
@@ -4992,20 +5229,6 @@ class PackageTab(QWidget):
             )
             return
         
-        # 询问客户端类型（employee 或 admin）
-        from PySide6.QtWidgets import QInputDialog
-        client_type, ok = QInputDialog.getItem(
-            self,
-            "选择客户端类型",
-            "请选择要签名和公证的客户端类型：",
-            ["employee", "admin"],
-            1,  # 默认选择 admin
-            False
-        )
-        
-        if not ok:
-            return
-        
         # 获取脚本路径
         script_path = Path(self._project_root) / "scripts" / "sign_and_notarize_from_github.py"
         if not script_path.exists():
@@ -5016,7 +5239,7 @@ class PackageTab(QWidget):
             )
             return
         
-        # 构建命令
+        # 构建命令（使用--download-url和--arch参数，跳过从GitHub获取assets的步骤）
         python_cmd = sys.executable
         cmd = [
             python_cmd,
@@ -5025,7 +5248,9 @@ class PackageTab(QWidget):
             tag_name,
             repo_owner,
             repo_name,
-            api_key
+            api_key,
+            "--download-url", asset_url,
+            "--arch", arch
         ]
         
         # 显示确认对话框
@@ -5033,11 +5258,12 @@ class PackageTab(QWidget):
             self,
             "确认执行",
             f"将执行以下操作：\n\n"
-            f"1. 从 GitHub Release {tag_name} 下载 .app 文件\n"
-            f"2. 自动签名和公证\n"
-            f"3. 打包成 DMG 和 PKG\n"
-            f"4. 自动区分 Intel 和 M 芯片，保存到对应目录\n\n"
-            f"客户端类型：{client_type}\n\n"
+            f"1. 下载文件并自动签名和公证\n"
+            f"2. 打包成 DMG 和 PKG\n"
+            f"3. 保存到对应目录\n\n"
+            f"文件：{asset_name}\n"
+            f"客户端类型：{client_type}\n"
+            f"架构：{arch}\n\n"
             f"是否继续？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes

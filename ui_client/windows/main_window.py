@@ -193,6 +193,9 @@ class MainWindow(QMainWindow):
         # 启动统一轮询服务（延迟启动，等待登录完成）
         QTimer.singleShot(3000, self._start_polling_service)
         
+        # 安装并启用后台通知服务（应用未运行时也能接收通知）
+        QTimer.singleShot(2000, self._setup_background_notification_service)
+        
         # 启动帮助中心文字动态更新定时器（定期检查 help_text）
         self._help_text_timer = QTimer()
         self._help_text_timer.timeout.connect(self._check_help_text)
@@ -1094,6 +1097,34 @@ class MainWindow(QMainWindow):
         self._update_dialog = UpdateDialog(self, current_version, version_info)
         self._update_dialog.show()
         self._update_dialog_shown = True
+    
+    def _setup_background_notification_service(self):
+        """设置后台通知服务（应用未运行时也能接收通知）"""
+        try:
+            from utils.system_notification_service import SystemNotificationService
+            from utils.config_manager import ConfigManager
+            
+            # 检查用户是否启用了通知
+            config = ConfigManager.load()
+            if not config.get("notifications", True):
+                return
+            
+            service = SystemNotificationService()
+            
+            # 检查服务状态
+            if not service.is_installed():
+                # 如果未安装，尝试安装
+                success, msg = service.install()
+                if success:
+                    # 安装成功后启用
+                    service.enable()
+                # 静默失败，不显示错误（避免干扰用户体验）
+            elif not service.is_enabled():
+                # 如果已安装但未启用，启用它
+                service.enable()
+        except Exception:
+            # 静默失败，不干扰主程序
+            pass
     
     def _start_polling_service(self):
         """启动统一轮询服务（检查版本和通知）"""

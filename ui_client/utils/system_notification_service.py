@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+系统通知服务管理器
+用于安装、启用、禁用、卸载后台通知服务（macOS LaunchAgent / Windows 任务计划程序）
+"""
+
+import sys
+import platform
+import subprocess
+import json
+from pathlib import Path
+from typing import Optional, Dict, Any, Tuple
+from datetime import datetime
+
+
+class SystemNotificationService:
+    """系统通知服务管理器"""
+    
+    def __init__(self):
+        self.system = platform.system()
+        self.project_root = Path(__file__).resolve().parents[2]
+        
+        # macOS LaunchAgent 配置
+        self.macos_label = "site.sanying.aiperf.notification"
+        self.macos_plist_path = Path.home() / "Library" / "LaunchAgents" / f"{self.macos_label}.plist"
+        
+        # Windows 任务计划程序配置
+        self.windows_task_name = "AiPerfNotificationService"
+        
+        # 后台服务脚本路径（需要根据实际打包后的路径确定）
+        self._service_script_path = None
+    
+    def _get_service_script_path(self) -> Optional[Path]:
+        """获取后台服务脚本路径"""
+        if self._service_script_path:
+            return self._service_script_path
+        
+        # 判断是否在打包后的应用中
+        is_frozen = hasattr(sys, 'frozen') and sys.frozen
+        
+        # 尝试多个可能的路径
+        possible_paths = []
+        
+        if is_frozen:
+            # 打包后的应用
+            if self.system == "Darwin":
+                # macOS: 应用包内 Resources 目录
+                # 从可执行文件路径推导应用包路径
+                exe_path = Path(sys.executable)
+                if exe_path.parts[-3:] == ('Contents', 'MacOS', 'Ai Perf Client'):
+                    # 标准应用包结构
+                    app_bundle = exe_path.parent.parent.parent
+                    possible_paths.append(app_bundle / "Contents" / "Resources" / "scripts" / "notification_background_service.py")
+                # 标准应用包路径（如果应用安装在 /Applications）
+                possible_paths.append(Path("/Applications/Ai Perf Client.app/Contents/Resources/scripts/notification_background_service.py"))
+            elif self.system == "Windows":
+                # Windows: 应用目录
+                exe_dir = Path(sys.executable).parent
+                possible_paths.append(exe_dir / "scripts" / "notification_background_service.py")
+                possible_paths.append(Path.home() / "AppData" / "Local" / "Ai Perf Client" / "scripts" / "notification_background_service.py")
+        else:
+            # 开发环境
+            possible_paths.append(self.project_root / "scripts" / "notification_background_service.py")
+        
+        # 通用路径（无论是否打包）
+        possible_paths.extend([
+            # 用户配置目录
+            Path.home() / ".ai_perf_client" / "scripts" / "notification_background_service.py",
+            # 当前可执行文件目录
+            Path(sys.executable).parent / "scripts" / "notification_background_service.py",
+        ])
+        
+        for path in possible_paths:
+            if path and path.exists():
+                self._service_script_path = path
+                return path
+        
+        # 如果找不到，返回开发环境的路径（用于开发测试）
+        dev_path = self.project_root / "scripts" / "notification_background_service.py"
+        if dev_path.exists():
+            return dev_path
+        
+        return None
+    
+    def _get_python_executable(self) -> str:
+        """获取 Python 可执行文件路径"""
+        if self.system == "Darwin":
+            # macOS: 尝试使用系统 Python 或应用内 Python
+            # 如果是打包后的应用，可能需要使用应用内的 Python
+            if hasattr(sys, 'frozen') and sys.frozen:
+                # PyInstaller 打包的应用
+                return sys.executable
+            else:
+                # 开发环境或普通 Python
+                return sys.executable
+        elif self.system == "Windows":
+            # Windows: 使用当前 Python 解释器
+            return sys.executable
+        else:
+            return sys.executable
+    
+    def is_installed(self) -> bool:
+        """检查服务是否已安装"""
+        if self.system == "Darwin":
+            return self.macos_plist_path.exists()
+        elif self.system == "Windows":
+            try:
+                result = subprocess.run(
+                    ["schtasks", "/query", "/tn", self.windows_task_name],
+                    capture_output=True,
+                    timeout=5
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+        else:
+            return False
+    
+    def is_enabled(self) -> bool:
+        """检查服务是否已启用"""
+        if not self.is_installed():
+            return False
+        
+        if self.system == "Darwin":
+            try:
+                result = subprocess.run(
+                    ["launchctl", "list", self.macos_label],
+                    capture_output=True,
+                    timeout=5
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+        elif self.system == "Windows":
+            try:
+                result = subprocess.run(
+                    ["schtasks", "/query", "/tn", self.windows_task_name, "/fo", "list"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    # 检查任务状态（Enabled 或 Disabled）
+                    output = result.stdout.lower()
+                    return "disabled" not in output
+                return False
+            except Exception:
+                return False
+        else:
+            return False
+    
+    def install(self) -> Tuple[bool, str]:
+        """
+        安装后台服务
+        
+        Returns:
+            (成功标志, 错误消息)
+        """
+        script_path = self._get_service_script_path()
+        if not script_path:
+            return False, "找不到后台服务脚本文件"
+        
+        if self.system == "Darwin":
+            return self._install_macos(script_path)
+        elif self.system == "Windows":
+            return self._install_windows(script_path)
+        else:
+            return False, f"不支持的操作系统: {self.system}"
+    
+    def _install_macos(self, script_path: Path) -> Tuple[bool, str]:
+        """安装 macOS LaunchAgent"""
+        try:
+            python_exe = self._get_python_executable()
+            
+            # 创建 plist 文件
+            log_dir = Path.home() / '.ai_perf_client'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stdout_log = str(log_dir / 'notification_service.log')
+            stderr_log = str(log_dir / 'notification_service_error.log')
+            
+            plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{self.macos_label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_exe}</string>
+        <string>{str(script_path)}</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>{stdout_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr_log}</string>
+</dict>
+</plist>"""
+            
+            # 确保目录存在
+            self.macos_plist_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 写入 plist 文件
+            with open(self.macos_plist_path, 'w', encoding='utf-8') as f:
+                f.write(plist_content)
+            
+            # 加载服务
+            result = subprocess.run(
+                ["launchctl", "load", str(self.macos_plist_path)],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode != 0:
+                # 如果服务已存在，先卸载再加载
+                subprocess.run(
+                    ["launchctl", "unload", str(self.macos_plist_path)],
+                    capture_output=True,
+                    timeout=5
+                )
+                result = subprocess.run(
+                    ["launchctl", "load", str(self.macos_plist_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+            
+            if result.returncode == 0:
+                return True, ""
+            else:
+                return False, f"加载 LaunchAgent 失败: {result.stderr}"
+        
+        except Exception as e:
+            return False, f"安装 macOS 服务失败: {str(e)}"
+    
+    def _install_windows(self, script_path: Path) -> Tuple[bool, str]:
+        """安装 Windows 任务计划程序任务"""
+        try:
+            python_exe = self._get_python_executable()
+            
+            # 如果任务已存在，先删除
+            if self.is_installed():
+                self.uninstall()
+            
+            # 创建任务（每1分钟运行一次）
+            # 使用 XML 方式创建任务，更可靠
+            xml_content = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}</Date>
+    <Author>Ai Perf Client</Author>
+    <Description>Ai Perf 后台通知服务 - 定期检查并发送系统通知</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"{python_exe}"</Command>
+      <Arguments>"{str(script_path)}" --once</Arguments>
+    </Exec>
+  </Actions>
+</Task>"""
+            
+            # 创建临时 XML 文件
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False, encoding='utf-16') as f:
+                f.write(xml_content)
+                xml_file = f.name
+            
+            try:
+                # 使用 schtasks 创建任务
+                result = subprocess.run(
+                    ["schtasks", "/create", "/tn", self.windows_task_name, "/xml", xml_file, "/f"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode == 0:
+                    return True, ""
+                else:
+                    return False, f"创建任务失败: {result.stderr}"
+            finally:
+                # 删除临时 XML 文件
+                try:
+                    Path(xml_file).unlink()
+                except Exception:
+                    pass
+        
+        except Exception as e:
+            return False, f"安装 Windows 服务失败: {str(e)}"
+    
+    def enable(self) -> Tuple[bool, str]:
+        """启用服务"""
+        if not self.is_installed():
+            return self.install()
+        
+        if self.system == "Darwin":
+            try:
+                result = subprocess.run(
+                    ["launchctl", "load", str(self.macos_plist_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    return True, ""
+                else:
+                    # 如果已加载，忽略错误
+                    if "already loaded" in result.stderr.lower():
+                        return True, ""
+                    return False, f"启用服务失败: {result.stderr}"
+            except Exception as e:
+                return False, f"启用服务失败: {str(e)}"
+        elif self.system == "Windows":
+            try:
+                result = subprocess.run(
+                    ["schtasks", "/change", "/tn", self.windows_task_name, "/enable"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    return True, ""
+                else:
+                    return False, f"启用服务失败: {result.stderr}"
+            except Exception as e:
+                return False, f"启用服务失败: {str(e)}"
+        else:
+            return False, f"不支持的操作系统: {self.system}"
+    
+    def disable(self) -> Tuple[bool, str]:
+        """禁用服务"""
+        if not self.is_installed():
+            return True, ""
+        
+        if self.system == "Darwin":
+            try:
+                result = subprocess.run(
+                    ["launchctl", "unload", str(self.macos_plist_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    return True, ""
+                else:
+                    # 如果未加载，忽略错误
+                    if "could not find specified service" in result.stderr.lower():
+                        return True, ""
+                    return False, f"禁用服务失败: {result.stderr}"
+            except Exception as e:
+                return False, f"禁用服务失败: {str(e)}"
+        elif self.system == "Windows":
+            try:
+                result = subprocess.run(
+                    ["schtasks", "/change", "/tn", self.windows_task_name, "/disable"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    return True, ""
+                else:
+                    return False, f"禁用服务失败: {result.stderr}"
+            except Exception as e:
+                return False, f"禁用服务失败: {str(e)}"
+        else:
+            return False, f"不支持的操作系统: {self.system}"
+    
+    def uninstall(self) -> Tuple[bool, str]:
+        """卸载服务"""
+        if not self.is_installed():
+            return True, ""
+        
+        # 先禁用
+        self.disable()
+        
+        if self.system == "Darwin":
+            try:
+                # 卸载 LaunchAgent
+                subprocess.run(
+                    ["launchctl", "unload", str(self.macos_plist_path)],
+                    capture_output=True,
+                    timeout=5
+                )
+                # 删除 plist 文件
+                if self.macos_plist_path.exists():
+                    self.macos_plist_path.unlink()
+                return True, ""
+            except Exception as e:
+                return False, f"卸载服务失败: {str(e)}"
+        elif self.system == "Windows":
+            try:
+                result = subprocess.run(
+                    ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    return True, ""
+                else:
+                    return False, f"卸载服务失败: {result.stderr}"
+            except Exception as e:
+                return False, f"卸载服务失败: {str(e)}"
+        else:
+            return False, f"不支持的操作系统: {self.system}"
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取服务状态"""
+        return {
+            "installed": self.is_installed(),
+            "enabled": self.is_enabled(),
+            "system": self.system,
+        }
+
+
+# 便捷函数
+def install_background_service() -> Tuple[bool, str]:
+    """安装后台通知服务"""
+    service = SystemNotificationService()
+    return service.install()
+
+
+def enable_background_service() -> Tuple[bool, str]:
+    """启用后台通知服务"""
+    service = SystemNotificationService()
+    return service.enable()
+
+
+def disable_background_service() -> Tuple[bool, str]:
+    """禁用后台通知服务"""
+    service = SystemNotificationService()
+    return service.disable()
+
+
+def uninstall_background_service() -> Tuple[bool, str]:
+    """卸载后台通知服务"""
+    service = SystemNotificationService()
+    return service.uninstall()
+
+
+def get_background_service_status() -> Dict[str, Any]:
+    """获取后台服务状态"""
+    service = SystemNotificationService()
+    return service.get_status()
+
+
+if __name__ == "__main__":
+    # 测试代码
+    service = SystemNotificationService()
+    print(f"系统: {service.system}")
+    print(f"已安装: {service.is_installed()}")
+    print(f"已启用: {service.is_enabled()}")
+    
+    if len(sys.argv) > 1:
+        action = sys.argv[1]
+        if action == "install":
+            success, msg = service.install()
+            print(f"安装: {'成功' if success else '失败'} - {msg}")
+        elif action == "enable":
+            success, msg = service.enable()
+            print(f"启用: {'成功' if success else '失败'} - {msg}")
+        elif action == "disable":
+            success, msg = service.disable()
+            print(f"禁用: {'成功' if success else '失败'} - {msg}")
+        elif action == "uninstall":
+            success, msg = service.uninstall()
+            print(f"卸载: {'成功' if success else '失败'} - {msg}")
+
