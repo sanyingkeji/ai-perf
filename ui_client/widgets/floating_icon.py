@@ -6,8 +6,8 @@
 """
 
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtCore import Qt, QPoint, QTimer, Signal
-from typing import Optional, QPropertyAnimation, QEasingCurve, QRect
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QPropertyAnimation, QEasingCurve, QRect
+from typing import Optional
 from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QPixmap
 from pathlib import Path
 import platform

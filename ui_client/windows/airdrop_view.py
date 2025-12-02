@@ -268,13 +268,29 @@ class AirDropView(QWidget):
         
         content_layout.addWidget(scroll_area, 1)
         
-        # 背景文字（水平居中，垂直靠底部）
+        # 背景区域（水平居中，垂直靠底部）- 包含图标和文字
+        self._background_frame = QFrame(main_widget)
+        self._background_frame.setStyleSheet("background-color: transparent;")
+        background_layout = QVBoxLayout(self._background_frame)
+        background_layout.setAlignment(Qt.AlignCenter)
+        background_layout.setSpacing(12)
+        
+        # 信号图标（使用文字模拟，实际可以用图片）
+        signal_label = QLabel("📡")
+        signal_label.setAlignment(Qt.AlignCenter)
+        signal_label.setFont(QFont("SF Pro Display", 48))
+        signal_label.setStyleSheet("color: #D0D0D0;")  # 浅灰色图标
+        background_layout.addWidget(signal_label)
+        
+        # 背景文字
         self._background_label = QLabel('"隔空投送"可让你与附近的同事立即共享。')
         self._background_label.setAlignment(Qt.AlignCenter)
         self._background_label.setFont(QFont("SF Pro Display", 13))
-        self._background_label.setStyleSheet("color: #C0C0C0;")  # 浅灰色，作为背景
+        self._background_label.setStyleSheet("color: #808080;")  # 调整为更深的灰色，更易看清
         self._background_label.setWordWrap(True)
-        self._background_label.setParent(main_widget)
+        background_layout.addWidget(self._background_label)
+        
+        self._background_frame.setParent(main_widget)
         
         # 传输进度（初始隐藏）
         self.progress_bar = QProgressBar()
@@ -320,18 +336,18 @@ class AirDropView(QWidget):
         self._update_background_label_position()
     
     def _update_background_label_position(self):
-        """更新背景文字位置（水平居中，垂直靠底部）"""
-        if not hasattr(self, '_background_label'):
+        """更新背景区域位置（水平居中，垂直靠底部）"""
+        if not hasattr(self, '_background_frame'):
             return
         
-        # 背景文字位置：水平居中，距离底部60像素
-        label_width = 300
-        label_height = 40
-        x = (self.width() - label_width) // 2
-        y = self.height() - 60
+        # 背景区域位置：水平居中，距离底部30像素（更靠近底部）
+        frame_width = 300
+        frame_height = 120
+        x = (self.width() - frame_width) // 2
+        y = self.height() - frame_height - 30  # 从80改为30，更靠近底部
         
-        self._background_label.setGeometry(x, y, label_width, label_height)
-        self._background_label.lower()  # 置于底层，作为背景
+        self._background_frame.setGeometry(x, y, frame_width, frame_height)
+        self._background_frame.lower()  # 置于底层，作为背景
     
     def _setup_drag_detection(self):
         """设置拖拽检测（用于检测窗口拖到边缘）"""
@@ -373,8 +389,8 @@ class AirDropView(QWidget):
                 screen = QApplication.primaryScreen().geometry()
                 window_rect = self.geometry()
                 
-                # 检查是否有一个边靠边缘（10像素内）
-                margin = 10
+                # 检查是否有一个边靠边缘（20像素内，更宽松的检测）
+                margin = 20
                 is_at_edge = (
                     window_rect.left() <= screen.left() + margin or
                     window_rect.right() >= screen.right() - margin or
@@ -384,8 +400,12 @@ class AirDropView(QWidget):
                 
                 if is_at_edge and not self._edge_triggered:
                     # 触发隐藏到图标（只触发一次）
+                    import sys
+                    print(f"[DEBUG] Edge detected! window_rect={window_rect}, screen={screen}", file=sys.stderr)
                     self._edge_triggered = True
-                    self._animate_to_icon()  # 立即开始动画
+                    # 停止当前拖拽，开始动画
+                    self._is_dragging = False
+                    QTimer.singleShot(50, self._animate_to_icon)  # 稍微延迟，确保拖拽结束
         else:
             super().mouseMoveEvent(event)
     
@@ -400,58 +420,105 @@ class AirDropView(QWidget):
     
     def _animate_to_icon(self):
         """动画：窗口渐渐藏入边缘，然后图标从藏住的位置出现"""
+        import sys
+        print(f"[DEBUG] _animate_to_icon called, isVisible={self.isVisible()}", file=sys.stderr)
+        
+        if not self.isVisible():
+            # 如果窗口已经隐藏，直接触发显示图标
+            screen = QApplication.primaryScreen().geometry()
+            # 默认位置：屏幕右侧边缘
+            icon_pos = QPoint(screen.right() - 36, screen.height() // 2 - 18)
+            self.should_hide_to_icon.emit(icon_pos)
+            return
+        
         screen = QApplication.primaryScreen().geometry()
         current_rect = self.geometry()
         
+        print(f"[DEBUG] Screen geometry: {screen}", file=sys.stderr)
+        print(f"[DEBUG] Current window rect: {current_rect}", file=sys.stderr)
+        
         # 确定窗口要隐藏到的边缘位置
         # 根据当前窗口位置，判断应该隐藏到哪个边缘
-        left_dist = current_rect.left() - screen.left()
-        right_dist = screen.right() - current_rect.right()
-        top_dist = current_rect.top() - screen.top()
-        bottom_dist = screen.bottom() - current_rect.bottom()
+        left_dist = abs(current_rect.left() - screen.left())
+        right_dist = abs(screen.right() - current_rect.right())
+        top_dist = abs(current_rect.top() - screen.top())
+        bottom_dist = abs(screen.bottom() - current_rect.bottom())
+        
+        print(f"[DEBUG] Edge distances: left={left_dist}, right={right_dist}, top={top_dist}, bottom={bottom_dist}", file=sys.stderr)
         
         # 找到最近的边缘
         min_dist = min(left_dist, right_dist, top_dist, bottom_dist)
         
         if min_dist == left_dist:
             # 隐藏到左边缘
-            target_x = screen.left() - current_rect.width() + 36
-            target_y = current_rect.y() + current_rect.height() // 2 - 18
+            target_x = screen.left() - 36  # 只露出36像素（图标大小）
+            target_y = max(screen.top(), min(screen.bottom() - 36, current_rect.y() + current_rect.height() // 2 - 18))
+            print(f"[DEBUG] Hiding to LEFT edge: target=({target_x}, {target_y})", file=sys.stderr)
         elif min_dist == right_dist:
             # 隐藏到右边缘
             target_x = screen.right() - 36
-            target_y = current_rect.y() + current_rect.height() // 2 - 18
+            target_y = max(screen.top(), min(screen.bottom() - 36, current_rect.y() + current_rect.height() // 2 - 18))
+            print(f"[DEBUG] Hiding to RIGHT edge: target=({target_x}, {target_y})", file=sys.stderr)
         elif min_dist == top_dist:
             # 隐藏到上边缘
-            target_x = current_rect.x() + current_rect.width() // 2 - 18
-            target_y = screen.top() - current_rect.height() + 36
+            target_x = max(screen.left(), min(screen.right() - 36, current_rect.x() + current_rect.width() // 2 - 18))
+            target_y = screen.top() - 36  # 只露出36像素
+            print(f"[DEBUG] Hiding to TOP edge: target=({target_x}, {target_y})", file=sys.stderr)
         else:
             # 隐藏到下边缘
-            target_x = current_rect.x() + current_rect.width() // 2 - 18
+            target_x = max(screen.left(), min(screen.right() - 36, current_rect.x() + current_rect.width() // 2 - 18))
             target_y = screen.bottom() - 36
+            print(f"[DEBUG] Hiding to BOTTOM edge: target=({target_x}, {target_y})", file=sys.stderr)
+        
+        # 确保目标位置在屏幕范围内
+        target_x = max(screen.left() - 36, min(screen.right(), target_x))
+        target_y = max(screen.top() - 36, min(screen.bottom(), target_y))
         
         # 图标最终位置（从窗口隐藏位置出现）
         icon_pos = QPoint(target_x, target_y)
+        print(f"[DEBUG] Final icon position: {icon_pos}", file=sys.stderr)
         
         # 创建窗口隐藏动画
+        target_rect = QRect(target_x, target_y, 36, 36)
+        print(f"[DEBUG] Animation target rect: {target_rect}", file=sys.stderr)
+        
         window_animation = QPropertyAnimation(self, b"geometry")
         window_animation.setDuration(300)
         window_animation.setStartValue(QRect(current_rect))
-        window_animation.setEndValue(QRect(target_x, target_y, 36, 36))
+        window_animation.setEndValue(target_rect)
         window_animation.setEasingCurve(QEasingCurve.InOutCubic)
         
         def on_window_animation_finished():
+            import sys
+            print(f"[DEBUG] ===== Window animation FINISHED =====", file=sys.stderr)
+            print(f"[DEBUG] Window isVisible before hide: {self.isVisible()}", file=sys.stderr)
             # 窗口隐藏完成，隐藏窗口（确保互斥）
             self.hide()
             self.setVisible(False)
+            print(f"[DEBUG] Window isVisible after hide: {self.isVisible()}", file=sys.stderr)
             # 触发显示图标（传递图标位置）
+            print(f"[DEBUG] Emitting should_hide_to_icon signal with icon_pos={icon_pos}", file=sys.stderr)
             self.should_hide_to_icon.emit(icon_pos)
+            print(f"[DEBUG] Signal emitted successfully", file=sys.stderr)
             # 重置标志
             if hasattr(self, '_edge_triggered'):
                 self._edge_triggered = False
         
+        def on_animation_state_changed(new_state, old_state):
+            import sys
+            from PySide6.QtCore import QAbstractAnimation
+            state_names = {QAbstractAnimation.Stopped: "Stopped", 
+                          QAbstractAnimation.Running: "Running", 
+                          QAbstractAnimation.Paused: "Paused"}
+            print(f"[DEBUG] Animation state changed: {state_names.get(old_state, old_state)} -> {state_names.get(new_state, new_state)}", file=sys.stderr)
+        
         window_animation.finished.connect(on_window_animation_finished)
+        window_animation.stateChanged.connect(on_animation_state_changed)
+        print(f"[DEBUG] ===== Starting window animation =====", file=sys.stderr)
+        print(f"[DEBUG] From: {current_rect}", file=sys.stderr)
+        print(f"[DEBUG] To: {target_rect}", file=sys.stderr)
         window_animation.start()
+        print(f"[DEBUG] Animation started, state: {window_animation.state()}", file=sys.stderr)
     
     def _init_transfer_manager(self):
         """初始化传输管理器"""

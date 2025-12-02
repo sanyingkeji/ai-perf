@@ -95,10 +95,11 @@ jobs:
           if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
             PYTHON="${{ env.PYTHON_CMD }}"
             echo "使用 pyenv Python: $PYTHON"
-            "$PYTHON" -m pip install --upgrade pip --break-system-packages
-            "$PYTHON" -m pip install -r requirements.txt --break-system-packages
+            # pyenv Python 不需要 --break-system-packages 选项
+            "$PYTHON" -m pip install --upgrade pip
+            "$PYTHON" -m pip install -r requirements.txt
           else
-            # 回退到系统 Python
+            # 回退到系统 Python（需要 --break-system-packages）
             export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
             export PATH="$PYENV_ROOT/bin:$PATH"
             eval "$(pyenv init - bash)" || true
@@ -531,8 +532,16 @@ jobs:
           file "$PYTHON" || echo "无法检查 Python 架构"
           
           # 安装依赖（必须在 Rosetta 环境下运行）
-          arch -x86_64 "$PYTHON" -m pip install --upgrade pip --break-system-packages
-          arch -x86_64 "$PYTHON" -m pip install -r requirements.txt --break-system-packages
+          # 检查是否是 pyenv Python（不需要 --break-system-packages）
+          if echo "$PYTHON" | grep -q "\.pyenv"; then
+            echo "使用 pyenv Python，不使用 --break-system-packages"
+            arch -x86_64 "$PYTHON" -m pip install --upgrade pip
+            arch -x86_64 "$PYTHON" -m pip install -r requirements.txt
+          else
+            echo "使用系统/Homebrew Python，使用 --break-system-packages"
+            arch -x86_64 "$PYTHON" -m pip install --upgrade pip --break-system-packages
+            arch -x86_64 "$PYTHON" -m pip install -r requirements.txt --break-system-packages
+          fi
       
       - name: Verify PyInstaller installation
         run: |

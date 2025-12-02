@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QTimer, QPoint
 from PySide6.QtGui import QIcon, QAction
+from typing import Optional
 import platform
 from pathlib import Path
 
@@ -705,25 +706,35 @@ class MainWindow(QMainWindow):
             if platform.system() == "Darwin":
                 try:
                     from AppKit import NSWindow, NSWindowButton
-                    # 获取窗口的NSWindow对象
-                    win_id = self._airdrop_window.winId()
-                    if win_id:
-                        # 通过objc访问NSWindow
-                        from ctypes import c_void_p
-                        import objc
-                        ns_window = objc.objc_object(c_void_p=c_void_p(int(win_id)))
-                        if ns_window:
-                            # 禁用最小化按钮
-                            minimize_button = ns_window.standardWindowButton_(NSWindowButton.NSWindowMiniaturizeButton)
-                            if minimize_button:
-                                minimize_button.setEnabled_(False)
-                            # 禁用最大化按钮
-                            zoom_button = ns_window.standardWindowButton_(NSWindowButton.NSWindowZoomButton)
-                            if zoom_button:
-                                zoom_button.setEnabled_(False)
-                except Exception:
-                    # 如果失败，忽略（不影响功能）
-                    pass
+                    import objc
+                    # 延迟执行，确保窗口已经显示
+                    def disable_buttons():
+                        try:
+                            win_id = self._airdrop_window.winId()
+                            if win_id:
+                                # 通过objc访问NSWindow
+                                from ctypes import c_void_p
+                                ns_window = objc.objc_object(c_void_p=c_void_p(int(win_id)))
+                                if ns_window:
+                                    # 禁用最小化按钮
+                                    minimize_button = ns_window.standardWindowButton_(NSWindowButton.NSWindowMiniaturizeButton)
+                                    if minimize_button:
+                                        minimize_button.setEnabled_(False)
+                                        minimize_button.setHidden_(True)  # 隐藏按钮
+                                    # 禁用最大化按钮
+                                    zoom_button = ns_window.standardWindowButton_(NSWindowButton.NSWindowZoomButton)
+                                    if zoom_button:
+                                        zoom_button.setEnabled_(False)
+                                        zoom_button.setHidden_(True)  # 隐藏按钮
+                        except Exception as e:
+                            import sys
+                            print(f"[WARNING] Failed to disable window buttons: {e}", file=sys.stderr)
+                    
+                    # 窗口显示后再禁用按钮
+                    QTimer.singleShot(100, disable_buttons)
+                except Exception as e:
+                    import sys
+                    print(f"[WARNING] Failed to setup button disabling: {e}", file=sys.stderr)
             # 设置窗口大小和位置
             self._airdrop_window.resize(420, 600)
             # 居中显示
@@ -739,12 +750,18 @@ class MainWindow(QMainWindow):
             # 重写关闭事件
             def custom_close_event(event):
                 # 不真正关闭，而是隐藏到图标（关闭时也触发边缘隐藏动画）
+                import sys
+                print(f"[DEBUG] Close button clicked!", file=sys.stderr)
                 event.ignore()
                 # 停止传输管理器
                 if hasattr(self._airdrop_window, '_transfer_manager') and self._airdrop_window._transfer_manager:
                     self._airdrop_window._transfer_manager.stop()
                 # 触发窗口隐藏动画（模拟拖到边缘）
                 if self._airdrop_window:
+                    print(f"[DEBUG] Window isVisible={self._airdrop_window.isVisible()}", file=sys.stderr)
+                    # 重置拖拽状态
+                    if hasattr(self._airdrop_window, '_edge_triggered'):
+                        self._airdrop_window._edge_triggered = False
                     self._airdrop_window._animate_to_icon()
             self._airdrop_window.closeEvent = custom_close_event
             
@@ -773,19 +790,27 @@ class MainWindow(QMainWindow):
     
     def _hide_airdrop_to_icon(self, icon_target_pos: Optional[QPoint] = None):
         """窗口拖到边缘/关闭，隐藏窗口并显示图标"""
+        import sys
+        print(f"[DEBUG] _hide_airdrop_to_icon called with icon_target_pos={icon_target_pos}", file=sys.stderr)
+        
         if not self._airdrop_window:
+            print(f"[DEBUG] _airdrop_window is None", file=sys.stderr)
             return
         
         # 确保窗口已隐藏（互斥）
         if self._airdrop_window.isVisible():
+            print(f"[DEBUG] Window still visible, hiding it", file=sys.stderr)
             self._airdrop_window.hide()
             self._airdrop_window.setVisible(False)
         
         # 显示悬浮图标（带动画，确保互斥）
         if self._floating_icon:
+            print(f"[DEBUG] Showing floating icon at {icon_target_pos}", file=sys.stderr)
             # 延迟一点显示图标，让窗口完全隐藏后再显示
             # 如果指定了目标位置（从窗口隐藏位置），从该位置动画出现
             QTimer.singleShot(100, lambda: self._floating_icon.animate_show(icon_target_pos))
+        else:
+            print(f"[DEBUG] _floating_icon is None", file=sys.stderr)
     
     def _on_airdrop_window_destroyed(self):
         """隔空投送窗口被销毁"""
