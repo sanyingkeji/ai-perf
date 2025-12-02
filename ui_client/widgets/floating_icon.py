@@ -6,7 +6,8 @@
 """
 
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QPropertyAnimation, QEasingCurve, QRect
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal
+from typing import Optional, QPropertyAnimation, QEasingCurve, QRect
 from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QPixmap
 from pathlib import Path
 import platform
@@ -169,11 +170,18 @@ class FloatingIcon(QWidget):
         self.raise_()
         self.activateWindow()
     
-    def animate_show(self):
-        """动画显示"""
+    def animate_show(self, from_pos: Optional[QPoint] = None):
+        """动画显示（从指定位置出现）"""
+        if from_pos:
+            # 从指定位置开始（窗口隐藏的位置）
+            self.move(from_pos)
+            self._opacity_value = 0.0
+        else:
+            # 默认淡入
+            self._opacity_value = 0.0
+        
         self.show()
-        # 淡入动画
-        self._opacity_value = 0.0
+        self.setVisible(True)  # 确保可见
         self.update()
         
         animation = QPropertyAnimation(self, b"opacity")
@@ -193,6 +201,7 @@ class FloatingIcon(QWidget):
         
         def on_finished():
             self.hide()
+            self.setVisible(False)  # 确保隐藏
         
         animation.finished.connect(on_finished)
         animation.start()

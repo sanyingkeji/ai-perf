@@ -200,8 +200,8 @@ class DeviceItemWidget(QWidget):
 class AirDropView(QWidget):
     """隔空投送主界面（苹果风格）"""
     
-    # 信号：窗口需要隐藏（变成图标）
-    should_hide_to_icon = Signal()
+    # 信号：窗口需要隐藏（变成图标），传递图标位置
+    should_hide_to_icon = Signal(QPoint)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -225,73 +225,18 @@ class AirDropView(QWidget):
             }
         """)
         
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        # 使用绝对定位布局，让背景文字在底部
+        from PySide6.QtWidgets import QWidget
+        main_widget = QWidget()
+        main_widget.setStyleSheet("background-color: #FFFFFF;")
         
-        # 顶部导航栏（苹果风格）
-        nav_frame = QFrame()
-        nav_frame.setFixedHeight(44)
-        nav_frame.setStyleSheet("""
-            QFrame {
-                background-color: #F5F5F5;
-                border-bottom: 1px solid #E5E5E5;
-            }
-        """)
-        nav_layout = QHBoxLayout(nav_frame)
-        nav_layout.setContentsMargins(16, 0, 16, 0)
-        nav_layout.setSpacing(0)
-        
-        # 标题
-        title = QLabel("隔空投送")
-        title.setFont(QFont("SF Pro Display", 17, QFont.Medium))
-        nav_layout.addWidget(title)
-        nav_layout.addStretch()
-        
-        layout.addWidget(nav_frame)
-        
-        # 主内容区域
-        content_widget = QWidget()
+        # 主内容区域（设备列表）
+        content_widget = QWidget(main_widget)
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(20)
+        content_layout.setSpacing(0)
         
-        # AirDrop 信号图标区域（居中显示）
-        signal_frame = QFrame()
-        signal_frame.setFixedHeight(200)
-        signal_frame.setStyleSheet("background-color: transparent;")
-        signal_layout = QVBoxLayout(signal_frame)
-        signal_layout.setAlignment(Qt.AlignCenter)
-        
-        # 信号图标（使用文字模拟，实际可以用图片）
-        signal_label = QLabel("📡")
-        signal_label.setAlignment(Qt.AlignCenter)
-        signal_label.setFont(QFont("SF Pro Display", 64))
-        signal_layout.addWidget(signal_label)
-        
-        # 描述文字
-        desc_label = QLabel('"隔空投送"可让你与附近的用户立即共享。')
-        desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setFont(QFont("SF Pro Display", 13))
-        desc_label.setStyleSheet("color: #000000;")
-        desc_label.setWordWrap(True)
-        signal_layout.addWidget(desc_label)
-        
-        # 发现设置（简化版）
-        discover_label = QLabel('允许这些人发现我: 所有人 ✓')
-        discover_label.setAlignment(Qt.AlignCenter)
-        discover_label.setFont(QFont("SF Pro Display", 13))
-        discover_label.setStyleSheet("color: #007AFF;")
-        signal_layout.addWidget(discover_label)
-        
-        content_layout.addWidget(signal_frame)
-        
-        # 设备列表
-        devices_label = QLabel("附近设备")
-        devices_label.setFont(QFont("SF Pro Display", 15, QFont.Medium))
-        content_layout.addWidget(devices_label)
-        
-        # 滚动区域
+        # 滚动区域（设备列表）
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -323,6 +268,14 @@ class AirDropView(QWidget):
         
         content_layout.addWidget(scroll_area, 1)
         
+        # 背景文字（水平居中，垂直靠底部）
+        self._background_label = QLabel('"隔空投送"可让你与附近的同事立即共享。')
+        self._background_label.setAlignment(Qt.AlignCenter)
+        self._background_label.setFont(QFont("SF Pro Display", 13))
+        self._background_label.setStyleSheet("color: #C0C0C0;")  # 浅灰色，作为背景
+        self._background_label.setWordWrap(True)
+        self._background_label.setParent(main_widget)
+        
         # 传输进度（初始隐藏）
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -348,7 +301,37 @@ class AirDropView(QWidget):
         self.status_label.setVisible(False)
         content_layout.addWidget(self.status_label)
         
-        layout.addWidget(content_widget)
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(main_widget)
+        
+        # 保存引用以便后续调整背景文字位置
+        self._main_widget = main_widget
+        self._content_widget = content_widget
+        
+        # 重写resizeEvent来调整背景文字位置
+        self._update_background_label_position()
+    
+    def resizeEvent(self, event):
+        """窗口大小改变时调整背景文字位置"""
+        super().resizeEvent(event)
+        self._update_background_label_position()
+    
+    def _update_background_label_position(self):
+        """更新背景文字位置（水平居中，垂直靠底部）"""
+        if not hasattr(self, '_background_label'):
+            return
+        
+        # 背景文字位置：水平居中，距离底部60像素
+        label_width = 300
+        label_height = 40
+        x = (self.width() - label_width) // 2
+        y = self.height() - 60
+        
+        self._background_label.setGeometry(x, y, label_width, label_height)
+        self._background_label.lower()  # 置于底层，作为背景
     
     def _setup_drag_detection(self):
         """设置拖拽检测（用于检测窗口拖到边缘）"""
@@ -361,8 +344,9 @@ class AirDropView(QWidget):
     def mousePressEvent(self, event: QMouseEvent):
         """鼠标按下"""
         if event.button() == Qt.LeftButton:
-            # 检查是否在标题栏区域（顶部44像素）
-            if event.position().y() <= 44:
+            # 检查是否在标题栏区域（系统标题栏区域，约30像素）
+            # 或者在整个窗口顶部区域（用于拖拽）
+            if event.position().y() <= 30:
                 # 记录鼠标按下时的全局位置和窗口位置
                 self._drag_start_pos = event.globalPosition().toPoint()
                 self._drag_window_pos = self.pos()
@@ -385,23 +369,23 @@ class AirDropView(QWidget):
                 new_pos = self._drag_window_pos + mouse_delta
                 self.move(new_pos)
                 
-                # 检查是否拖到屏幕边缘
+                # 检查是否拖到屏幕边缘（只要有一个边靠边缘就触发）
                 screen = QApplication.primaryScreen().geometry()
                 window_rect = self.geometry()
                 
-                # 检查是否接近边缘（30像素内）
-                margin = 30
-                is_near_edge = (
+                # 检查是否有一个边靠边缘（10像素内）
+                margin = 10
+                is_at_edge = (
                     window_rect.left() <= screen.left() + margin or
                     window_rect.right() >= screen.right() - margin or
                     window_rect.top() <= screen.top() + margin or
                     window_rect.bottom() >= screen.bottom() - margin
                 )
                 
-                if is_near_edge and not self._edge_triggered:
+                if is_at_edge and not self._edge_triggered:
                     # 触发隐藏到图标（只触发一次）
                     self._edge_triggered = True
-                    QTimer.singleShot(150, self._animate_to_icon)  # 延迟一点，避免频繁触发
+                    self._animate_to_icon()  # 立即开始动画
         else:
             super().mouseMoveEvent(event)
     
@@ -415,30 +399,59 @@ class AirDropView(QWidget):
         super().mouseReleaseEvent(event)
     
     def _animate_to_icon(self):
-        """动画：窗口切入边缘，变成图标"""
+        """动画：窗口渐渐藏入边缘，然后图标从藏住的位置出现"""
         screen = QApplication.primaryScreen().geometry()
         current_rect = self.geometry()
         
-        # 确定目标位置（屏幕右侧边缘）
-        target_x = screen.right() - 36  # 图标宽度
-        target_y = current_rect.y() + current_rect.height() // 2 - 18  # 图标高度的一半
+        # 确定窗口要隐藏到的边缘位置
+        # 根据当前窗口位置，判断应该隐藏到哪个边缘
+        left_dist = current_rect.left() - screen.left()
+        right_dist = screen.right() - current_rect.right()
+        top_dist = current_rect.top() - screen.top()
+        bottom_dist = screen.bottom() - current_rect.bottom()
         
-        # 创建动画
-        animation = QPropertyAnimation(self, b"geometry")
-        animation.setDuration(300)
-        animation.setStartValue(QRect(current_rect))
-        animation.setEndValue(QRect(target_x, target_y, 36, 36))
-        animation.setEasingCurve(QEasingCurve.InOutCubic)
+        # 找到最近的边缘
+        min_dist = min(left_dist, right_dist, top_dist, bottom_dist)
         
-        def on_finished():
-            self.should_hide_to_icon.emit()
+        if min_dist == left_dist:
+            # 隐藏到左边缘
+            target_x = screen.left() - current_rect.width() + 36
+            target_y = current_rect.y() + current_rect.height() // 2 - 18
+        elif min_dist == right_dist:
+            # 隐藏到右边缘
+            target_x = screen.right() - 36
+            target_y = current_rect.y() + current_rect.height() // 2 - 18
+        elif min_dist == top_dist:
+            # 隐藏到上边缘
+            target_x = current_rect.x() + current_rect.width() // 2 - 18
+            target_y = screen.top() - current_rect.height() + 36
+        else:
+            # 隐藏到下边缘
+            target_x = current_rect.x() + current_rect.width() // 2 - 18
+            target_y = screen.bottom() - 36
+        
+        # 图标最终位置（从窗口隐藏位置出现）
+        icon_pos = QPoint(target_x, target_y)
+        
+        # 创建窗口隐藏动画
+        window_animation = QPropertyAnimation(self, b"geometry")
+        window_animation.setDuration(300)
+        window_animation.setStartValue(QRect(current_rect))
+        window_animation.setEndValue(QRect(target_x, target_y, 36, 36))
+        window_animation.setEasingCurve(QEasingCurve.InOutCubic)
+        
+        def on_window_animation_finished():
+            # 窗口隐藏完成，隐藏窗口（确保互斥）
             self.hide()
+            self.setVisible(False)
+            # 触发显示图标（传递图标位置）
+            self.should_hide_to_icon.emit(icon_pos)
             # 重置标志
             if hasattr(self, '_edge_triggered'):
                 self._edge_triggered = False
         
-        animation.finished.connect(on_finished)
-        animation.start()
+        window_animation.finished.connect(on_window_animation_finished)
+        window_animation.start()
     
     def _init_transfer_manager(self):
         """初始化传输管理器"""
@@ -726,8 +739,8 @@ class AirDropView(QWidget):
     
     def closeEvent(self, event):
         """关闭事件"""
+        # 注意：这个closeEvent会被main_window中的custom_close_event重写
+        # 所以这里只处理传输管理器的停止
         if self._transfer_manager:
             self._transfer_manager.stop()
-        # 触发显示图标
-        self.should_hide_to_icon.emit()
         super().closeEvent(event)
