@@ -209,9 +209,11 @@ class AirDropView(QWidget):
         self._transferring = False
         self._current_target: Optional[DeviceInfo] = None
         self._pending_requests: Dict[str, dict] = {}  # 待处理的传输请求
+        self._was_hidden_to_icon = False  # 标记窗口是否被隐藏到图标
         self._setup_ui()
-        self._init_transfer_manager()
         self._setup_drag_detection()
+        # 延迟初始化传输管理器，避免阻塞UI创建
+        QTimer.singleShot(0, self._init_transfer_manager)
     
     def _setup_ui(self):
         """设置UI（苹果风格）"""
@@ -438,41 +440,27 @@ class AirDropView(QWidget):
         print(f"[DEBUG] Current window rect: {current_rect}", file=sys.stderr)
         
         # 确定窗口要隐藏到的边缘位置
-        # 根据当前窗口位置，判断应该隐藏到哪个边缘
+        # 只允许隐藏到左右边缘，不允许隐藏到上下边缘
         left_dist = abs(current_rect.left() - screen.left())
         right_dist = abs(screen.right() - current_rect.right())
-        top_dist = abs(current_rect.top() - screen.top())
-        bottom_dist = abs(screen.bottom() - current_rect.bottom())
         
-        print(f"[DEBUG] Edge distances: left={left_dist}, right={right_dist}, top={top_dist}, bottom={bottom_dist}", file=sys.stderr)
+        print(f"[DEBUG] Edge distances: left={left_dist}, right={right_dist}", file=sys.stderr)
         
-        # 找到最近的边缘
-        min_dist = min(left_dist, right_dist, top_dist, bottom_dist)
-        
-        if min_dist == left_dist:
+        # 找到最近的边缘（只考虑左右）
+        if left_dist <= right_dist:
             # 隐藏到左边缘
             target_x = screen.left() - 36  # 只露出36像素（图标大小）
             target_y = max(screen.top(), min(screen.bottom() - 36, current_rect.y() + current_rect.height() // 2 - 18))
             print(f"[DEBUG] Hiding to LEFT edge: target=({target_x}, {target_y})", file=sys.stderr)
-        elif min_dist == right_dist:
+        else:
             # 隐藏到右边缘
             target_x = screen.right() - 36
             target_y = max(screen.top(), min(screen.bottom() - 36, current_rect.y() + current_rect.height() // 2 - 18))
             print(f"[DEBUG] Hiding to RIGHT edge: target=({target_x}, {target_y})", file=sys.stderr)
-        elif min_dist == top_dist:
-            # 隐藏到上边缘
-            target_x = max(screen.left(), min(screen.right() - 36, current_rect.x() + current_rect.width() // 2 - 18))
-            target_y = screen.top() - 36  # 只露出36像素
-            print(f"[DEBUG] Hiding to TOP edge: target=({target_x}, {target_y})", file=sys.stderr)
-        else:
-            # 隐藏到下边缘
-            target_x = max(screen.left(), min(screen.right() - 36, current_rect.x() + current_rect.width() // 2 - 18))
-            target_y = screen.bottom() - 36
-            print(f"[DEBUG] Hiding to BOTTOM edge: target=({target_x}, {target_y})", file=sys.stderr)
         
         # 确保目标位置在屏幕范围内
         target_x = max(screen.left() - 36, min(screen.right(), target_x))
-        target_y = max(screen.top() - 36, min(screen.bottom(), target_y))
+        target_y = max(screen.top(), min(screen.bottom() - 36, target_y))
         
         # 图标最终位置（从窗口隐藏位置出现）
         icon_pos = QPoint(target_x, target_y)
@@ -490,16 +478,23 @@ class AirDropView(QWidget):
         
         def on_window_animation_finished():
             import sys
-            print(f"[DEBUG] ===== Window animation FINISHED =====", file=sys.stderr)
+            print(f"[DEBUG] ===== Window animation FINISHED callback called =====", file=sys.stderr)
             print(f"[DEBUG] Window isVisible before hide: {self.isVisible()}", file=sys.stderr)
-            # 窗口隐藏完成，隐藏窗口（确保互斥）
-            self.hide()
-            self.setVisible(False)
-            print(f"[DEBUG] Window isVisible after hide: {self.isVisible()}", file=sys.stderr)
-            # 触发显示图标（传递图标位置）
-            print(f"[DEBUG] Emitting should_hide_to_icon signal with icon_pos={icon_pos}", file=sys.stderr)
-            self.should_hide_to_icon.emit(icon_pos)
-            print(f"[DEBUG] Signal emitted successfully", file=sys.stderr)
+            try:
+                # 标记窗口被隐藏到图标（用于后续判断是否从图标恢复）
+                self._was_hidden_to_icon = True
+                # 窗口隐藏完成，隐藏窗口（确保互斥）
+                self.hide()
+                self.setVisible(False)
+                print(f"[DEBUG] Window isVisible after hide: {self.isVisible()}", file=sys.stderr)
+                # 触发显示图标（传递图标位置）
+                print(f"[DEBUG] Emitting should_hide_to_icon signal with icon_pos={icon_pos}", file=sys.stderr)
+                self.should_hide_to_icon.emit(icon_pos)
+                print(f"[DEBUG] Signal emitted successfully", file=sys.stderr)
+            except Exception as e:
+                print(f"[ERROR] Error in animation finished callback: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc()
             # 重置标志
             if hasattr(self, '_edge_triggered'):
                 self._edge_triggered = False
@@ -512,49 +507,99 @@ class AirDropView(QWidget):
                           QAbstractAnimation.Paused: "Paused"}
             print(f"[DEBUG] Animation state changed: {state_names.get(old_state, old_state)} -> {state_names.get(new_state, new_state)}", file=sys.stderr)
         
+        # 确保连接信号
         window_animation.finished.connect(on_window_animation_finished)
         window_animation.stateChanged.connect(on_animation_state_changed)
+        
         print(f"[DEBUG] ===== Starting window animation =====", file=sys.stderr)
         print(f"[DEBUG] From: {current_rect}", file=sys.stderr)
         print(f"[DEBUG] To: {target_rect}", file=sys.stderr)
+        print(f"[DEBUG] Animation duration: {window_animation.duration()}ms", file=sys.stderr)
+        
         window_animation.start()
+        
         print(f"[DEBUG] Animation started, state: {window_animation.state()}", file=sys.stderr)
+        
+        # 添加一个备用检查：如果动画在预期时间内没有完成，强制触发
+        def check_animation_complete():
+            from PySide6.QtCore import QAbstractAnimation
+            if window_animation.state() == QAbstractAnimation.Stopped:
+                print(f"[DEBUG] Animation stopped, checking if finished callback was called", file=sys.stderr)
+                if self.isVisible():
+                    print(f"[WARNING] Window still visible after animation stopped, forcing hide", file=sys.stderr)
+                    on_window_animation_finished()
+        
+        QTimer.singleShot(350, check_animation_complete)  # 比动画时长稍长一点
     
     def _init_transfer_manager(self):
-        """初始化传输管理器"""
-        try:
-            api_client = ApiClient.from_config()
-            user_info = api_client._get("/api/user_info")
-            
-            if isinstance(user_info, dict) and user_info.get("status") == "success":
-                data = user_info.get("data", {})
-                user_id = str(data.get("user_id", ""))
-                user_name = data.get("name", "Unknown")
-                avatar_url = data.get("avatar_url")
+        """初始化传输管理器（异步执行，避免阻塞UI）"""
+        import sys
+        print(f"[DEBUG] Starting transfer manager initialization (async)", file=sys.stderr)
+        
+        def init_in_thread():
+            """在后台线程中执行耗时操作"""
+            try:
+                import sys
+                print(f"[DEBUG] Fetching user info from API...", file=sys.stderr)
+                api_client = ApiClient.from_config()
+                user_info = api_client._get("/api/user_info")
                 
-                self._transfer_manager = TransferManager(
-                    user_id=user_id,
-                    user_name=user_name,
-                    avatar_url=avatar_url
-                )
-                
-                self._transfer_manager.device_added.connect(self._on_device_added)
-                self._transfer_manager.device_removed.connect(self._on_device_removed)
-                self._transfer_manager.transfer_request_received.connect(self._on_transfer_request_received)
-                self._transfer_manager.file_received.connect(self._on_file_received)
-                self._transfer_manager.transfer_progress.connect(self._on_transfer_progress)
-                self._transfer_manager.transfer_completed.connect(self._on_transfer_completed)
-                
-                self._transfer_manager.start()
-                
-                self._refresh_timer = QTimer()
-                self._refresh_timer.timeout.connect(self._refresh_devices)
-                self._refresh_timer.start(2000)
-            else:
-                Toast.show_message(self, "无法获取用户信息，请先登录")
-        except Exception as e:
-            logger.error(f"初始化传输管理器失败: {e}")
-            Toast.show_message(self, f"初始化失败: {e}")
+                if isinstance(user_info, dict) and user_info.get("status") == "success":
+                    data = user_info.get("data", {})
+                    user_id = str(data.get("user_id", ""))
+                    user_name = data.get("name", "Unknown")
+                    avatar_url = data.get("avatar_url")
+                    
+                    print(f"[DEBUG] User info fetched, creating TransferManager...", file=sys.stderr)
+                    
+                    # 在主线程中创建 TransferManager（因为需要连接信号）
+                    def create_manager():
+                        try:
+                            self._transfer_manager = TransferManager(
+                                user_id=user_id,
+                                user_name=user_name,
+                                avatar_url=avatar_url
+                            )
+                            
+                            self._transfer_manager.device_added.connect(self._on_device_added)
+                            self._transfer_manager.device_removed.connect(self._on_device_removed)
+                            self._transfer_manager.transfer_request_received.connect(self._on_transfer_request_received)
+                            self._transfer_manager.file_received.connect(self._on_file_received)
+                            self._transfer_manager.transfer_progress.connect(self._on_transfer_progress)
+                            self._transfer_manager.transfer_completed.connect(self._on_transfer_completed)
+                            
+                            print(f"[DEBUG] Starting TransferManager...", file=sys.stderr)
+                            self._transfer_manager.start()
+                            
+                            self._refresh_timer = QTimer()
+                            self._refresh_timer.timeout.connect(self._refresh_devices)
+                            self._refresh_timer.start(2000)
+                            
+                            print(f"[DEBUG] TransferManager started successfully", file=sys.stderr)
+                        except Exception as e:
+                            import sys
+                            logger.error(f"创建传输管理器失败: {e}")
+                            print(f"[ERROR] Failed to create TransferManager: {e}", file=sys.stderr)
+                            Toast.show_message(self, f"初始化失败: {e}")
+                    
+                    # 在主线程中执行创建操作
+                    QTimer.singleShot(0, create_manager)
+                else:
+                    def show_error():
+                        Toast.show_message(self, "无法获取用户信息，请先登录")
+                    QTimer.singleShot(0, show_error)
+            except Exception as e:
+                import sys
+                logger.error(f"初始化传输管理器失败: {e}")
+                print(f"[ERROR] Failed to init transfer manager: {e}", file=sys.stderr)
+                def show_error():
+                    Toast.show_message(self, f"初始化失败: {e}")
+                QTimer.singleShot(0, show_error)
+        
+        # 在后台线程中执行API调用
+        import threading
+        thread = threading.Thread(target=init_in_thread, daemon=True)
+        thread.start()
     
     def _on_device_added(self, device: DeviceInfo):
         """设备添加"""

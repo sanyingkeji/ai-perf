@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QListWidget, QStackedWidget, QLabel, QDialog, QPushButton, QSizePolicy,
     QSystemTrayIcon, QMenu, QApplication, QMessageBox
 )
-from PySide6.QtCore import Qt, QSize, QTimer, QPoint
+from PySide6.QtCore import Qt, QSize, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect
 from PySide6.QtGui import QIcon, QAction
 from typing import Optional
 import platform
@@ -704,44 +704,96 @@ class MainWindow(QMainWindow):
             )
             # macOS: 禁用最小化和最大化按钮
             if platform.system() == "Darwin":
-                try:
-                    from AppKit import NSWindow, NSWindowButton
-                    import objc
-                    # 延迟执行，确保窗口已经显示
-                    def disable_buttons():
-                        try:
-                            win_id = self._airdrop_window.winId()
-                            if win_id:
-                                # 通过objc访问NSWindow
-                                from ctypes import c_void_p
-                                ns_window = objc.objc_object(c_void_p=c_void_p(int(win_id)))
-                                if ns_window:
-                                    # 禁用最小化按钮
-                                    minimize_button = ns_window.standardWindowButton_(NSWindowButton.NSWindowMiniaturizeButton)
-                                    if minimize_button:
-                                        minimize_button.setEnabled_(False)
-                                        minimize_button.setHidden_(True)  # 隐藏按钮
-                                    # 禁用最大化按钮
-                                    zoom_button = ns_window.standardWindowButton_(NSWindowButton.NSWindowZoomButton)
-                                    if zoom_button:
-                                        zoom_button.setEnabled_(False)
-                                        zoom_button.setHidden_(True)  # 隐藏按钮
-                        except Exception as e:
-                            import sys
-                            print(f"[WARNING] Failed to disable window buttons: {e}", file=sys.stderr)
-                    
-                    # 窗口显示后再禁用按钮
-                    QTimer.singleShot(100, disable_buttons)
-                except Exception as e:
-                    import sys
-                    print(f"[WARNING] Failed to setup button disabling: {e}", file=sys.stderr)
+                def disable_buttons():
+                    try:
+                        import sys
+                        from AppKit import NSWindow, NSWindowButton
+                        from PySide6.QtGui import QWindow
+                        
+                        # 获取QWindow对象
+                        qwindow = self._airdrop_window.windowHandle()
+                        if not qwindow:
+                            print(f"[DEBUG] QWindow not available yet, retrying...", file=sys.stderr)
+                            QTimer.singleShot(100, disable_buttons)
+                            return
+                        
+                        # 获取NSView
+                        ns_view = qwindow.winId()
+                        if not ns_view:
+                            print(f"[DEBUG] NSView not available", file=sys.stderr)
+                            return
+                        
+                        # 通过NSView获取NSWindow
+                        import objc
+                        from ctypes import c_void_p
+                        view = objc.objc_object(c_void_p=c_void_p(int(ns_view)))
+                        if not view:
+                            print(f"[DEBUG] NSView object not available", file=sys.stderr)
+                            return
+                        
+                        # 获取窗口
+                        ns_window = view.window()
+                        if not ns_window:
+                            print(f"[DEBUG] NSWindow not available", file=sys.stderr)
+                            return
+                        
+                        print(f"[DEBUG] Got NSWindow, disabling buttons", file=sys.stderr)
+                        
+                        # 禁用并隐藏最小化按钮（0 = NSWindowMiniaturizeButton）
+                        minimize_button = ns_window.standardWindowButton_(0)
+                        if minimize_button:
+                            minimize_button.setEnabled_(False)
+                            minimize_button.setHidden_(True)
+                            print(f"[DEBUG] Minimize button disabled and hidden", file=sys.stderr)
+                        else:
+                            print(f"[DEBUG] Minimize button not found", file=sys.stderr)
+                        
+                        # 禁用并隐藏最大化按钮（1 = NSWindowZoomButton）
+                        zoom_button = ns_window.standardWindowButton_(1)
+                        if zoom_button:
+                            zoom_button.setEnabled_(False)
+                            zoom_button.setHidden_(True)
+                            print(f"[DEBUG] Zoom button disabled and hidden", file=sys.stderr)
+                        else:
+                            print(f"[DEBUG] Zoom button not found", file=sys.stderr)
+                        
+                        # 确保关闭按钮可用（2 = NSWindowCloseButton）
+                        close_button = ns_window.standardWindowButton_(2)
+                        if close_button:
+                            close_button.setEnabled_(True)
+                            close_button.setHidden_(False)
+                            print(f"[DEBUG] Close button enabled and visible", file=sys.stderr)
+                        else:
+                            print(f"[DEBUG] Close button not found", file=sys.stderr)
+                        
+                    except Exception as e:
+                        import sys
+                        print(f"[WARNING] Failed to disable window buttons: {e}", file=sys.stderr)
+                        import traceback
+                        traceback.print_exc()
+                
+                # 窗口显示后再禁用按钮（多次重试）
+                QTimer.singleShot(200, disable_buttons)
+                QTimer.singleShot(500, disable_buttons)
+                QTimer.singleShot(1000, disable_buttons)
             # 设置窗口大小和位置
-            self._airdrop_window.resize(420, 600)
-            # 居中显示
+            # 计算合适的窗口大小：能显示22个设备不滚屏
+            # 每个设备项高度约100px，加上padding和背景文字区域，总高度约2400px
+            # 但考虑到屏幕高度，我们设置一个合理的大小
             screen = QApplication.primaryScreen().geometry()
-            window_geometry = self._airdrop_window.frameGeometry()
-            window_geometry.moveCenter(screen.center())
-            self._airdrop_window.move(window_geometry.topLeft())
+            # 窗口宽度：足够显示设备信息
+            window_width = 480
+            # 窗口高度：能显示约22个设备（每个设备约100px高度）+ 顶部padding + 底部背景区域
+            # 22 * 100 = 2200px，但考虑到屏幕限制，设置为屏幕高度的80%或最大2400px
+            max_height = min(int(screen.height() * 0.85), 2400)
+            window_height = max(600, max_height)  # 至少600px
+            
+            self._airdrop_window.resize(window_width, window_height)
+            
+            # 默认位置：右侧屏幕边缘垂直居中
+            x = screen.right() - window_width
+            y = (screen.height() - window_height) // 2
+            self._airdrop_window.move(x, y)
             
             # 连接信号：窗口拖到边缘时隐藏并显示图标（传递图标位置）
             self._airdrop_window.should_hide_to_icon.connect(self._hide_airdrop_to_icon)
@@ -767,25 +819,140 @@ class MainWindow(QMainWindow):
             
         
         # 显示窗口，隐藏图标（确保互斥）
-        if self._floating_icon and self._floating_icon.isVisible():
+        # 判断逻辑：如果窗口已经存在且之前被隐藏过（从图标恢复），否则是首次打开
+        is_restoring = (self._airdrop_window is not None and 
+                       hasattr(self._airdrop_window, '_was_hidden_to_icon') and 
+                       self._airdrop_window._was_hidden_to_icon)
+        
+        if is_restoring and self._floating_icon and self._floating_icon.isVisible():
+            # 从图标恢复：执行恢复动画
+            import sys
+            print(f"[DEBUG] Restoring window from icon (with animation)", file=sys.stderr)
             self._floating_icon.animate_hide()
-            # 等待图标隐藏完成后再显示窗口
+            # 等待图标隐藏完成后再显示窗口（带动画）
             QTimer.singleShot(250, lambda: self._show_window_after_icon_hidden())
         else:
-            self._show_window_after_icon_hidden()
+            # 首次打开：直接显示正常大小的窗口（无动画）
+            import sys
+            print(f"[DEBUG] First time opening window (direct show)", file=sys.stderr)
+            self._show_window_directly()
+    
+    def _show_window_directly(self):
+        """直接显示窗口（首次打开，无动画）"""
+        if not self._airdrop_window:
+            return
+        
+        import sys
+        # 确保图标已完全隐藏（互斥）
+        if self._floating_icon:
+            self._floating_icon.hide()
+            self._floating_icon.setVisible(False)
+        
+        # 计算窗口尺寸和位置
+        screen = QApplication.primaryScreen().geometry()
+        window_width = 480
+        max_height = min(int(screen.height() * 0.85), 2400)
+        window_height = max(600, max_height)
+        x = screen.right() - window_width
+        y = (screen.height() - window_height) // 2
+        
+        print(f"[DEBUG] Showing window directly at ({x}, {y}) with size ({window_width}, {window_height})", file=sys.stderr)
+        
+        # 直接设置窗口大小和位置
+        self._airdrop_window.setGeometry(QRect(x, y, window_width, window_height))
+        self._airdrop_window.show()
+        self._airdrop_window.setVisible(True)
+        self._airdrop_window.raise_()
+        self._airdrop_window.activateWindow()
     
     def _show_window_after_icon_hidden(self):
-        """图标隐藏后显示窗口"""
-        if self._airdrop_window:
-            # 确保图标已完全隐藏（互斥）
-            if self._floating_icon:
-                self._floating_icon.hide()
-                self._floating_icon.setVisible(False)
-            # 显示窗口（确保可见）
-            self._airdrop_window.show()
-            self._airdrop_window.setVisible(True)
-            self._airdrop_window.raise_()
+        """图标隐藏后显示窗口（带动画：从图标位置恢复到正常大小）"""
+        if not self._airdrop_window:
+            return
+        
+        import sys
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
+        
+        # 确保图标已完全隐藏（互斥）
+        if self._floating_icon:
+            icon_pos = self._floating_icon.pos()
+            self._floating_icon.hide()
+            self._floating_icon.setVisible(False)
+        else:
+            # 如果没有图标位置，使用屏幕右侧边缘
+            screen = QApplication.primaryScreen().geometry()
+            icon_pos = QPoint(screen.right() - 36, screen.height() // 2 - 18)
+        
+        # 目标位置和大小（正常窗口）- 使用与创建窗口时相同的尺寸计算逻辑
+        screen = QApplication.primaryScreen().geometry()
+        window_width = 480
+        max_height = min(int(screen.height() * 0.85), 2400)
+        target_width = window_width
+        target_height = max(600, max_height)
+        # 右侧屏幕边缘垂直居中
+        target_x = screen.right() - target_width
+        target_y = (screen.height() - target_height) // 2
+        
+        # 起始位置和大小（从图标位置开始）
+        start_x = icon_pos.x()
+        start_y = icon_pos.y()
+        start_width = 36
+        start_height = 36
+        
+        print(f"[DEBUG] Restoring window from icon position ({start_x}, {start_y}, {start_width}x{start_height}) to ({target_x}, {target_y}, {target_width}x{target_height})", file=sys.stderr)
+        
+        # 设置窗口初始状态（小尺寸，在图标位置）
+        self._airdrop_window.setGeometry(QRect(start_x, start_y, start_width, start_height))
+        self._airdrop_window.show()
+        self._airdrop_window.setVisible(True)
+        self._airdrop_window.raise_()
+        
+        # 创建恢复动画
+        restore_animation = QPropertyAnimation(self._airdrop_window, b"geometry")
+        restore_animation.setDuration(300)
+        restore_animation.setStartValue(QRect(start_x, start_y, start_width, start_height))
+        restore_animation.setEndValue(QRect(target_x, target_y, target_width, target_height))
+        restore_animation.setEasingCurve(QEasingCurve.OutCubic)
+        
+        def on_restore_finished():
+            print(f"[DEBUG] ===== Window restore animation FINISHED =====", file=sys.stderr)
+            # 重置隐藏标记（恢复完成）
+            if self._airdrop_window:
+                self._airdrop_window._was_hidden_to_icon = False
+                # 强制确保窗口尺寸正确（防止动画未完全执行）
+                current_rect = self._airdrop_window.geometry()
+                print(f"[DEBUG] Current window rect after animation: {current_rect}", file=sys.stderr)
+                print(f"[DEBUG] Expected size: {target_width}x{target_height}, position: ({target_x}, {target_y})", file=sys.stderr)
+                
+                # 无论尺寸是否正确，都强制设置一次（确保窗口尺寸正确）
+                self._airdrop_window.setGeometry(QRect(target_x, target_y, target_width, target_height))
+                print(f"[DEBUG] Window size forced to {target_width}x{target_height} at ({target_x}, {target_y})", file=sys.stderr)
+                
+                # 验证设置是否成功
+                verify_rect = self._airdrop_window.geometry()
+                if verify_rect.width() == target_width and verify_rect.height() == target_height:
+                    print(f"[DEBUG] Window size verified: {verify_rect.width()}x{verify_rect.height()}", file=sys.stderr)
+                else:
+                    print(f"[ERROR] Window size verification failed: {verify_rect.width()}x{verify_rect.height()}, expected {target_width}x{target_height}", file=sys.stderr)
+            
             self._airdrop_window.activateWindow()
+        
+        def on_animation_state_changed(new_state, old_state):
+            from PySide6.QtCore import QAbstractAnimation
+            state_names = {QAbstractAnimation.Stopped: "Stopped", 
+                          QAbstractAnimation.Running: "Running", 
+                          QAbstractAnimation.Paused: "Paused"}
+            print(f"[DEBUG] Restore animation state changed: {state_names.get(old_state, old_state)} -> {state_names.get(new_state, new_state)}", file=sys.stderr)
+            if new_state == QAbstractAnimation.Stopped:
+                print(f"[DEBUG] Restore animation stopped, checking if finished callback was called", file=sys.stderr)
+                # 如果动画停止但回调未执行，手动触发
+                QTimer.singleShot(50, on_restore_finished)
+        
+        restore_animation.finished.connect(on_restore_finished)
+        restore_animation.stateChanged.connect(on_animation_state_changed)
+        restore_animation.start()
+        
+        print(f"[DEBUG] Window restore animation started: from ({start_x}, {start_y}, {start_width}x{start_height}) to ({target_x}, {target_y}, {target_width}x{target_height})", file=sys.stderr)
     
     
     def _hide_airdrop_to_icon(self, icon_target_pos: Optional[QPoint] = None):
