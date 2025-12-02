@@ -215,6 +215,31 @@ class AirDropView(QWidget):
         # 延迟初始化传输管理器，避免阻塞UI创建
         QTimer.singleShot(0, self._init_transfer_manager)
     
+    def changeEvent(self, event):
+        """处理窗口状态改变事件，禁止最大化和最小化"""
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.WindowStateChange:
+            # 如果窗口被最大化，立即恢复
+            if self.isMaximized():
+                self.showNormal()
+                event.ignore()
+                return
+            # 如果窗口被最小化，也恢复（因为我们要用隐藏到图标代替）
+            if self.isMinimized():
+                self.showNormal()
+                event.ignore()
+                return
+        super().changeEvent(event)
+    
+    def mouseDoubleClickEvent(self, event):
+        """禁止双击窗口头部扩大"""
+        # 检查是否在标题栏区域（顶部30像素）
+        if event.position().y() <= 30:
+            # 忽略双击事件，不执行默认的扩大操作
+            event.ignore()
+            return
+        super().mouseDoubleClickEvent(event)
+    
     def _setup_ui(self):
         """设置UI（苹果风格）"""
         # 设置窗口样式

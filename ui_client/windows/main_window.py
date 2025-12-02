@@ -697,11 +697,74 @@ class MainWindow(QMainWindow):
             self._airdrop_window.setWindowTitle("隔空投送")
             # 只保留关闭按钮，禁用最小化和最大化
             # 注意：在macOS上，需要设置窗口属性来禁用最小化和最大化按钮
+            # 不包含 WindowMinimizeButtonHint 和 WindowMaximizeButtonHint
             self._airdrop_window.setWindowFlags(
                 Qt.Window |
                 Qt.WindowStaysOnTopHint |
                 Qt.WindowCloseButtonHint
             )
+            # macOS: 设置窗口样式，隐藏最小化和最大化按钮
+            if platform.system() == "Darwin":
+                try:
+                    from AppKit import NSWindow
+                    # 延迟执行，确保窗口已创建
+                    def set_window_style():
+                        try:
+                            import sys
+                            qwindow = self._airdrop_window.windowHandle()
+                            if not qwindow:
+                                QTimer.singleShot(100, set_window_style)
+                                return
+                            
+                            # 通过QWindow获取NSWindow
+                            ns_view = qwindow.winId()
+                            if not ns_view:
+                                QTimer.singleShot(100, set_window_style)
+                                return
+                            
+                            import objc
+                            from ctypes import c_void_p
+                            view = objc.objc_object(c_void_p=c_void_p(int(ns_view)))
+                            if not view:
+                                QTimer.singleShot(100, set_window_style)
+                                return
+                            
+                            ns_window = view.window()
+                            if not ns_window:
+                                QTimer.singleShot(100, set_window_style)
+                                return
+                            
+                            # 设置窗口样式：只显示关闭按钮
+                            # NSWindowStyleMask 常量：
+                            # NSWindowStyleMaskClosable = 1 << 0 (关闭按钮)
+                            # NSWindowStyleMaskMiniaturizable = 1 << 1 (最小化按钮)
+                            # NSWindowStyleMaskResizable = 1 << 2 (调整大小，通常包含最大化)
+                            # NSWindowStyleMaskTitled = 1 << 0 (标题栏，通常需要)
+                            # 获取当前样式掩码，然后移除不需要的
+                            current_mask = ns_window.styleMask()
+                            # 保留必要的样式：Titled (1), Closable (2)
+                            # 移除：Miniaturizable (4), Resizable (8)
+                            # 基本样式：Titled = 1, Closable = 2, 所以基本需要 3
+                            # 但我们需要保留更多基本样式，只移除 Miniaturizable 和 Resizable
+                            style_mask = current_mask & ~(1 << 1)  # 移除 Miniaturizable
+                            style_mask = style_mask & ~(1 << 2)    # 移除 Resizable
+                            # 确保保留 Closable 和 Titled
+                            style_mask = style_mask | (1 << 0)  # 确保 Titled
+                            style_mask = style_mask | (1 << 0)  # 确保 Closable (实际上 Closable 也是 1 << 0，但通常需要 Titled)
+                            # 更安全的方法：只移除 Miniaturizable 和 Resizable，保留其他所有样式
+                            style_mask = current_mask & ~(1 << 1) & ~(1 << 2)
+                            ns_window.setStyleMask_(style_mask)
+                            print(f"[DEBUG] Window style mask updated: removed Miniaturizable and Resizable, kept others", file=sys.stderr)
+                        except Exception as e:
+                            import sys
+                            print(f"[WARNING] Failed to set window style: {e}", file=sys.stderr)
+                    
+                    # 延迟执行，确保窗口已创建
+                    QTimer.singleShot(200, set_window_style)
+                    QTimer.singleShot(500, set_window_style)
+                except Exception as e:
+                    import sys
+                    print(f"[WARNING] Failed to setup window style: {e}", file=sys.stderr)
             # macOS: 禁用最小化和最大化按钮
             if platform.system() == "Darwin":
                 def disable_buttons():
@@ -739,32 +802,117 @@ class MainWindow(QMainWindow):
                         
                         print(f"[DEBUG] Got NSWindow, disabling buttons", file=sys.stderr)
                         
+                        # 方法1：通过设置窗口样式掩码来隐藏按钮（更可靠）
+                        try:
+                            # NSWindowStyleMask 常量（macOS 实际值）：
+                            # NSWindowStyleMaskTitled = 1 (标题栏)
+                            # NSWindowStyleMaskClosable = 2 (关闭按钮)
+                            # NSWindowStyleMaskMiniaturizable = 4 (最小化按钮)
+                            # NSWindowStyleMaskResizable = 8 (调整大小，通常包含最大化)
+                            # 获取当前样式掩码，只移除 Miniaturizable 和 Resizable，保留其他所有样式
+                            current_mask = ns_window.styleMask()
+                            print(f"[DEBUG] Current window style mask: {current_mask}", file=sys.stderr)
+                            
+                            # 移除 Miniaturizable (4) 和 Resizable (8)
+                            # 保留其他所有样式（包括 Titled=1 和 Closable=2）
+                            style_mask = current_mask & ~4  # 移除 Miniaturizable
+                            style_mask = style_mask & ~8   # 移除 Resizable
+                            
+                            # 确保至少保留 Titled 和 Closable（即使当前掩码中没有）
+                            style_mask = style_mask | 1  # 确保 Titled
+                            style_mask = style_mask | 2  # 确保 Closable
+                            
+                            ns_window.setStyleMask_(style_mask)
+                            print(f"[DEBUG] Window style mask updated: {current_mask} -> {style_mask} (removed Miniaturizable=4 and Resizable=8, ensured Titled=1 and Closable=2)", file=sys.stderr)
+                            
+                            # 禁止双击窗口头部扩大（重写 performZoom: 方法）
+                            try:
+                                import objc
+                                # 创建一个空的 performZoom: 方法实现
+                                def empty_zoom(self_obj, sender):
+                                    # 不执行任何操作，禁止双击扩大
+                                    pass
+                                
+                                # 使用 objc 方法替换
+                                # performZoom: 的方法签名是 v@:@ (void return, self, sender)
+                                objc.classAddMethod(
+                                    ns_window.__class__,
+                                    objc.selector(empty_zoom, signature=b'v@:@'),
+                                    'performZoom:'
+                                )
+                                print(f"[DEBUG] Double-click zoom disabled via method override", file=sys.stderr)
+                            except Exception as zoom_e:
+                                print(f"[WARNING] Failed to disable zoom method: {zoom_e}", file=sys.stderr)
+                                # 备用方案：通过禁用按钮来实现
+                                print(f"[DEBUG] Falling back to button hiding for zoom prevention", file=sys.stderr)
+                        except Exception as e:
+                            print(f"[WARNING] Failed to set window style mask: {e}", file=sys.stderr)
+                        
+                        # 方法2：通过按钮对象来强制隐藏（必须执行，作为主要方法）
                         # 禁用并隐藏最小化按钮（0 = NSWindowMiniaturizeButton）
                         minimize_button = ns_window.standardWindowButton_(0)
                         if minimize_button:
                             minimize_button.setEnabled_(False)
                             minimize_button.setHidden_(True)
-                            print(f"[DEBUG] Minimize button disabled and hidden", file=sys.stderr)
+                            # 强制设置 frame 为 CGRectZero 来彻底隐藏
+                            try:
+                                from AppKit import NSRect, NSPoint, NSSize
+                                zero_rect = NSRect(NSPoint(0, 0), NSSize(0, 0))
+                                minimize_button.setFrame_(zero_rect)
+                            except:
+                                pass
+                            print(f"[DEBUG] Minimize button disabled, hidden, and frame set to zero (method 2)", file=sys.stderr)
                         else:
                             print(f"[DEBUG] Minimize button not found", file=sys.stderr)
                         
-                        # 禁用并隐藏最大化按钮（1 = NSWindowZoomButton）
+                        # 禁用并隐藏最大化按钮（1 = NSWindowZoomButton）- 这是关键！
                         zoom_button = ns_window.standardWindowButton_(1)
                         if zoom_button:
                             zoom_button.setEnabled_(False)
                             zoom_button.setHidden_(True)
-                            print(f"[DEBUG] Zoom button disabled and hidden", file=sys.stderr)
+                            # 强制设置 frame 为 CGRectZero 来彻底隐藏
+                            try:
+                                from AppKit import NSRect, NSPoint, NSSize
+                                zero_rect = NSRect(NSPoint(0, 0), NSSize(0, 0))
+                                zoom_button.setFrame_(zero_rect)
+                            except:
+                                pass
+                            print(f"[DEBUG] Zoom button disabled, hidden, and frame set to zero (method 2)", file=sys.stderr)
                         else:
-                            print(f"[DEBUG] Zoom button not found", file=sys.stderr)
+                            print(f"[WARNING] Zoom button not found - this is a problem!", file=sys.stderr)
                         
-                        # 确保关闭按钮可用（2 = NSWindowCloseButton）
+                        # 确保关闭按钮可用且可见（2 = NSWindowCloseButton）
                         close_button = ns_window.standardWindowButton_(2)
                         if close_button:
                             close_button.setEnabled_(True)
                             close_button.setHidden_(False)
                             print(f"[DEBUG] Close button enabled and visible", file=sys.stderr)
                         else:
-                            print(f"[DEBUG] Close button not found", file=sys.stderr)
+                            print(f"[WARNING] Close button not found!", file=sys.stderr)
+                        
+                        # 方法3：再次验证并强制隐藏（防止按钮重新出现）
+                        def verify_and_hide():
+                            try:
+                                zoom_btn = ns_window.standardWindowButton_(1)
+                                if zoom_btn:
+                                    if not zoom_btn.isHidden():
+                                        zoom_btn.setHidden_(True)
+                                        zoom_btn.setEnabled_(False)
+                                        print(f"[DEBUG] Zoom button was visible again, re-hiding it", file=sys.stderr)
+                                min_btn = ns_window.standardWindowButton_(0)
+                                if min_btn:
+                                    if not min_btn.isHidden():
+                                        min_btn.setHidden_(True)
+                                        min_btn.setEnabled_(False)
+                                        print(f"[DEBUG] Minimize button was visible again, re-hiding it", file=sys.stderr)
+                            except Exception as e:
+                                print(f"[WARNING] Failed to verify buttons: {e}", file=sys.stderr)
+                        
+                        # 延迟验证，确保按钮被隐藏
+                        QTimer.singleShot(100, verify_and_hide)
+                        QTimer.singleShot(300, verify_and_hide)
+                        QTimer.singleShot(500, verify_and_hide)
+                        
                         
                     except Exception as e:
                         import sys
