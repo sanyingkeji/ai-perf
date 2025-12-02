@@ -475,4 +475,78 @@ class SSHClient:
                 "size": 0,
                 "error": str(e)
             }
+    
+    def upload_file(self, local_path: str, remote_path: str) -> Dict[str, Any]:
+        """
+        通过SFTP上传文件到远程服务器
+        
+        Args:
+            local_path: 本地文件路径
+            remote_path: 远程文件路径
+        
+        Returns:
+            {
+                "success": bool,
+                "error": str
+            }
+        """
+        if not self._client:
+            if not self.connect():
+                return {
+                    "success": False,
+                    "error": "SSH连接失败"
+                }
+        
+        try:
+            sftp = self._client.open_sftp()
+            sftp.put(local_path, remote_path)
+            sftp.close()
+            return {
+                "success": True,
+                "error": None
+            }
+        except Exception as e:
+            logger.error(f"上传文件失败: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def write_file(self, remote_path: str, content: str) -> Dict[str, Any]:
+        """
+        通过SFTP写入内容到远程文件
+        
+        Args:
+            remote_path: 远程文件路径
+            content: 文件内容（字符串）
+        
+        Returns:
+            {
+                "success": bool,
+                "error": str
+            }
+        """
+        if not self._client:
+            if not self.connect():
+                return {
+                    "success": False,
+                    "error": "SSH连接失败"
+                }
+        
+        try:
+            sftp = self._client.open_sftp()
+            # 使用SFTP写入文件
+            with sftp.open(remote_path, 'w') as f:
+                f.write(content.encode('utf-8'))
+            sftp.close()
+            return {
+                "success": True,
+                "error": None
+            }
+        except Exception as e:
+            logger.error(f"写入文件失败: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 

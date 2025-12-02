@@ -604,7 +604,8 @@ class AdminApiClient:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         month: Optional[str] = None,
-        week_number: Optional[int] = None
+        week_number: Optional[int] = None,
+        user_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         POST /admin/api/generate_report
@@ -620,6 +621,8 @@ class AdminApiClient:
             payload["month"] = month
         if week_number:
             payload["week_number"] = week_number
+        if user_ids:
+            payload["user_ids"] = user_ids
         return self._post("/admin/api/generate_report", payload)
     
     def download_report(self, log_id: int) -> bytes:

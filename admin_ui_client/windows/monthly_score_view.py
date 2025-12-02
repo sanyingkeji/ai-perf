@@ -15,7 +15,7 @@ import json
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QPushButton, QHeaderView,
-    QLineEdit, QAbstractItemView, QMessageBox
+    QLineEdit, QAbstractItemView, QMessageBox, QFileDialog
 )
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QDate
 from PySide6.QtGui import QFont
@@ -70,6 +70,70 @@ class _LockRankWorker(QRunnable):
             self.signals.error.emit(str(e))
         except Exception as e:
             self.signals.error.emit(f"锁定排名失败：{e}")
+
+
+class _ExportMonthlyScoreWorkerSignals(QObject):
+    finished = Signal(list)  # List[Dict] - 导出的数据
+    error = Signal(str)
+
+
+class _ExportMonthlyScoreWorker(QRunnable):
+    """后台导出月度评分数据"""
+    def __init__(
+        self, 
+        month: Optional[str] = None,
+        user_id: Optional[str] = None,
+        salary_ratio_filter: Optional[str] = None,
+        sort_by: Optional[str] = "final_score",
+        sort_order: Optional[str] = "desc"
+    ):
+        super().__init__()
+        self._month = month
+        self._user_id = user_id
+        self._salary_ratio_filter = salary_ratio_filter
+        self._sort_by = sort_by
+        self._sort_order = sort_order
+        self.signals = _ExportMonthlyScoreWorkerSignals()
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            if not AdminApiClient.is_logged_in():
+                self.signals.error.emit("需要先登录")
+                return
+            
+            client = AdminApiClient.from_config()
+            
+            # 获取所有数据（不限制数量）
+            resp = client.get_monthly_scores(
+                month=self._month,
+                user_id=self._user_id,
+                salary_ratio_filter=self._salary_ratio_filter,
+                sort_by=self._sort_by,
+                sort_order=self._sort_order
+            )
+            
+            if not isinstance(resp, dict):
+                self.signals.error.emit("API返回格式错误")
+                return
+            
+            if resp.get("status") != "success":
+                error_msg = resp.get("message", "获取数据失败")
+                self.signals.error.emit(error_msg)
+                return
+            
+            items = resp.get("items", [])
+            # 确保items是列表
+            if not isinstance(items, list):
+                items = []
+            
+            self.signals.finished.emit(items)
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+        except Exception as e:
+            import traceback
+            error_msg = f"导出数据失败：{e}\n{traceback.format_exc()}"
+            self.signals.error.emit(error_msg)
 
 
 class _MonthlyScoreWorker(QRunnable):
@@ -194,6 +258,11 @@ class MonthlyScoreView(QWidget):
         self._month_combo.currentIndexChanged.connect(self._update_lock_rank_btn_text)
         self._update_lock_rank_btn_text()
         filter_layout.addWidget(self._lock_rank_btn)
+        
+        # 导出按钮
+        btn_export = QPushButton("导出JSON")
+        btn_export.clicked.connect(self._on_export_clicked)
+        filter_layout.addWidget(btn_export)
         
         filter_layout.addStretch()
         layout.addLayout(filter_layout)
@@ -688,4 +757,157 @@ class MonthlyScoreView(QWidget):
         self._status_label.setText(f"加载失败：{error}")
         # 使用统一的错误处理
         handle_api_error(self, Exception(error), "加载失败")
+    
+    def _on_export_clicked(self):
+        """导出JSON按钮点击事件"""
+        # 获取当前筛选条件
+        month = None
+        if self._month_combo.currentIndex() > 0:
+            month = self._month_combo.currentData()
+        
+        user_id = self._user_id_edit.text().strip() or None
+        
+        salary_ratio_index = self._salary_ratio_combo.currentIndex()
+        salary_ratio_filter = None
+        if salary_ratio_index == 1:  # 大于100%
+            salary_ratio_filter = "gt100"
+        elif salary_ratio_index == 2:  # 等于100%
+            salary_ratio_filter = "eq100"
+        elif salary_ratio_index == 3:  # 小于100%
+            salary_ratio_filter = "lt100"
+        
+        # 生成默认文件名
+        filename = "monthly_scores"
+        if month:
+            filename = f"monthly_scores_{month}"
+        else:
+            filename = "monthly_scores_all"
+        if user_id:
+            filename += f"_{user_id}"
+        filename += ".json"
+        
+        # 选择保存路径
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出月度评分数据",
+            filename,
+            "JSON Files (*.json);;All Files (*)"
+        )
+        
+        if not save_path:
+            return  # 用户取消
+        
+        # 显示加载中
+        main_window = self.window()
+        if hasattr(main_window, "show_loading"):
+            main_window.show_loading("正在导出数据...")
+        
+        # 保存路径到实例变量，以便在回调中使用
+        self._export_save_path = save_path
+        
+        # 后台导出
+        worker = _ExportMonthlyScoreWorker(
+            month=month,
+            user_id=user_id,
+            salary_ratio_filter=salary_ratio_filter,
+            sort_by=self._current_sort_by,
+            sort_order=self._current_sort_order
+        )
+        worker.signals.finished.connect(self._on_export_data_ready)
+        worker.signals.error.connect(self._on_export_error)
+        self._thread_pool.start(worker)
+    
+    def _on_export_data_ready(self, items: List[Dict]):
+        """导出数据准备完成"""
+        if not hasattr(self, '_export_save_path'):
+            main_window = self.window()
+            if hasattr(main_window, "hide_loading"):
+                main_window.hide_loading()
+            QMessageBox.warning(self, "导出失败", "保存路径丢失")
+            return
+        
+        save_path = self._export_save_path
+        # 清理临时变量
+        if hasattr(self, '_export_save_path'):
+            delattr(self, '_export_save_path')
+        self._on_export_success(items, save_path)
+    
+    def _on_export_success(self, items: List[Dict], save_path: str):
+        """导出成功"""
+        main_window = self.window()
+        if hasattr(main_window, "hide_loading"):
+            main_window.hide_loading()
+        
+        try:
+            # 构建导出数据
+            export_data = {
+                "export_time": datetime.now().isoformat(),
+                "total_count": len(items),
+                "filters": {
+                    "month": self._month_combo.currentData() if self._month_combo.currentIndex() > 0 else None,
+                    "user_id": self._user_id_edit.text().strip() or None,
+                    "salary_ratio_filter": self._salary_ratio_combo.currentText()
+                },
+                "sort": {
+                    "sort_by": self._current_sort_by,
+                    "sort_order": self._current_sort_order
+                },
+                "data": []
+            }
+            
+            # 格式化数据
+            for item in items:
+                month = item.get("month", "")
+                # 统一月份格式
+                if isinstance(month, str):
+                    try:
+                        month_date = datetime.strptime(month, "%Y-%m-%d").date()
+                        month_str = month_date.strftime("%Y-%m")
+                    except:
+                        try:
+                            # 尝试其他格式
+                            month_date = datetime.strptime(month, "%Y-%m").date()
+                            month_str = month_date.strftime("%Y-%m")
+                        except:
+                            month_str = month
+                elif hasattr(month, 'strftime'):
+                    month_str = month.strftime("%Y-%m")
+                else:
+                    month_str = str(month)
+                
+                export_item = {
+                    "month": month_str,
+                    "user_id": str(item.get("user_id", "")),
+                    "name": item.get("name") or "",
+                    "team_name": item.get("team_name") or "",
+                    "total_ai_month": float(item.get("total_ai_month", 0.0)),
+                    "salary_ratio": float(item.get("salary_ratio", 0.0)),
+                    "growth_rate": float(item.get("growth_rate", 0.0)),
+                    "final_score": float(item.get("final_score", 0.0)),
+                    "workday_count": int(item.get("workday_count", 0))
+                }
+                export_data["data"].append(export_item)
+            
+            # 保存JSON文件
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            
+            Toast.show_message(self, f"导出成功：{len(items)} 条记录已保存到 {save_path}")
+        except Exception as e:
+            import traceback
+            error_msg = f"保存文件失败：{e}\n{traceback.format_exc()}"
+            QMessageBox.critical(self, "导出失败", error_msg)
+    
+    def _on_export_error(self, error: str):
+        """导出失败"""
+        main_window = self.window()
+        if hasattr(main_window, "hide_loading"):
+            main_window.hide_loading()
+        
+        # 清理临时变量
+        if hasattr(self, '_export_save_path'):
+            delattr(self, '_export_save_path')
+        
+        # 显示详细错误信息
+        QMessageBox.critical(self, "导出失败", f"导出数据失败：\n{error}")
 

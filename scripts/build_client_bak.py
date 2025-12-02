@@ -581,89 +581,6 @@ def main():
         log_info(f"✓ 应用包生成成功: {app_bundle}")
         print()  # 空行分隔
         
-        # 后处理：清理 Frameworks 目录下的非二进制文件和目录
-        # PyInstaller 的 BUNDLE 阶段在不同环境下行为可能不同：
-        # - 本地打包：Frameworks/resources 可能是符号链接（指向 ../Resources/resources），这是正常的
-        # - GitHub Actions 打包：Frameworks/resources 可能是真实目录，这会导致签名失败
-        # 需要删除真实目录，但保留符号链接
-        frameworks_dir = app_bundle / "Contents" / "Frameworks"
-        if frameworks_dir.exists():
-            # 检查 Frameworks/resources 是否是真实目录（需要清理）
-            resources_in_frameworks = frameworks_dir / "resources"
-            needs_cleanup = False
-            
-            if resources_in_frameworks.exists():
-                # 检查是否是符号链接
-                is_symlink = resources_in_frameworks.is_symlink()
-                if is_symlink:
-                    log_info(f"  Frameworks/resources 是符号链接，无需清理: {resources_in_frameworks.relative_to(app_bundle)}")
-                else:
-                    # 是真实目录，需要清理
-                    needs_cleanup = True
-                    log_warn(f"  发现 Frameworks 目录下的 resources 真实目录（PyInstaller 打包问题），需要清理")
-            
-            # 只在需要清理时执行清理操作
-            if needs_cleanup:
-                log_warn("后处理：清理 Frameworks 目录结构...")
-                # 先收集要处理的项，避免在迭代时修改目录
-                items_to_check = list(frameworks_dir.iterdir())
-                
-                # 处理 Frameworks 下的 resources
-                if resources_in_frameworks.exists() and not resources_in_frameworks.is_symlink():
-                    log_warn(f"  删除 Frameworks/resources 真实目录: {resources_in_frameworks.relative_to(app_bundle)}")
-                    log_info("  注意: Contents/Resources/resources 已存在，这是正确位置")
-                    try:
-                        shutil.rmtree(resources_in_frameworks)
-                        log_info("  ✓ 已删除 Frameworks/resources 目录")
-                    except Exception as e:
-                        log_warn(f"  删除失败: {e}")
-                
-                # 移除其他非二进制文件和目录（但保留 PySide6 和 .framework 目录）
-                for item in items_to_check:
-                    # 跳过已处理的 resources
-                    if item.name == "resources":
-                        continue
-                        
-                    if item.is_dir():
-                        # 跳过 .framework 目录和 PySide6 目录
-                        if item.suffix == ".framework" or item.name == "PySide6":
-                            continue
-                        # 跳过符号链接（如 resources 符号链接）
-                        if item.is_symlink():
-                            continue
-                        # 移除其他目录（如 .dist-info, .egg-info 等）
-                        log_warn(f"  移除非框架目录: {item.relative_to(app_bundle)}")
-                        try:
-                            shutil.rmtree(item)
-                            log_info(f"    ✓ 已移除: {item.name}")
-                        except Exception as e:
-                            log_warn(f"    移除失败: {e}")
-                    elif item.is_file():
-                        # 跳过符号链接
-                        if item.is_symlink():
-                            continue
-                        # 跳过二进制文件扩展名
-                        if item.suffix in [".dylib", ".so"]:
-                            continue
-                        # 跳过无扩展名的文件（可能是 Mach-O 二进制文件）
-                        if not item.suffix:
-                            continue
-                        # 移除非二进制文件（PNG、文本文件等，但保留 JSON 文件，因为 config.json 和 google_client_secret.json 可能需要在 Frameworks 下）
-                        if item.suffix in [".png", ".txt", ".md", ".yml", ".yaml", ".xml", ".plist", ".icns", ".qm"]:
-                            log_warn(f"  移除非二进制文件: {item.relative_to(app_bundle)}")
-                            try:
-                                item.unlink()
-                                log_info(f"    ✓ 已移除: {item.name}")
-                            except Exception as e:
-                                log_warn(f"    移除失败: {e}")
-                
-                # 验证清理后应用包仍然存在
-                if not app_bundle.exists():
-                    log_error(f"错误: 清理后应用包不存在: {app_bundle}")
-                    log_error(f"  当前工作目录: {os.getcwd()}")
-                    log_error(f"  绝对路径: {app_bundle.resolve()}")
-                    sys.exit(1)
-        
         # 验证应用包的架构
         if arch and target_arch:
             log_warn("验证应用包架构...")
@@ -1117,23 +1034,6 @@ def main():
             log_warn("签名应用包（不使用 --deep，避免重新签名）...")
             # 不使用 --deep，因为我们已经手动签名了所有组件
             # 使用 --strict 进行更严格的验证
-            
-            # 验证应用包存在（避免路径问题）
-            if not app_bundle.exists():
-                log_error(f"错误: 应用包不存在: {app_bundle}")
-                log_error(f"  当前工作目录: {os.getcwd()}")
-                try:
-                    log_error(f"  绝对路径: {app_bundle.resolve()}")
-                except Exception as e:
-                    log_error(f"  无法解析绝对路径: {e}")
-                # 检查 dist 目录是否存在
-                dist_dir_check = Path("dist")
-                if dist_dir_check.exists():
-                    log_error(f"  dist 目录存在，内容: {list(dist_dir_check.iterdir())}")
-                else:
-                    log_error(f"  dist 目录不存在")
-                sys.exit(1)
-            
             codesign_cmd = [
                 "codesign", "--force", "--sign", codesign_identity,
                 "--options", "runtime",
@@ -1347,42 +1247,16 @@ def main():
         # DMG 代码签名
         if codesign_identity:
             log_warn("DMG 代码签名...")
-            # 尝试使用时间戳签名（带重试机制）
-            timestamp_max_retries = 3
-            timestamp_retry_delay = 5
-            timestamp_success = False
-            timestamp_result = None
+            # 先尝试使用时间戳签名（对公证很重要）
+            timestamp_result = subprocess.run([
+                "codesign", "--force", "--verify", "--verbose",
+                "--sign", codesign_identity,
+                "--timestamp",  # 使用时间戳，这对公证很重要
+                str(dmg_path)
+            ], capture_output=True, text=True, check=False)
             
-            for timestamp_attempt in range(1, timestamp_max_retries + 1):
-                log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-                timestamp_result = subprocess.run([
-                    "codesign", "--force", "--verify", "--verbose",
-                    "--sign", codesign_identity,
-                    "--timestamp",  # 使用时间戳，这对公证很重要
-                    str(dmg_path)
-                ], capture_output=True, text=True, check=False)
-                
-                if timestamp_result.returncode == 0:
-                    log_info("✓ DMG 代码签名完成（已使用时间戳）")
-                    timestamp_success = True
-                    break
-                else:
-                    error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
-                    if "timestamp service is not available" in error_msg or "network" in error_msg.lower() or "timeout" in error_msg.lower():
-                        if timestamp_attempt < timestamp_max_retries:
-                            log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
-                            time.sleep(timestamp_retry_delay)
-                            timestamp_retry_delay *= 2  # 指数退避
-                        else:
-                            # 最后一次重试失败，将在循环外处理
-                            log_warn(f"  ⚠ 时间戳服务不可用（已重试 {timestamp_max_retries} 次），将回退到不使用时间戳")
-                    else:
-                        # 其他错误，立即抛出异常
-                        log_error(f"DMG 签名失败: {error_msg[:200]}")
-                        raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
-            
-            # 如果时间戳签名失败，回退到不使用时间戳
-            if not timestamp_success:
+            # 如果时间戳服务不可用，回退到不使用时间戳
+            if timestamp_result.returncode != 0 and "timestamp service is not available" in timestamp_result.stderr:
                 log_warn("⚠ 时间戳服务不可用，尝试不使用时间戳签名...")
                 log_warn("   注意：不使用时间戳可能影响公证，但可以继续签名")
                 subprocess.run([
@@ -1392,6 +1266,12 @@ def main():
                     str(dmg_path)
                 ], check=True)
                 log_info("✓ DMG 代码签名完成（未使用时间戳）")
+            elif timestamp_result.returncode != 0:
+                    # 其他错误，直接抛出
+                    log_error(f"DMG 签名失败: {timestamp_result.stderr}")
+                    raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
+            else:
+                log_info("✓ DMG 代码签名完成（已使用时间戳）")
             
             # 验证 DMG 签名
             log_warn("验证 DMG 签名...")

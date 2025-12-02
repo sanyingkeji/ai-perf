@@ -152,51 +152,70 @@ class _CronJobListWorker(QRunnable):
             # systemctl list-timers 输出格式：
             # NEXT                         LEFT          LAST                         PASSED       UNIT                         ACTIVATES
             # Mon 2025-01-13 09:00:00 CST  23h left      Sun 2025-01-12 09:00:00 CST  1h 30min ago ai-perf-health-check.timer ai-perf-health-check.service
+            # 或者：
+            # n/a                          n/a          n/a                         n/a          ai-perf-health-check.timer ai-perf-health-check.service
             if len(lines) > 2:
                 # 查找timer行（从第3行开始，跳过标题）
                 for line in lines[2:]:
                     if timer_name in line:
-                        # 按空格分割，但日期时间可能包含空格，需要更智能的解析
-                            # 使用正则表达式或更精确的解析
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            # 第一列是 NEXT，第二列是 LEFT，第三列是 LAST，第四列是 PASSED
-                            # 但日期时间格式可能是 "Mon 2025-01-13 09:00:00 CST"，需要合并
-                            # 简单方法：查找日期模式
-                            # 匹配日期时间格式：Mon 2025-01-13 09:00:00 CST
-                            date_pattern = r'\w{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\w{3}'
-                            dates = re.findall(date_pattern, line)
+                        # 检查是否是n/a的情况
+                        if "n/a" in line.lower() and line.lower().count("n/a") >= 3:
+                            # 所有时间都是n/a
+                            return {
+                                "enabled": is_enabled,
+                                "last_run": None,
+                                "next_run": None,
+                            }
+                        
+                        # 使用正则表达式匹配日期时间格式：Mon 2025-01-13 09:00:00 CST
+                        # 匹配格式：星期 日期 时间 时区
+                        date_pattern = r'(\w{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\w{3})'
+                        dates = re.findall(date_pattern, line)
+                        
+                        if len(dates) >= 2:
+                            # 第一个是 next_run，第二个是 last_run
+                            next_run = dates[0].strip()
+                            last_run = dates[1].strip()
+                            return {
+                                "enabled": is_enabled,
+                                "last_run": last_run,
+                                "next_run": next_run,
+                            }
+                        elif len(dates) == 1:
+                            # 只有一个日期，需要判断是next还是last
+                            # 根据systemctl list-timers的输出格式，第一列是NEXT，第三列是LAST
+                            # 查找日期在行中的位置，以及n/a的位置
+                            date_pos = line.find(dates[0])
+                            n_a_pos = line.lower().find("n/a")
                             
-                            if len(dates) >= 2:
-                                # 第一个是 next_run，第二个是 last_run
-                                next_run = dates[0] if dates[0] != "n/a" else None
-                                last_run = dates[1] if len(dates) > 1 and dates[1] != "n/a" else None
+                            if n_a_pos != -1:
+                                if n_a_pos < date_pos:
+                                    # n/a在日期之前，说明NEXT是n/a，日期是LAST
+                                    return {
+                                        "enabled": is_enabled,
+                                        "last_run": dates[0].strip(),
+                                        "next_run": None,
+                                    }
+                                else:
+                                    # n/a在日期之后，说明LAST是n/a，日期是NEXT
+                                    return {
+                                        "enabled": is_enabled,
+                                        "last_run": None,
+                                        "next_run": dates[0].strip(),
+                                    }
+                            else:
+                                # 没有n/a，可能是格式问题，假设第一个是next_run
                                 return {
                                     "enabled": is_enabled,
-                                    "last_run": last_run,
-                                    "next_run": next_run,
+                                    "last_run": None,
+                                    "next_run": dates[0].strip(),
                                 }
-                            elif len(dates) == 1:
-                                # 只有一个日期，可能是 next_run（如果 last_run 是 n/a）
-                                if "n/a" in line.lower():
-                                    # 检查哪个是 n/a
-                                    if line.find("n/a") < line.find(dates[0]):
-                                        # n/a 在日期之前，说明 last_run 是 n/a，dates[0] 是 next_run
-                                        return {
-                                            "enabled": is_enabled,
-                                            "last_run": None,
-                                            "next_run": dates[0],
-                                        }
-                                    else:
-                                        # n/a 在日期之后，说明 next_run 是 n/a，dates[0] 是 last_run
-                                        return {
-                                            "enabled": is_enabled,
-                                            "last_run": dates[0],
-                                            "next_run": None,
-                                        }
             
             return {"enabled": is_enabled, "last_run": None, "next_run": None}
         except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"解析timer状态失败: {e}, timer_name: {timer_name}")
             return {"enabled": False, "last_run": None, "next_run": None}
 
 
@@ -1829,31 +1848,48 @@ class SystemSettingsTab(QWidget):
         # 显示loading
         win = self.window()
         show_loading = getattr(win, "show_loading", None)
+        hide_loading = getattr(win, "hide_loading", None)
         if callable(show_loading):
-            show_loading(f"正在执行服务 {service_name}...")
+            show_loading(f"正在启动服务 {service_name}...")
+        
+        # 设置超时，确保遮盖层在3秒后自动消失（即使任务还在执行）
+        # systemctl start是异步的，启动后立即返回，不需要等待任务完成
+        loading_hidden = {"value": False}
+        def auto_hide_loading():
+            if not loading_hidden["value"] and callable(hide_loading):
+                hide_loading()
+                loading_hidden["value"] = True
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(auto_hide_loading)
+        timer.start(3000)  # 3秒后自动隐藏
         
         # 后台执行（通过SSH）
+        def on_finished(job_name):
+            if not loading_hidden["value"] and callable(hide_loading):
+                hide_loading()
+                loading_hidden["value"] = True
+            self._on_run_timer_now_finished(service_name)
+        
+        def on_error(job_name, error_msg):
+            if not loading_hidden["value"] and callable(hide_loading):
+                hide_loading()
+                loading_hidden["value"] = True
+            self._on_run_timer_now_error(service_name, error_msg)
+        
         worker = _CronJobControlWorker(service_name, "start", ssh_config)
-        worker.signals.finished.connect(lambda job_name: self._on_run_timer_now_finished(service_name))
-        worker.signals.error.connect(lambda job_name, error_msg: self._on_run_timer_now_error(service_name, error_msg))
+        worker.signals.finished.connect(on_finished)
+        worker.signals.error.connect(on_error)
         QThreadPool.globalInstance().start(worker)
     
     def _on_run_timer_now_finished(self, service_name: str):
         """立即执行完成"""
-        win = self.window()
-        hide_loading = getattr(win, "hide_loading", None)
-        if callable(hide_loading):
-            hide_loading()
-        
+        # hide_loading已经在on_finished中调用了，这里不需要重复调用
         Toast.show_message(self, f"服务 {service_name} 已开始执行")
     
     def _on_run_timer_now_error(self, service_name: str, error_msg: str):
         """立即执行失败"""
-        win = self.window()
-        hide_loading = getattr(win, "hide_loading", None)
-        if callable(hide_loading):
-            hide_loading()
-        
+        # hide_loading已经在on_error中调用了，这里不需要重复调用
         Toast.show_message(self, f"执行服务 {service_name} 失败：{error_msg}")
     
     def _on_view_timer_command_clicked(self, timer_name: str):
@@ -2168,16 +2204,34 @@ class DeployTab(QWidget):
         self._deploy_script_path = str(deploy_script.resolve())
         self._working_dir = project_root
         
-        # 头部：显示脚本路径和执行按钮
+        # 头部：脚本路径选择和执行按钮
         header_layout = QHBoxLayout()
         header_layout.setSpacing(8)
         
-        # 显示脚本路径
-        script_label = QLabel(f"sh路径+执行：{self._deploy_script_path}")
+        # 脚本路径标签
+        script_label = QLabel("脚本路径：")
         script_label.setFont(QFont("Arial", 10))
-        script_label.setStyleSheet("color: #666; font-family: 'Courier New', monospace;")
         header_layout.addWidget(script_label)
-        header_layout.addStretch()
+        
+        # 脚本路径输入框
+        self.script_path_input = QLineEdit()
+        self.script_path_input.setText(self._deploy_script_path)
+        self.script_path_input.setFont(QFont("Courier New", 10))
+        self.script_path_input.setStyleSheet("""
+            QLineEdit {
+                padding: 4px 8px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+            }
+        """)
+        header_layout.addWidget(self.script_path_input, 1)  # stretch factor = 1，填充剩余空间
+        
+        # 浏览按钮
+        browse_btn = QPushButton("浏览")
+        browse_btn.setFixedWidth(80)
+        browse_btn.setFixedHeight(28)
+        browse_btn.clicked.connect(self._on_browse_script)
+        header_layout.addWidget(browse_btn)
         
         # 执行按钮
         self.execute_btn = QPushButton("执行")
@@ -2233,6 +2287,24 @@ class DeployTab(QWidget):
         self.output_text.setPlaceholderText("点击\"执行\"按钮开始执行部署脚本...")
         layout.addWidget(self.output_text, 1)  # stretch factor = 1，填充剩余空间
     
+    def _on_browse_script(self):
+        """浏览脚本文件"""
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent.parent
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择脚本文件",
+            str(project_root),
+            "Shell Scripts (*.sh);;All Files (*)"
+        )
+        
+        if file_path:
+            self.script_path_input.setText(file_path)
+            # 更新工作目录为脚本所在目录
+            script_path = Path(file_path)
+            self._working_dir = script_path.parent
+    
     def _on_execute_clicked(self):
         """执行按钮点击事件"""
         if self._is_running:
@@ -2248,20 +2320,34 @@ class DeployTab(QWidget):
                 self._stop_execution()
             return
         
+        # 从输入框获取脚本路径
+        script_path = self.script_path_input.text().strip()
+        if not script_path:
+            QMessageBox.warning(
+                self,
+                "错误",
+                "请输入脚本路径"
+            )
+            return
+        
         # 检查脚本是否存在
-        if not os.path.exists(self._deploy_script_path):
+        if not os.path.exists(script_path):
             QMessageBox.warning(
                 self,
                 "脚本不存在",
-                f"部署脚本不存在：\n{self._deploy_script_path}"
+                f"部署脚本不存在：\n{script_path}"
             )
             return
+        
+        # 更新工作目录为脚本所在目录
+        script_path_obj = Path(script_path)
+        self._working_dir = script_path_obj.parent
         
         # 清空输出
         self.output_text.clear()
         
         # 显示头部信息
-        header_text = f"$ sh {self._deploy_script_path}\n"
+        header_text = f"$ sh {script_path}\n"
         header_text += "=" * 80 + "\n\n"
         self._append_output(header_text)
         
@@ -2296,7 +2382,7 @@ class DeployTab(QWidget):
         self._process.setProcessEnvironment(env)
         
         # 执行脚本
-        self._process.start("bash", [self._deploy_script_path])
+        self._process.start("bash", [script_path])
     
     def _parse_ansi_color(self, code: str) -> QColor:
         """解析 ANSI 颜色代码"""
@@ -2476,6 +2562,382 @@ class DeployTab(QWidget):
         if self._process:
             self._process.deleteLater()
             self._process = None
+
+
+class EnvConfigTab(QWidget):
+    """环境配置 TAB：读取和编辑服务端 /ai-perf/.env 配置文件"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._env_content = ""
+        self._is_loading = False
+        self._is_saving = False
+        self._init_ui()
+    
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        
+        # 头部：刷新和保存按钮
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+        
+        # 文件路径标签
+        path_label = QLabel("文件路径：/ai-perf/.env")
+        path_label.setFont(QFont("Arial", 10))
+        header_layout.addWidget(path_label)
+        header_layout.addStretch()
+        
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setFixedWidth(100)
+        self.refresh_btn.setFixedHeight(28)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        header_layout.addWidget(self.refresh_btn)
+        
+        # 保存按钮
+        self.save_btn = QPushButton("保存")
+        self.save_btn.setFixedWidth(100)
+        self.save_btn.setFixedHeight(28)
+        self.save_btn.clicked.connect(self._on_save_clicked)
+        header_layout.addWidget(self.save_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # 编辑区域（使用与发布TAB相同的样式）
+        self.content_text = QTextEdit()
+        self.content_text.setReadOnly(False)  # 可编辑
+        
+        # 设置苹果终端 Basic 主题的字体
+        # 优先使用 Menlo，然后是 Monaco，最后是 Courier New
+        font_families = ["Menlo", "Monaco", "Courier New"]
+        font_size = 12
+        font = None
+        for font_family in font_families:
+            font = QFont(font_family, font_size)
+            font.setFixedPitch(True)
+            # 检查字体是否可用
+            if QFont(font_family).exactMatch() or font_family == "Courier New":
+                break
+        
+        if font:
+            self.content_text.setFont(font)
+        
+        # 设置 tab 宽度（4个空格）
+        self.content_text.setTabStopDistance(4 * self.content_text.fontMetrics().averageCharWidth())
+        
+        # 苹果终端 Basic 主题默认样式（完全匹配发布TAB）
+        self.content_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #000000;
+                color: #FFFFFF;
+                border: none;
+                padding: 10px;
+                selection-background-color: #0066CC;
+                selection-color: #FFFFFF;
+                font-family: "Menlo", "Monaco", "Courier New";
+                font-size: 12pt;
+                line-height: 1.2;
+            }
+        """)
+        
+        # 默认文本格式（白色）
+        self._default_format = QTextCharFormat()
+        self._default_format.setForeground(QColor("#FFFFFF"))
+        if font:
+            self._default_format.setFont(font)
+        self.content_text.setPlaceholderText("点击\"刷新\"按钮加载.env配置文件...")
+        layout.addWidget(self.content_text, 1)  # stretch factor = 1，填充剩余空间
+    
+    def _on_refresh_clicked(self):
+        """刷新按钮点击事件"""
+        if self._is_loading:
+            return
+        
+        # 获取SSH配置
+        config = ConfigManager.load()
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "port": config.get("ssh_port", 22),
+            "username": config.get("ssh_username", ""),
+            "password": config.get("ssh_password", ""),
+            "key_path": config.get("ssh_key_path", ""),
+        }
+        
+        if not ssh_config.get("host") or not ssh_config.get("username"):
+            QMessageBox.warning(
+                self,
+                "配置错误",
+                "请先配置SSH服务器信息（在系统概览TAB中配置）"
+            )
+            return
+        
+        # 显示loading
+        self._is_loading = True
+        self.refresh_btn.setEnabled(False)
+        self.refresh_btn.setText("加载中...")
+        self.content_text.setPlaceholderText("正在从服务器加载.env配置文件...")
+        
+        # 在后台线程中读取文件
+        worker = _EnvFileWorker(ssh_config, "read", None)
+        worker.signals.finished.connect(self._on_load_finished)
+        worker.signals.error.connect(self._on_load_error)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_load_finished(self, content: str):
+        """加载完成"""
+        self._is_loading = False
+        self.refresh_btn.setEnabled(True)
+        self.refresh_btn.setText("刷新")
+        self._env_content = content
+        self.content_text.setPlainText(content)
+        self.content_text.setPlaceholderText("")
+    
+    def _on_load_error(self, error_msg: str):
+        """加载失败"""
+        self._is_loading = False
+        self.refresh_btn.setEnabled(True)
+        self.refresh_btn.setText("刷新")
+        self.content_text.setPlaceholderText("加载失败，请重试")
+        QMessageBox.warning(
+            self,
+            "加载失败",
+            f"无法加载.env配置文件：\n{error_msg}"
+        )
+    
+    def _on_save_clicked(self):
+        """保存按钮点击事件"""
+        if self._is_saving:
+            return
+        
+        # 确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认保存",
+            "确定要保存对.env配置文件的修改吗？\n\n注意：保存后配置将立即生效。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 获取SSH配置
+        config = ConfigManager.load()
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "port": config.get("ssh_port", 22),
+            "username": config.get("ssh_username", ""),
+            "password": config.get("ssh_password", ""),
+            "key_path": config.get("ssh_key_path", ""),
+        }
+        
+        if not ssh_config.get("host") or not ssh_config.get("username"):
+            QMessageBox.warning(
+                self,
+                "配置错误",
+                "请先配置SSH服务器信息（在系统概览TAB中配置）"
+            )
+            return
+        
+        # 获取编辑后的内容
+        content = self.content_text.toPlainText()
+        
+        # 显示loading
+        self._is_saving = True
+        self.save_btn.setEnabled(False)
+        self.save_btn.setText("保存中...")
+        
+        # 在后台线程中保存文件
+        worker = _EnvFileWorker(ssh_config, "write", content)
+        worker.signals.finished.connect(self._on_save_finished)
+        worker.signals.error.connect(self._on_save_error)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_save_finished(self):
+        """保存完成"""
+        self._is_saving = False
+        self.save_btn.setEnabled(True)
+        self.save_btn.setText("保存")
+        
+        # 保存成功后，自动重启三个HTTP服务
+        self._restart_http_services()
+    
+    def _restart_http_services(self):
+        """重启三个HTTP服务以使新配置生效"""
+        # 三个HTTP服务名称
+        http_services = [
+            "ai-perf-api",           # 用户端API服务
+            "ai-perf-admin-api",      # 管理端API服务（端口8880）
+            "ai-perf-upload",         # 文件上传服务（端口8882）
+        ]
+        
+        # 获取SSH配置
+        config = ConfigManager.load()
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "port": config.get("ssh_port", 22),
+            "username": config.get("ssh_username", ""),
+            "password": config.get("ssh_password", ""),
+            "key_path": config.get("ssh_key_path", ""),
+        }
+        
+        if not ssh_config.get("host") or not ssh_config.get("username"):
+            Toast.show_message(self, ".env配置文件已保存，但无法重启服务（SSH配置未设置）")
+            return
+        
+        # 显示提示
+        Toast.show_message(self, ".env配置文件已保存，正在重启HTTP服务...")
+        
+        # 在后台线程中重启服务
+        worker = _RestartServicesWorker(ssh_config, http_services)
+        worker.signals.finished.connect(self._on_restart_services_finished)
+        worker.signals.error.connect(self._on_restart_services_error)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_restart_services_finished(self, success_count: int, total_count: int):
+        """重启服务完成"""
+        if success_count == total_count:
+            Toast.show_message(self, f".env配置文件已保存，{total_count}个HTTP服务已重启")
+        else:
+            Toast.show_message(self, f".env配置文件已保存，{success_count}/{total_count}个HTTP服务重启成功")
+    
+    def _on_restart_services_error(self, error_msg: str):
+        """重启服务失败"""
+        Toast.show_message(self, f".env配置文件已保存，但重启服务时出错：{error_msg}")
+    
+    def _on_save_error(self, error_msg: str):
+        """保存失败"""
+        self._is_saving = False
+        self.save_btn.setEnabled(True)
+        self.save_btn.setText("保存")
+        QMessageBox.warning(
+            self,
+            "保存失败",
+            f"无法保存.env配置文件：\n{error_msg}"
+        )
+
+
+class _EnvFileWorkerSignals(QObject):
+    """环境文件操作信号"""
+    finished = Signal(str)  # 读取完成时发送内容
+    error = Signal(str)  # 错误时发送错误消息
+
+
+class _RestartServicesWorkerSignals(QObject):
+    """重启服务信号"""
+    finished = Signal(int, int)  # 成功数量, 总数量
+    error = Signal(str)  # 错误消息
+
+
+class _EnvFileWorker(QRunnable):
+    """后台线程：通过SSH命令读取或写入.env文件"""
+    def __init__(self, ssh_config: dict, operation: str, content: Optional[str] = None):
+        super().__init__()
+        self.signals = _EnvFileWorkerSignals()
+        self._ssh_config = ssh_config
+        self._operation = operation  # "read" 或 "write"
+        self._content = content  # 写入时的内容
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            from utils.ssh_client import SSHClient
+            
+            ssh = SSHClient(**self._ssh_config)
+            if not ssh.connect():
+                self.signals.error.emit("SSH 连接失败")
+                return
+            
+            remote_path = "/ai-perf/.env"
+            
+            if self._operation == "read":
+                # 使用cat命令读取文件
+                result = ssh.execute(f"cat {remote_path}")
+                ssh.close()
+                
+                if not result.get("success"):
+                    error_msg = result.get("stderr", result.get("error", "未知错误"))
+                    self.signals.error.emit(error_msg)
+                    return
+                
+                content = result.get("stdout", "")
+                self.signals.finished.emit(content)
+            
+            elif self._operation == "write":
+                # 使用cat配合heredoc写入文件
+                # 将内容进行base64编码，避免特殊字符和换行符问题
+                import base64
+                
+                # 将内容进行base64编码
+                content_encoded = base64.b64encode(self._content.encode('utf-8')).decode('ascii')
+                
+                # 先写入临时文件，然后移动到目标位置（更安全，避免写入过程中文件损坏）
+                temp_file = f"/tmp/.env.tmp.{os.getpid()}"
+                # 使用base64解码并写入临时文件，然后移动到目标位置
+                cmd = f"echo '{content_encoded}' | base64 -d > {temp_file} && mv {temp_file} {remote_path}"
+                
+                result = ssh.execute(cmd, sudo=True)  # 可能需要sudo权限
+                ssh.close()
+                
+                if not result.get("success"):
+                    error_msg = result.get("stderr", result.get("error", "未知错误"))
+                    self.signals.error.emit(error_msg)
+                    return
+                
+                self.signals.finished.emit("")
+            
+        except Exception as e:
+            self.signals.error.emit(f"操作失败: {e}")
+
+
+class _RestartServicesWorker(QRunnable):
+    """后台线程：重启多个HTTP服务"""
+    def __init__(self, ssh_config: dict, service_names: List[str]):
+        super().__init__()
+        self.signals = _RestartServicesWorkerSignals()
+        self._ssh_config = ssh_config
+        self._service_names = service_names
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            from utils.ssh_client import SSHClient
+            
+            ssh = SSHClient(**self._ssh_config)
+            if not ssh.connect():
+                self.signals.error.emit("SSH 连接失败")
+                return
+            
+            success_count = 0
+            total_count = len(self._service_names)
+            errors = []
+            
+            # 依次重启每个服务
+            for service_name in self._service_names:
+                result = ssh.execute(f"systemctl restart {service_name}", sudo=True)
+                if result.get("success"):
+                    success_count += 1
+                else:
+                    error_msg = result.get("stderr", result.get("error", "未知错误"))
+                    errors.append(f"{service_name}: {error_msg}")
+            
+            ssh.close()
+            
+            if errors:
+                error_msg = "; ".join(errors)
+                if success_count > 0:
+                    # 部分成功
+                    self.signals.finished.emit(success_count, total_count)
+                else:
+                    # 全部失败
+                    self.signals.error.emit(error_msg)
+            else:
+                # 全部成功
+                self.signals.finished.emit(success_count, total_count)
+            
+        except Exception as e:
+            self.signals.error.emit(f"重启服务失败: {e}")
 
 
 class ScriptExecutionTab(QWidget):
@@ -3753,6 +4215,10 @@ class MaintenanceView(QWidget):
         self.script_execution_tab = ScriptExecutionTab(self)
         self.tabs.addTab(self.script_execution_tab, "脚本执行")
         
+        # .env配置 TAB
+        self.env_config_tab = EnvConfigTab(self)
+        self.tabs.addTab(self.env_config_tab, ".env配置")
+        
         # 打包 TAB
         self.package_tab = PackageTab(self)
         self.tabs.addTab(self.package_tab, "打包")
@@ -3802,6 +4268,9 @@ class MaintenanceView(QWidget):
             # 脚本执行 TAB（不需要加载数据，用户点击执行按钮时才执行）
             pass
         elif index == 5:
+            # .env配置 TAB（不需要加载数据，用户点击刷新按钮时才加载）
+            pass
+        elif index == 6:
             # 打包 TAB（首次加载时获取版本列表）
             if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
                 self.package_tab.reload_versions()
@@ -3821,7 +4290,7 @@ class MaintenanceView(QWidget):
             if hasattr(self, "log_view_tab") and hasattr(self.log_view_tab, "reload_from_ssh"):
                 self.log_view_tab.reload_from_ssh()
         # 如果当前选中的是打包 TAB，刷新版本列表
-        elif self.tabs.currentIndex() == 5:
+        elif self.tabs.currentIndex() == 6:
             if hasattr(self, "package_tab") and hasattr(self.package_tab, "reload_versions"):
                 self.package_tab.reload_versions()
 
@@ -3883,12 +4352,23 @@ class _VersionListWorker(QRunnable):
                     for asset in assets:
                         asset_name = asset.get("name", "")
                         asset_url = asset.get("browser_download_url", "")
+                        asset_name_lower = asset_name.lower()
+                        
                         # 根据文件名判断平台
-                        if any(ext in asset_name.lower() for ext in [".dmg", ".pkg", ".app.zip"]):
+                        # macOS: .dmg, .pkg, .app.zip, 或包含 .app 的 .zip 文件
+                        is_macos = (
+                            ".dmg" in asset_name_lower or
+                            ".pkg" in asset_name_lower or
+                            ".app.zip" in asset_name_lower or
+                            (asset_name_lower.endswith(".zip") and ".app" in asset_name_lower) or
+                            (asset_name_lower.endswith(".app") and asset_name_lower.endswith(".zip"))
+                        )
+                        
+                        if is_macos:
                             platform = "darwin"
-                        elif any(ext in asset_name.lower() for ext in [".exe", ".msi"]):
+                        elif any(ext in asset_name_lower for ext in [".exe", ".msi"]):
                             platform = "windows"
-                        elif any(ext in asset_name.lower() for ext in [".deb", ".rpm"]):
+                        elif any(ext in asset_name_lower for ext in [".deb", ".rpm"]):
                             platform = "linux"
                         else:
                             continue
@@ -4176,10 +4656,10 @@ class PackageTab(QWidget):
         
         left_layout.addLayout(title_layout)
         
-        # 版本列表表格
+        # Assets 列表表格（以 Assets 为维度显示）
         self.version_table = QTableWidget()
-        self.version_table.setColumnCount(4)
-        self.version_table.setHorizontalHeaderLabels(["版本号", "发布时间", "Assets", "状态"])
+        self.version_table.setColumnCount(5)
+        self.version_table.setHorizontalHeaderLabels(["Asset 名称", "版本号", "平台", "大小", "状态"])
         self.version_table.horizontalHeader().setStretchLastSection(True)
         self.version_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.version_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -4188,10 +4668,17 @@ class PackageTab(QWidget):
         
         # 设置列宽
         header = self.version_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 版本号
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 发布时间
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Assets
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 状态
+        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Asset 名称：自适应宽度，显示完全
+        header.setSectionResizeMode(1, QHeaderView.Fixed)  # 版本号：固定宽度
+        header.setSectionResizeMode(2, QHeaderView.Fixed)  # 平台：固定宽度
+        header.setSectionResizeMode(3, QHeaderView.Fixed)  # 大小：固定宽度
+        header.setSectionResizeMode(4, QHeaderView.Fixed)  # 状态：固定宽度
+        
+        # 设置固定列的宽度
+        self.version_table.setColumnWidth(1, 100)  # 版本号
+        self.version_table.setColumnWidth(2, 80)   # 平台
+        self.version_table.setColumnWidth(3, 100)  # 大小
+        self.version_table.setColumnWidth(4, 80)   # 状态
         
         # 启用右键菜单
         self.version_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -4303,92 +4790,127 @@ class PackageTab(QWidget):
         self.refresh_versions_btn.setText("🔄 刷新")
     
     def _update_version_table(self):
-        """更新版本列表表格"""
-        self.version_table.setRowCount(len(self._versions))
-        
-        for row, release_data in enumerate(self._versions):
-            # 版本号
+        """更新 Assets 列表表格（以 Assets 为维度显示）"""
+        # 收集所有 assets，每个 asset 一行
+        asset_rows = []
+        for release_data in self._versions:
             tag_name = release_data.get("tag_name", "")
             version = release_data.get("version", tag_name)
-            version_item = QTableWidgetItem(version)
-            self.version_table.setItem(row, 0, version_item)
-            
-            # 发布时间
-            published_at = release_data.get("published_at", "")
-            if published_at:
-                try:
-                    # 解析 ISO 8601 格式的时间
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
-                    # 格式化为本地时间
-                    published_str = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    published_str = published_at[:10]  # 只显示日期部分
-            else:
-                published_str = "未发布"
-            published_item = QTableWidgetItem(published_str)
-            self.version_table.setItem(row, 1, published_item)
-            
-            # Assets 数量
             assets = release_data.get("assets", [])
-            download_urls = release_data.get("download_urls", {})
-            assets_info = []
-            if download_urls.get("darwin"):
-                assets_info.append(f"macOS({len(download_urls['darwin'])})")
-            if download_urls.get("windows"):
-                assets_info.append(f"Windows({len(download_urls['windows'])})")
-            if download_urls.get("linux"):
-                assets_info.append(f"Linux({len(download_urls['linux'])})")
-            assets_text = ", ".join(assets_info) if assets_info else f"{len(assets)} 个文件"
-            assets_item = QTableWidgetItem(assets_text)
-            self.version_table.setItem(row, 2, assets_item)
-            
-            # 状态
             is_prerelease = release_data.get("prerelease", False)
             is_draft = release_data.get("draft", False)
+            
+            # 状态
             if is_draft:
                 status_text = "草稿"
             elif is_prerelease:
                 status_text = "预发布"
             else:
                 status_text = "正式版"
-            status_item = QTableWidgetItem(status_text)
-            self.version_table.setItem(row, 3, status_item)
             
-            # 存储版本数据到行的 UserRole 中，供右键菜单使用
-            version_item.setData(Qt.UserRole, release_data)
+            # 遍历所有 assets，为每个 asset 创建一行
+            for asset in assets:
+                asset_name = asset.get("name", "")
+                asset_url = asset.get("browser_download_url", "")
+                asset_size = asset.get("size", 0)
+                asset_name_lower = asset_name.lower()
+                
+                # 判断平台
+                platform = "未知"
+                if (
+                    ".dmg" in asset_name_lower or
+                    ".pkg" in asset_name_lower or
+                    ".app.zip" in asset_name_lower or
+                    (asset_name_lower.endswith(".zip") and ".app" in asset_name_lower) or
+                    (asset_name_lower.endswith(".app") and asset_name_lower.endswith(".zip"))
+                ):
+                    platform = "macOS"
+                elif any(ext in asset_name_lower for ext in [".exe", ".msi"]):
+                    platform = "Windows"
+                elif any(ext in asset_name_lower for ext in [".deb", ".rpm"]):
+                    platform = "Linux"
+                else:
+                    # 跳过无法识别平台的文件
+                    continue
+                
+                # 格式化文件大小
+                if asset_size > 0:
+                    if asset_size < 1024:
+                        size_text = f"{asset_size} B"
+                    elif asset_size < 1024 * 1024:
+                        size_text = f"{asset_size / 1024:.2f} KB"
+                    elif asset_size < 1024 * 1024 * 1024:
+                        size_text = f"{asset_size / (1024 * 1024):.2f} MB"
+                    else:
+                        size_text = f"{asset_size / (1024 * 1024 * 1024):.2f} GB"
+                else:
+                    size_text = "未知"
+                
+                asset_rows.append({
+                    "asset_name": asset_name,
+                    "asset_url": asset_url,
+                    "asset_size": asset_size,
+                    "size_text": size_text,
+                    "version": version,
+                    "tag_name": tag_name,
+                    "platform": platform,
+                    "status": status_text,
+                    "release_data": release_data,  # 保存完整的版本数据，用于右键菜单
+                })
+        
+        # 设置表格行数
+        self.version_table.setRowCount(len(asset_rows))
+        
+        # 填充表格
+        for row, asset_data in enumerate(asset_rows):
+            # Asset 名称
+            asset_name_item = QTableWidgetItem(asset_data["asset_name"])
+            self.version_table.setItem(row, 0, asset_name_item)
+            
+            # 版本号
+            version_item = QTableWidgetItem(asset_data["version"])
+            self.version_table.setItem(row, 1, version_item)
+            
+            # 平台
+            platform_item = QTableWidgetItem(asset_data["platform"])
+            self.version_table.setItem(row, 2, platform_item)
+            
+            # 大小
+            size_item = QTableWidgetItem(asset_data["size_text"])
+            size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.version_table.setItem(row, 3, size_item)
+            
+            # 状态
+            status_item = QTableWidgetItem(asset_data["status"])
+            self.version_table.setItem(row, 4, status_item)
+            
+            # 存储完整的 asset 和 release 数据到第一列，用于右键菜单
+            asset_name_item.setData(Qt.UserRole, asset_data)
     
     def _on_version_table_context_menu(self, position):
-        """版本列表右键菜单"""
+        """Assets 列表右键菜单"""
         item = self.version_table.itemAt(position)
         if not item:
             return
         
         row = item.row()
-        # 获取版本数据
-        version_item = self.version_table.item(row, 0)
-        if not version_item:
+        # 获取 asset 数据
+        asset_name_item = self.version_table.item(row, 0)
+        if not asset_name_item:
             return
         
-        version_data = version_item.data(Qt.UserRole)
+        asset_data = asset_name_item.data(Qt.UserRole)
+        if not asset_data:
+            return
+        
+        # 从 asset_data 中获取 release_data
+        version_data = asset_data.get("release_data")
         if not version_data:
             return
         
-        # 检查是否有 macOS 的 assets（只有 macOS 版本才显示"下载并签名"）
-        # 检查 download_urls 和 assets 列表
-        download_urls = version_data.get("download_urls", {})
-        assets = version_data.get("assets", [])
-        
-        # 检查 download_urls 中是否有 darwin 平台
-        has_macos = bool(download_urls.get("darwin"))
-        
-        # 如果没有，检查 assets 列表中是否有 .app.zip 文件
-        if not has_macos:
-            for asset in assets:
-                asset_name = asset.get("name", "").lower()
-                if ".app.zip" in asset_name or asset_name.endswith(".dmg") or asset_name.endswith(".pkg"):
-                    has_macos = True
-                    break
+        # 检查当前 asset 是否是 macOS 平台
+        platform = asset_data.get("platform", "")
+        has_macos = (platform == "macOS")
         
         # 创建右键菜单
         menu = QMenu(self)

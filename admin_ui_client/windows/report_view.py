@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QPushButton, QHeaderView,
     QAbstractItemView, QMessageBox, QDialog, QFormLayout,
-    QDialogButtonBox, QDateEdit, QLineEdit
+    QDialogButtonBox, QDateEdit, QLineEdit, QListWidget, QListWidgetItem,
+    QCheckBox, QScrollArea
 )
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QDate
 from PySide6.QtGui import QFont
@@ -26,13 +27,162 @@ from utils.error_handler import handle_api_error
 from widgets.toast import Toast
 from utils.date_edit_helper import apply_theme_to_date_edit
 
-# 导入周数计算工具
-import sys
-from pathlib import Path
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-from jobs.week_calculator import get_week_number, get_week_date_range, get_current_week_number
+# 导入周数计算工具（使用管理端客户端独立版本，不依赖后端 jobs 模块）
+from utils.week_calculator import get_week_number, get_week_date_range, get_current_week_number
+
+
+class UserSelectDialog(QDialog):
+    """用户选择对话框（多选）"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择用户")
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(500)
+        self._selected_user_ids = []
+        self._thread_pool = QThreadPool.globalInstance()
+        self._setup_ui()
+        self._load_users()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # 提示信息
+        info_label = QLabel("选择要生成报表的用户（可多选，不选择则生成所有用户的报表）：")
+        layout.addWidget(info_label)
+        
+        # 全选/取消全选按钮
+        btn_layout = QHBoxLayout()
+        self._select_all_btn = QPushButton("全选")
+        self._select_all_btn.clicked.connect(self._on_select_all)
+        self._deselect_all_btn = QPushButton("取消全选")
+        self._deselect_all_btn.clicked.connect(self._on_deselect_all)
+        btn_layout.addWidget(self._select_all_btn)
+        btn_layout.addWidget(self._deselect_all_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        # 用户列表（使用QListWidget配合QCheckBox）
+        self._user_list = QListWidget()
+        self._user_list.setSelectionMode(QAbstractItemView.NoSelection)  # 禁用列表项选择，只使用checkbox
+        layout.addWidget(self._user_list)
+        
+        # 状态标签
+        self._status_label = QLabel("加载中...")
+        layout.addWidget(self._status_label)
+        
+        # 按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+    
+    def _load_users(self):
+        """加载用户列表"""
+        worker = _UserListWorker()
+        worker.signals.finished.connect(self._on_users_loaded)
+        worker.signals.error.connect(self._on_error)
+        self._thread_pool.start(worker)
+    
+    def _on_users_loaded(self, users: List[Dict]):
+        """用户列表加载完成"""
+        self._user_list.clear()
+        for user in users:
+            user_id = user.get("user_id", "")
+            name = user.get("name", "")
+            email = user.get("email", "")
+            team_name = user.get("team_name", "")
+            
+            # 显示格式：姓名 (user_id) - 团队
+            display_text = f"{name} ({user_id})"
+            if team_name:
+                display_text += f" - {team_name}"
+            
+            # 创建列表项
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.UserRole, user_id)  # 存储user_id
+            
+            # 创建checkbox
+            checkbox = QCheckBox()
+            checkbox.setText("")  # 不显示文本，文本在item中
+            checkbox.setChecked(False)
+            
+            # 将checkbox设置为item的widget
+            self._user_list.addItem(item)
+            self._user_list.setItemWidget(item, checkbox)
+        
+        self._status_label.setText(f"共 {len(users)} 个用户")
+    
+    def _on_error(self, error: str):
+        """加载错误"""
+        self._status_label.setText(f"加载失败：{error}")
+        handle_api_error(self, Exception(error), "加载用户列表失败")
+    
+    def _on_select_all(self):
+        """全选"""
+        for i in range(self._user_list.count()):
+            item = self._user_list.item(i)
+            checkbox = self._user_list.itemWidget(item)
+            if checkbox:
+                checkbox.setChecked(True)
+    
+    def _on_deselect_all(self):
+        """取消全选"""
+        for i in range(self._user_list.count()):
+            item = self._user_list.item(i)
+            checkbox = self._user_list.itemWidget(item)
+            if checkbox:
+                checkbox.setChecked(False)
+    
+    def get_selected_user_ids(self) -> List[str]:
+        """获取选中的用户ID列表"""
+        selected = []
+        for i in range(self._user_list.count()):
+            item = self._user_list.item(i)
+            checkbox = self._user_list.itemWidget(item)
+            if checkbox and checkbox.isChecked():
+                user_id = item.data(Qt.UserRole)
+                if user_id:
+                    selected.append(user_id)
+        return selected
+
+
+class _UserListWorkerSignals(QObject):
+    finished = Signal(list)  # List[Dict]
+    error = Signal(str)
+
+
+class _UserListWorker(QRunnable):
+    """后台加载用户列表"""
+    def __init__(self):
+        super().__init__()
+        self.signals = _UserListWorkerSignals()
+    
+    @Slot()
+    def run(self) -> None:
+        if not AdminApiClient.is_logged_in():
+            self.signals.error.emit("需要先登录")
+            return
+        
+        try:
+            client = AdminApiClient.from_config()
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+            return
+        except Exception as e:
+            self.signals.error.emit(f"初始化客户端失败：{e}")
+            return
+        
+        try:
+            resp = client.get_employees()
+            if isinstance(resp, dict) and resp.get("status") == "success":
+                items = resp.get("items", [])
+                self.signals.finished.emit(items)
+            else:
+                self.signals.error.emit("获取用户列表失败")
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+        except Exception as e:
+            self.signals.error.emit(f"加载用户列表失败：{e}")
 
 
 class _ReportListWorkerSignals(QObject):
@@ -97,7 +247,8 @@ class _GenerateReportWorker(QRunnable):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         month: Optional[str] = None,
-        week_number: Optional[int] = None
+        week_number: Optional[int] = None,
+        user_ids: Optional[List[str]] = None
     ):
         super().__init__()
         self._report_type = report_type
@@ -105,6 +256,7 @@ class _GenerateReportWorker(QRunnable):
         self._end_date = end_date
         self._month = month
         self._week_number = week_number
+        self._user_ids = user_ids
         self.signals = _GenerateReportWorkerSignals()
 
     @Slot()
@@ -128,7 +280,8 @@ class _GenerateReportWorker(QRunnable):
                 start_date=self._start_date,
                 end_date=self._end_date,
                 month=self._month,
-                week_number=self._week_number
+                week_number=self._week_number,
+                user_ids=self._user_ids
             )
             self.signals.finished.emit(resp)
         except (ApiError, AuthError) as e:
@@ -314,6 +467,7 @@ class GenerateReportDialog(QDialog):
                 data["end_date"] = self._end_date_label.text()
         else:
             data["month"] = self._month_edit.currentData()
+        
         return data
 
 
@@ -340,10 +494,10 @@ class ReportView(QWidget):
         # 筛选和操作区域
         filter_layout = QHBoxLayout()
         
-        # 报表类型筛选
+        # 报表类型筛选（只有周报和月报，没有"全部"）
         filter_layout.addWidget(QLabel("报表类型："))
         self._type_combo = QComboBox()
-        self._type_combo.addItems(["全部", "周报", "月报"])
+        self._type_combo.addItems(["周报", "月报"])
         self._type_combo.currentIndexChanged.connect(self._on_type_filter_changed)
         filter_layout.addWidget(self._type_combo)
         
@@ -392,6 +546,16 @@ class ReportView(QWidget):
             self._month_filter_combo.setCurrentIndex(self._month_filter_combo.count() - 1)
         filter_layout.addWidget(self._month_filter_combo)
         
+        # 用户选择（下拉框）
+        filter_layout.addWidget(QLabel("用户："))
+        self._user_combo = QComboBox()
+        self._user_combo.setMinimumWidth(200)
+        self._user_combo.addItem("全部用户", None)  # 第一个选项是"全部用户"，值为None
+        filter_layout.addWidget(self._user_combo)
+        
+        # 加载用户列表
+        self._load_users()
+        
         # 生成报表按钮
         btn_generate = QPushButton("生成报表")
         btn_generate.clicked.connect(self._on_generate_clicked)
@@ -407,9 +571,9 @@ class ReportView(QWidget):
         
         # 表格
         self._table = QTableWidget()
-        self._table.setColumnCount(10)
+        self._table.setColumnCount(11)
         self._table.setHorizontalHeaderLabels([
-            "ID", "报表类型", "周数/月份", "开始日期", "结束日期", "文件大小", "生成方式", "生成者", "生成时间", "操作"
+            "ID", "报表类型", "周数/月份", "开始日期", "结束日期", "文件大小", "生成方式", "生成者", "生成对象", "生成时间", "操作"
         ])
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -424,8 +588,9 @@ class ReportView(QWidget):
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # 文件大小
         header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # 生成方式
         header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # 生成者
-        header.setSectionResizeMode(8, QHeaderView.Stretch)  # 生成时间
-        header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # 操作
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # 生成对象
+        header.setSectionResizeMode(9, QHeaderView.Stretch)  # 生成时间
+        header.setSectionResizeMode(10, QHeaderView.ResizeToContents)  # 操作
         
         layout.addWidget(self._table)
         
@@ -439,21 +604,48 @@ class ReportView(QWidget):
     def _on_type_filter_changed(self):
         """报表类型筛选改变"""
         index = self._type_combo.currentIndex()
-        if index == 0:
-            self._current_report_type = None
-            self._week_filter_combo.setVisible(False)
-            self._month_filter_combo.setVisible(False)
-        elif index == 1:
+        if index == 0:  # 周报
             self._current_report_type = "weekly"
             self._week_filter_combo.setVisible(True)
             self._month_filter_combo.setVisible(False)
-        else:
+        else:  # 月报
             self._current_report_type = "monthly"
             self._week_filter_combo.setVisible(False)
             self._month_filter_combo.setVisible(True)
         # 只有在UI完全初始化后才加载数据
         if hasattr(self, '_status_label') and hasattr(self, '_thread_pool'):
             self._load_data()
+    
+    def _load_users(self):
+        """加载用户列表到下拉框"""
+        worker = _UserListWorker()
+        worker.signals.finished.connect(self._on_users_loaded)
+        worker.signals.error.connect(self._on_users_load_error)
+        self._thread_pool.start(worker)
+    
+    def _on_users_loaded(self, users: List[Dict]):
+        """用户列表加载完成"""
+        # 清空现有选项（保留"全部用户"）
+        self._user_combo.clear()
+        self._user_combo.addItem("全部用户", None)
+        
+        # 添加用户选项，格式：uid-姓名-team名
+        for user in users:
+            user_id = user.get("user_id", "")
+            name = user.get("name", "")
+            team_name = user.get("team_name", "")
+            
+            # 格式：uid-姓名-team名
+            display_text = f"{user_id}-{name}"
+            if team_name:
+                display_text += f"-{team_name}"
+            
+            self._user_combo.addItem(display_text, user_id)
+    
+    def _on_users_load_error(self, error: str):
+        """用户列表加载失败"""
+        # 即使加载失败，也保留"全部用户"选项
+        pass
     
     def _on_week_filter_changed(self):
         """周数筛选改变（暂时不需要处理，只是显示）"""
@@ -505,6 +697,7 @@ class ReportView(QWidget):
             generated_by = item.get("generated_by") or "系统"
             generated_at = item.get("generated_at", "")
             status = item.get("status", "")
+            user_ids = item.get("user_ids")  # 用户ID列表（None表示全部用户）
             
             # 格式化日期
             if isinstance(period_start, str):
@@ -568,6 +761,16 @@ class ReportView(QWidget):
             # 生成方式显示
             method_text = "自动" if generation_method == "auto" else "手动"
             
+            # 生成对象显示
+            if user_ids and len(user_ids) > 0:
+                # 如果只有一个用户，显示用户ID；如果有多个，显示第一个+等
+                if len(user_ids) == 1:
+                    target_text = user_ids[0]
+                else:
+                    target_text = f"{user_ids[0]} 等{len(user_ids)}个"
+            else:
+                target_text = "全部用户"
+            
             # 状态显示
             status_text = "成功" if status == "success" else "失败"
             
@@ -579,29 +782,22 @@ class ReportView(QWidget):
             self._table.setItem(row, 5, QTableWidgetItem(file_size_str))
             self._table.setItem(row, 6, QTableWidgetItem(method_text))
             self._table.setItem(row, 7, QTableWidgetItem(generated_by))
-            self._table.setItem(row, 8, QTableWidgetItem(generated_at_str))
+            self._table.setItem(row, 8, QTableWidgetItem(target_text))
+            self._table.setItem(row, 9, QTableWidgetItem(generated_at_str))
             
             # 操作列：下载按钮
             if status == "success":
                 btn_download = QPushButton("下载")
                 btn_download.clicked.connect(lambda checked, lid=log_id: self._on_download_clicked(lid))
-                self._table.setCellWidget(row, 9, btn_download)
+                self._table.setCellWidget(row, 10, btn_download)
             else:
-                self._table.setItem(row, 9, QTableWidgetItem("无法下载"))
+                self._table.setItem(row, 10, QTableWidgetItem("无法下载"))
     
     def _on_generate_clicked(self):
         """生成报表按钮点击"""
-        # 检查筛选条件，如果已指定周数/月份，直接使用筛选条件生成
         report_type_index = self._type_combo.currentIndex()
         
-        if report_type_index == 0:
-            # 全部，需要弹出对话框选择
-            dialog = GenerateReportDialog(self)
-            if dialog.exec() != QDialog.Accepted:
-                return
-            data = dialog.get_data()
-        elif report_type_index == 1:
-            # 周报，使用筛选条件中的周数
+        if report_type_index == 0:  # 周报
             week_number = self._week_filter_combo.currentData()
             if not week_number:
                 QMessageBox.warning(self, "提示", "请先选择周数")
@@ -613,8 +809,7 @@ class ReportView(QWidget):
                 "start_date": week_start.isoformat(),
                 "end_date": week_end.isoformat()
             }
-        else:
-            # 月报，使用筛选条件中的月份
+        else:  # 月报
             month = self._month_filter_combo.currentData()
             if not month:
                 QMessageBox.warning(self, "提示", "请先选择月份")
@@ -623,6 +818,12 @@ class ReportView(QWidget):
                 "report_type": "monthly",
                 "month": month
             }
+        
+        # 获取选中的用户ID（如果选择了"全部用户"，则为None）
+        selected_user_id = self._user_combo.currentData()
+        if selected_user_id:
+            # 如果选择了具体用户，传递用户ID列表（虽然只有一个，但保持API接口一致）
+            data["user_ids"] = [selected_user_id]
         
         # 验证数据
         if data["report_type"] == "weekly":
@@ -645,7 +846,8 @@ class ReportView(QWidget):
             start_date=data.get("start_date"),
             end_date=data.get("end_date"),
             month=data.get("month"),
-            week_number=data.get("week_number")
+            week_number=data.get("week_number"),
+            user_ids=data.get("user_ids")
         )
         worker.signals.finished.connect(self._on_generate_success)
         worker.signals.error.connect(self._on_generate_error)

@@ -1,0 +1,1233 @@
+{
+  "report_type": "weekly",
+  "week_number": 6,
+  "period_start": "2025-11-03",
+  "period_end": "2025-11-09",
+  "generated_at": "2025-12-01T14:58:33.942344",
+  "generated_by": "admin",
+  "user_ids": [
+    "u1005"
+  ],
+  "data": {
+    "ai_scores": [
+      {
+        "date": "2025-11-03",
+        "user_id": "u1005",
+        "execution": 30,
+        "quality": 20,
+        "collaboration": 10,
+        "reflection": 5,
+        "confidence": 0.9,
+        "total_ai": 58,
+        "eligible": 1,
+        "is_reviewed": 0,
+        "rank": 8,
+        "missing_dims": [],
+        "evidence": [
+          "完成了7次提交，总计改动了1256行代码",
+          "主要进行了代码重构和核心模块的开发",
+          "工作时长达到了标准的8小时"
+        ],
+        "recommendations": [
+          "尝试提高任务的完成速度",
+          "在处理问题时，可以尝试多和团队成员进行交流和讨论"
+        ],
+        "expectation_adjustments": "ok",
+        "growth_rate_estimate": 0.05,
+        "reason": "ok",
+        "original_total_ai": null
+      },
+      {
+        "date": "2025-11-04",
+        "user_id": "u1005",
+        "execution": 30,
+        "quality": 20,
+        "collaboration": 10,
+        "reflection": 5,
+        "confidence": 1.0,
+        "total_ai": 65,
+        "eligible": 1,
+        "is_reviewed": 0,
+        "rank": 4,
+        "missing_dims": [],
+        "evidence": [
+          "完成了5次提交，总计增加了470行代码，删除了53行代码",
+          "工作日志记录了480分钟的工作时间",
+          "所有的提交都与固件相关"
+        ],
+        "recommendations": [
+          "尝试提高任务的复杂度，处理更多的核心或重构任务",
+          "在处理任务时，尝试增加更多的描述和附件，以提高任务的质量",
+          "尝试提高与团队的协作，例如通过评论或帮助他人解决问题"
+        ],
+        "expectation_adjustments": "ok",
+        "growth_rate_estimate": 0.0,
+        "reason": "ok",
+        "original_total_ai": null
+      },
+      {
+        "date": "2025-11-05",
+        "user_id": "u1005",
+        "execution": 30,
+        "quality": 20,
+        "collaboration": 10,
+        "reflection": 5,
+        "confidence": 1.0,
+        "total_ai": 65,
+        "eligible": 1,
+        "is_reviewed": 0,
+        "rank": 5,
+        "missing_dims": [],
+        "evidence": [
+          "完成了7次提交，总计增加了399行代码，删除了97行代码",
+          "参与了2次重构任务和1次核心模块任务",
+          "在Jira上记录了480分钟的工作时间"
+        ],
+        "recommendations": [
+          "尝试提高任务的复杂度，挑战更高难度的问题",
+          "在完成任务的同时，注意提高代码质量，减少bug的产生",
+          "加强与团队的协作，提高工作效率"
+        ],
+        "expectation_adjustments": "ok",
+        "growth_rate_estimate": 0.0,
+        "reason": "ok",
+        "original_total_ai": null
+      },
+      {
+        "date": "2025-11-06",
+        "user_id": "u1005",
+        "execution": 30,
+        "quality": 20,
+        "collaboration": 10,
+        "reflection": 5,
+        "confidence": 1.0,
+        "total_ai": 65,
+        "eligible": 1,
+        "is_reviewed": 0,
+        "rank": 7,
+        "missing_dims": [],
+        "evidence": [
+          "完成了3次提交，总计增加了1155行代码，删除了153行代码",
+          "在GitHub上进行了1次代码重构",
+          "在Jira上记录了480分钟的工作时间"
+        ],
+        "recommendations": [
+          "尝试提高任务的复杂度，处理更多的核心或重构任务",
+          "在Jira上更新任务状态，以提高工作的透明度",
+          "尝试在GitHub上进行代码审查，以提高协作能力"
+        ],
+        "expectation_adjustments": "ok",
+        "growth_rate_estimate": 0.0,
+        "reason": "ok",
+        "original_total_ai": null
+      },
+      {
+        "date": "2025-11-07",
+        "user_id": "u1005",
+        "execution": 30,
+        "quality": 20,
+        "collaboration": 10,
+        "reflection": 5,
+        "confidence": 1.0,
+        "total_ai": 65,
+        "eligible": 1,
+        "is_reviewed": 0,
+        "rank": 5,
+        "missing_dims": [],
+        "evidence": [
+          "完成了7次提交，总计增加了1000行代码，删除了253行代码。"
+        ],
+        "recommendations": [
+          "尽管完成了一些工作，但没有完成任何Jira任务，建议提高任务的完成率。",
+          "尝试在Jira上更频繁地更新状态，以提高团队的透明度。"
+        ],
+        "expectation_adjustments": "ok",
+        "growth_rate_estimate": 0.0,
+        "reason": "ok",
+        "original_total_ai": null
+      }
+    ],
+    "jira_data": [
+      {
+        "date": "2025-11-03",
+        "user_id": "u1005",
+        "issues_completed": 0,
+        "on_time_count": 0,
+        "status_updates": 0,
+        "worklog_minutes": 480,
+        "attachments_count": 0,
+        "comments_json": [],
+        "desc_changes_json": [],
+        "raw_meta": {
+          "tz": "Asia/Shanghai",
+          "source": "jira",
+          "daily_counts": {
+            "desc_updates": 0,
+            "comment_count": 0,
+            "status_updates": 0,
+            "assignee_changes": 0,
+            "complexity_updates": 0
+          },
+          "issue_labels": [],
+          "activity_events": [],
+          "comment_hashtags": [],
+          "issue_difficulty": {
+            "avg_complexity": 0.0,
+            "max_complexity": 0.0,
+            "ui_issue_count": 0,
+            "core_issue_count": 0,
+            "bugfix_issue_count": 0,
+            "high_complex_issues": 0,
+            "refactor_issue_count": 0
+          }
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "user_id": "u1005",
+        "issues_completed": 0,
+        "on_time_count": 0,
+        "status_updates": 0,
+        "worklog_minutes": 480,
+        "attachments_count": 0,
+        "comments_json": [],
+        "desc_changes_json": [],
+        "raw_meta": {
+          "tz": "Asia/Shanghai",
+          "source": "jira",
+          "daily_counts": {
+            "desc_updates": 0,
+            "comment_count": 0,
+            "status_updates": 0,
+            "assignee_changes": 0,
+            "complexity_updates": 0
+          },
+          "issue_labels": [],
+          "activity_events": [],
+          "comment_hashtags": [],
+          "issue_difficulty": {
+            "avg_complexity": 0.0,
+            "max_complexity": 0.0,
+            "ui_issue_count": 0,
+            "core_issue_count": 0,
+            "bugfix_issue_count": 0,
+            "high_complex_issues": 0,
+            "refactor_issue_count": 0
+          }
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "user_id": "u1005",
+        "issues_completed": 0,
+        "on_time_count": 0,
+        "status_updates": 0,
+        "worklog_minutes": 480,
+        "attachments_count": 1,
+        "comments_json": [],
+        "desc_changes_json": [],
+        "raw_meta": {
+          "tz": "Asia/Shanghai",
+          "source": "jira",
+          "daily_counts": {
+            "desc_updates": 0,
+            "comment_count": 0,
+            "status_updates": 0,
+            "assignee_changes": 0,
+            "complexity_updates": 0
+          },
+          "issue_labels": [],
+          "activity_events": [],
+          "comment_hashtags": [],
+          "issue_difficulty": {
+            "avg_complexity": 0.0,
+            "max_complexity": 0.0,
+            "ui_issue_count": 0,
+            "core_issue_count": 0,
+            "bugfix_issue_count": 0,
+            "high_complex_issues": 0,
+            "refactor_issue_count": 0
+          }
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "user_id": "u1005",
+        "issues_completed": 0,
+        "on_time_count": 0,
+        "status_updates": 0,
+        "worklog_minutes": 480,
+        "attachments_count": 0,
+        "comments_json": [],
+        "desc_changes_json": [],
+        "raw_meta": {
+          "tz": "Asia/Shanghai",
+          "source": "jira",
+          "daily_counts": {
+            "desc_updates": 0,
+            "comment_count": 0,
+            "status_updates": 0,
+            "assignee_changes": 0,
+            "complexity_updates": 0
+          },
+          "issue_labels": [],
+          "activity_events": [],
+          "comment_hashtags": [],
+          "issue_difficulty": {
+            "avg_complexity": 0.0,
+            "max_complexity": 0.0,
+            "ui_issue_count": 0,
+            "core_issue_count": 0,
+            "bugfix_issue_count": 0,
+            "high_complex_issues": 0,
+            "refactor_issue_count": 0
+          }
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "user_id": "u1005",
+        "issues_completed": 0,
+        "on_time_count": 0,
+        "status_updates": 0,
+        "worklog_minutes": 480,
+        "attachments_count": 0,
+        "comments_json": [],
+        "desc_changes_json": [],
+        "raw_meta": {
+          "tz": "Asia/Shanghai",
+          "source": "jira",
+          "daily_counts": {
+            "desc_updates": 0,
+            "comment_count": 0,
+            "status_updates": 0,
+            "assignee_changes": 0,
+            "complexity_updates": 0
+          },
+          "issue_labels": [],
+          "activity_events": [],
+          "comment_hashtags": [],
+          "issue_difficulty": {
+            "avg_complexity": 0.0,
+            "max_complexity": 0.0,
+            "ui_issue_count": 0,
+            "core_issue_count": 0,
+            "bugfix_issue_count": 0,
+            "high_complex_issues": 0,
+            "refactor_issue_count": 0
+          }
+        }
+      }
+    ],
+    "github_data": [
+      {
+        "date": "2025-11-03",
+        "user_id": "u1005",
+        "commits": 7,
+        "pr_opened": 0,
+        "pr_merged": 0,
+        "reviews": 0,
+        "diff_added": 805,
+        "diff_deleted": 451,
+        "files_changed": 0,
+        "commit_messages_json": [
+          "Add LFS files for dev-test branch",
+          "remove unused module",
+          "add  encryption_data  decryption_data",
+          "move uint32_to_uint8  uint8_to_uint32",
+          "add session hander",
+          "add  fido hander",
+          "add pin handle"
+        ],
+        "repo_tags_json": [
+          "firmware"
+        ],
+        "change_profile_json": {
+          "docs_commits": 0,
+          "bugfix_commits": 0,
+          "feature_commits": 0,
+          "ui_only_commits": 0,
+          "refactor_commits": 3,
+          "core_module_commits": 1,
+          "test_related_commits": 0
+        },
+        "critical_files_json": [],
+        "raw_meta": {
+          "source": "github"
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "user_id": "u1005",
+        "commits": 5,
+        "pr_opened": 0,
+        "pr_merged": 0,
+        "reviews": 0,
+        "diff_added": 470,
+        "diff_deleted": 53,
+        "files_changed": 0,
+        "commit_messages_json": [
+          "add apdu_reset",
+          "add  apdu_cmd module",
+          "add aes_ex hander",
+          "add info hander",
+          "fix(i2c): fix abnormal response when master reads after slave blocking receive"
+        ],
+        "repo_tags_json": [
+          "firmware"
+        ],
+        "change_profile_json": {
+          "docs_commits": 0,
+          "bugfix_commits": 0,
+          "feature_commits": 0,
+          "ui_only_commits": 0,
+          "refactor_commits": 0,
+          "core_module_commits": 0,
+          "test_related_commits": 0
+        },
+        "critical_files_json": [],
+        "raw_meta": {
+          "source": "github"
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "user_id": "u1005",
+        "commits": 7,
+        "pr_opened": 0,
+        "pr_merged": 0,
+        "reviews": 0,
+        "diff_added": 399,
+        "diff_deleted": 97,
+        "files_changed": 0,
+        "commit_messages_json": [
+          "fix syntax error\nremove redundant  'if icon_path:'",
+          "add aes hander & add cal_mac",
+          "add sign hander",
+          "add debug pin_module",
+          "remove APDU_CAL_MAC",
+          "add apdu cal_mac",
+          "add version"
+        ],
+        "repo_tags_json": [
+          "firmware"
+        ],
+        "change_profile_json": {
+          "docs_commits": 0,
+          "bugfix_commits": 0,
+          "feature_commits": 0,
+          "ui_only_commits": 0,
+          "refactor_commits": 2,
+          "core_module_commits": 1,
+          "test_related_commits": 0
+        },
+        "critical_files_json": [],
+        "raw_meta": {
+          "source": "github"
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "user_id": "u1005",
+        "commits": 3,
+        "pr_opened": 0,
+        "pr_merged": 0,
+        "reviews": 0,
+        "diff_added": 1155,
+        "diff_deleted": 153,
+        "files_changed": 0,
+        "commit_messages_json": [
+          "add key_device handler",
+          "fix session sync",
+          "add python test module"
+        ],
+        "repo_tags_json": [
+          "firmware"
+        ],
+        "change_profile_json": {
+          "docs_commits": 0,
+          "bugfix_commits": 0,
+          "feature_commits": 0,
+          "ui_only_commits": 0,
+          "refactor_commits": 1,
+          "core_module_commits": 0,
+          "test_related_commits": 0
+        },
+        "critical_files_json": [],
+        "raw_meta": {
+          "source": "github"
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "user_id": "u1005",
+        "commits": 7,
+        "pr_opened": 0,
+        "pr_merged": 0,
+        "reviews": 0,
+        "diff_added": 1000,
+        "diff_deleted": 253,
+        "files_changed": 0,
+        "commit_messages_json": [
+          "add fido",
+          "update python test",
+          "update test",
+          "update  test",
+          "add python requirements.txt",
+          "update python test",
+          "update .gitignore\n\nupdate .gitignore"
+        ],
+        "repo_tags_json": [
+          "firmware"
+        ],
+        "change_profile_json": {
+          "docs_commits": 0,
+          "bugfix_commits": 0,
+          "feature_commits": 0,
+          "ui_only_commits": 0,
+          "refactor_commits": 0,
+          "core_module_commits": 0,
+          "test_related_commits": 0
+        },
+        "critical_files_json": [],
+        "raw_meta": {
+          "source": "github"
+        }
+      }
+    ],
+    "team_avg_daily": [
+      {
+        "date": "2025-11-03",
+        "team_id": 1,
+        "role_id": 1,
+        "subrole_id": 1,
+        "payload": {
+          "commits": 4.6,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 917.2,
+          "diff_deleted": 392.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 414.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 6,
+        "payload": {
+          "commits": 7.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 805.0,
+          "diff_deleted": 451.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 7,
+        "payload": {
+          "commits": 4.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 1275.0,
+          "diff_deleted": 942.0,
+          "on_time_count": 0.0,
+          "status_updates": 1.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 1.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 2,
+        "role_id": 9,
+        "subrole_id": 12,
+        "payload": {
+          "commits": 0.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 0.0,
+          "diff_deleted": 0.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 3,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 9,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 4,
+        "role_id": 3,
+        "subrole_id": 10,
+        "payload": {
+          "mentions": 0.0,
+          "shared_links": 0.0,
+          "files_updated": 0.0,
+          "nodes_changed": 0.0,
+          "on_time_count": 0.0,
+          "comments_added": 1.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0,
+          "comments_resolved": 0.0,
+          "components_published": 0.0
+        }
+      },
+      {
+        "date": "2025-11-03",
+        "team_id": 6,
+        "role_id": 2,
+        "subrole_id": 2,
+        "payload": {
+          "commits": 1.75,
+          "reviews": 0.0,
+          "pr_merged": 0.25,
+          "pr_opened": 0.25,
+          "diff_added": 657.0,
+          "diff_deleted": 261.25,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 639.25,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 1,
+        "role_id": 1,
+        "subrole_id": 1,
+        "payload": {
+          "commits": 2.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 843.2,
+          "diff_deleted": 134.4,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 468.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 6,
+        "payload": {
+          "commits": 5.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 470.0,
+          "diff_deleted": 53.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 7,
+        "payload": {
+          "commits": 4.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 4056.0,
+          "diff_deleted": 941.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 2,
+        "role_id": 9,
+        "subrole_id": 12,
+        "payload": {
+          "commits": 0.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 0.0,
+          "diff_deleted": 0.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 3,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 9,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 4,
+        "role_id": 3,
+        "subrole_id": 10,
+        "payload": {
+          "mentions": 0.0,
+          "shared_links": 0.0,
+          "files_updated": 0.0,
+          "nodes_changed": 0.0,
+          "on_time_count": 0.0,
+          "comments_added": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0,
+          "comments_resolved": 0.0,
+          "components_published": 0.0
+        }
+      },
+      {
+        "date": "2025-11-04",
+        "team_id": 6,
+        "role_id": 2,
+        "subrole_id": 2,
+        "payload": {
+          "commits": 3.0,
+          "reviews": 0.0,
+          "pr_merged": 0.5,
+          "pr_opened": 0.5,
+          "diff_added": 1119.75,
+          "diff_deleted": 574.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 852.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 1,
+        "role_id": 1,
+        "subrole_id": 1,
+        "payload": {
+          "commits": 3.6,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 2130.8,
+          "diff_deleted": 1492.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 594.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 6,
+        "payload": {
+          "commits": 7.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 399.0,
+          "diff_deleted": 97.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 1.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 7,
+        "payload": {
+          "commits": 8.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 218.0,
+          "diff_deleted": 528.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 2,
+        "role_id": 9,
+        "subrole_id": 12,
+        "payload": {
+          "commits": 0.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 0.0,
+          "diff_deleted": 0.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 3,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.5
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 9,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 1.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 4,
+        "role_id": 3,
+        "subrole_id": 10,
+        "payload": {
+          "mentions": 0.0,
+          "shared_links": 0.0,
+          "files_updated": 0.0,
+          "nodes_changed": 0.0,
+          "on_time_count": 0.0,
+          "comments_added": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 660.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0,
+          "comments_resolved": 0.0,
+          "components_published": 0.0
+        }
+      },
+      {
+        "date": "2025-11-05",
+        "team_id": 6,
+        "role_id": 2,
+        "subrole_id": 2,
+        "payload": {
+          "commits": 2.0,
+          "reviews": 0.25,
+          "pr_merged": 0.75,
+          "pr_opened": 0.75,
+          "diff_added": 2207.0,
+          "diff_deleted": 698.75,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 756.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 1,
+        "role_id": 1,
+        "subrole_id": 1,
+        "payload": {
+          "commits": 6.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 924.2,
+          "diff_deleted": 119.0,
+          "on_time_count": 0.2,
+          "status_updates": 1.2,
+          "worklog_minutes": 576.0,
+          "issues_completed": 0.8,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 6,
+        "payload": {
+          "commits": 3.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 1155.0,
+          "diff_deleted": 153.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 7,
+        "payload": {
+          "commits": 2.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 3.0,
+          "diff_deleted": 3.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 2,
+        "role_id": 9,
+        "subrole_id": 12,
+        "payload": {
+          "commits": 1.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 65263.0,
+          "diff_deleted": 0.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 3,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.5
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 9,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 4,
+        "role_id": 3,
+        "subrole_id": 10,
+        "payload": {
+          "mentions": 0.0,
+          "shared_links": 0.0,
+          "files_updated": 0.0,
+          "nodes_changed": 0.0,
+          "on_time_count": 0.0,
+          "comments_added": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 1140.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0,
+          "comments_resolved": 0.0,
+          "components_published": 0.0
+        }
+      },
+      {
+        "date": "2025-11-06",
+        "team_id": 6,
+        "role_id": 2,
+        "subrole_id": 2,
+        "payload": {
+          "commits": 1.5,
+          "reviews": 0.25,
+          "pr_merged": 0.75,
+          "pr_opened": 0.5,
+          "diff_added": 2257.75,
+          "diff_deleted": 810.25,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 804.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 1,
+        "role_id": 1,
+        "subrole_id": 1,
+        "payload": {
+          "commits": 5.8,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 2150.2,
+          "diff_deleted": 1227.2,
+          "on_time_count": 0.4,
+          "status_updates": 0.6,
+          "worklog_minutes": 420.0,
+          "issues_completed": 0.6,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 2,
+        "role_id": 5,
+        "subrole_id": 13,
+        "payload": {
+          "commits": 0.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 0.0,
+          "diff_deleted": 0.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 6,
+        "payload": {
+          "commits": 7.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 1000.0,
+          "diff_deleted": 253.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 2,
+        "role_id": 6,
+        "subrole_id": 7,
+        "payload": {
+          "commits": 4.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 557.0,
+          "diff_deleted": 209.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 2,
+        "role_id": 9,
+        "subrole_id": 12,
+        "payload": {
+          "commits": 0.0,
+          "reviews": 0.0,
+          "pr_merged": 0.0,
+          "pr_opened": 0.0,
+          "diff_added": 0.0,
+          "diff_deleted": 0.0,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 0.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 3,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.5
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 3,
+        "role_id": 4,
+        "subrole_id": 9,
+        "payload": {
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 480.0,
+          "issues_completed": 0.0,
+          "attachments_count": 4.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 4,
+        "role_id": 3,
+        "subrole_id": 10,
+        "payload": {
+          "mentions": 0.0,
+          "shared_links": 0.0,
+          "files_updated": 0.0,
+          "nodes_changed": 0.0,
+          "on_time_count": 0.0,
+          "comments_added": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 1560.0,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0,
+          "comments_resolved": 0.0,
+          "components_published": 0.0
+        }
+      },
+      {
+        "date": "2025-11-07",
+        "team_id": 6,
+        "role_id": 2,
+        "subrole_id": 2,
+        "payload": {
+          "commits": 2.0,
+          "reviews": 0.0,
+          "pr_merged": 0.75,
+          "pr_opened": 0.5,
+          "diff_added": 523.5,
+          "diff_deleted": 194.5,
+          "on_time_count": 0.0,
+          "status_updates": 0.0,
+          "worklog_minutes": 777.25,
+          "issues_completed": 0.0,
+          "attachments_count": 0.0
+        }
+      }
+    ]
+  },
+  "summary": {
+    "total_workdays": 5,
+    "total_users": 1,
+    "total_ai_score_records": 5,
+    "total_jira_records": 5,
+    "total_github_records": 5,
+    "total_team_avg_records": 41
+  }
+}

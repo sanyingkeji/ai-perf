@@ -28,6 +28,8 @@ a = Analysis(
         'objc',
         'objc._objc',
         'Foundation',
+        # 周数计算工具（管理端客户端独立版本，不依赖后端 jobs 模块）
+        'utils.week_calculator',
     ],
     hookspath=[],
     hooksconfig={},
