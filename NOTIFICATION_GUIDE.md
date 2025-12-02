@@ -224,3 +224,4 @@ A: 使用自定义 URL Scheme（如 `aiperf://today`），在应用中注册 URL
 ### Q: 如何测试通知功能？
 A: 运行 `python utils/notification.py` 或 `python utils/background_notifier.py "测试" "这是一条测试通知"`
 
+

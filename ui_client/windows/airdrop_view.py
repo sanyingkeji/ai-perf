@@ -235,9 +235,11 @@ class AirDropView(QWidget):
         """禁止双击窗口头部扩大"""
         # 检查是否在标题栏区域（顶部30像素）
         if event.position().y() <= 30:
-            # 忽略双击事件，不执行默认的扩大操作
+            # 完全忽略双击事件，不执行默认的扩大操作
             event.ignore()
+            # 不调用 super()，完全阻止事件传播
             return
+        # 非标题栏区域的双击事件正常处理
         super().mouseDoubleClickEvent(event)
     
     def _setup_ui(self):
@@ -410,10 +412,21 @@ class AirDropView(QWidget):
                 # 计算窗口新位置：鼠标移动距离 = 窗口移动距离
                 mouse_delta = event.globalPosition().toPoint() - self._drag_start_pos
                 new_pos = self._drag_window_pos + mouse_delta
-                self.move(new_pos)
+                
+                # 限制窗口不能超出屏幕范围
+                screen = QApplication.primaryScreen().geometry()
+                window_rect = self.geometry()
+                window_size = window_rect.size()
+                
+                # 计算限制后的位置
+                constrained_x = max(screen.left(), min(new_pos.x(), screen.right() - window_size.width()))
+                constrained_y = max(screen.top(), min(new_pos.y(), screen.bottom() - window_size.height()))
+                constrained_pos = QPoint(constrained_x, constrained_y)
+                
+                self.move(constrained_pos)
                 
                 # 检查是否拖到屏幕边缘（只要有一个边靠边缘就触发）
-                screen = QApplication.primaryScreen().geometry()
+                # 使用限制后的位置重新计算窗口矩形
                 window_rect = self.geometry()
                 
                 # 检查是否有一个边靠边缘（20像素内，更宽松的检测）

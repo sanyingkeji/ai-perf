@@ -167,8 +167,28 @@ class FloatingIcon(QWidget):
     def showEvent(self, event):
         """显示事件"""
         super().showEvent(event)
+        # 确保窗口置顶
         self.raise_()
         self.activateWindow()
+        # macOS: 额外确保置顶
+        if platform.system() == "Darwin":
+            try:
+                from PySide6.QtGui import QWindow
+                qwindow = self.windowHandle()
+                if qwindow:
+                    ns_view = qwindow.winId()
+                    if ns_view:
+                        import objc
+                        from ctypes import c_void_p
+                        view = objc.objc_object(c_void_p=c_void_p(int(ns_view)))
+                        if view:
+                            ns_window = view.window()
+                            if ns_window:
+                                # 设置窗口级别为浮动窗口级别（置顶）
+                                # NSFloatingWindowLevel = 3
+                                ns_window.setLevel_(3)
+            except Exception:
+                pass
     
     def animate_show(self, from_pos: Optional[QPoint] = None):
         """动画显示（从指定位置出现）"""
@@ -182,6 +202,9 @@ class FloatingIcon(QWidget):
         
         self.show()
         self.setVisible(True)  # 确保可见
+        # 确保窗口置顶
+        self.raise_()
+        self.activateWindow()
         self.update()
         
         animation = QPropertyAnimation(self, b"opacity")

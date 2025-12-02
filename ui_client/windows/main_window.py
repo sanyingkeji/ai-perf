@@ -734,27 +734,23 @@ class MainWindow(QMainWindow):
                                 QTimer.singleShot(100, set_window_style)
                                 return
                             
-                            # 设置窗口样式：只显示关闭按钮
-                            # NSWindowStyleMask 常量：
-                            # NSWindowStyleMaskClosable = 1 << 0 (关闭按钮)
-                            # NSWindowStyleMaskMiniaturizable = 1 << 1 (最小化按钮)
-                            # NSWindowStyleMaskResizable = 1 << 2 (调整大小，通常包含最大化)
-                            # NSWindowStyleMaskTitled = 1 << 0 (标题栏，通常需要)
-                            # 获取当前样式掩码，然后移除不需要的
+                            # 设置窗口样式：只显示关闭按钮，禁用最小化和缩放
+                            # NSWindowStyleMask 常量（正确的值）：
+                            # NSWindowStyleMaskTitled = 1
+                            # NSWindowStyleMaskClosable = 2
+                            # NSWindowStyleMaskMiniaturizable = 4
+                            # NSWindowStyleMaskResizable = 8
+                            # 获取当前样式掩码
                             current_mask = ns_window.styleMask()
-                            # 保留必要的样式：Titled (1), Closable (2)
-                            # 移除：Miniaturizable (4), Resizable (8)
-                            # 基本样式：Titled = 1, Closable = 2, 所以基本需要 3
-                            # 但我们需要保留更多基本样式，只移除 Miniaturizable 和 Resizable
-                            style_mask = current_mask & ~(1 << 1)  # 移除 Miniaturizable
-                            style_mask = style_mask & ~(1 << 2)    # 移除 Resizable
-                            # 确保保留 Closable 和 Titled
-                            style_mask = style_mask | (1 << 0)  # 确保 Titled
-                            style_mask = style_mask | (1 << 0)  # 确保 Closable (实际上 Closable 也是 1 << 0，但通常需要 Titled)
-                            # 更安全的方法：只移除 Miniaturizable 和 Resizable，保留其他所有样式
-                            style_mask = current_mask & ~(1 << 1) & ~(1 << 2)
+                            print(f"[DEBUG] Current window style mask: {current_mask}", file=sys.stderr)
+                            
+                            # 移除 Miniaturizable (4) 和 Resizable (8)
+                            # 保留 Titled (1) 和 Closable (2)
+                            style_mask = current_mask & ~4 & ~8  # 移除 Miniaturizable 和 Resizable
+                            style_mask = style_mask | 1 | 2  # 确保 Titled 和 Closable 存在
+                            
                             ns_window.setStyleMask_(style_mask)
-                            print(f"[DEBUG] Window style mask updated: removed Miniaturizable and Resizable, kept others", file=sys.stderr)
+                            print(f"[DEBUG] Window style mask updated: {current_mask} -> {style_mask} (removed Miniaturizable=4 and Resizable=8, ensured Titled=1 and Closable=2)", file=sys.stderr)
                         except Exception as e:
                             import sys
                             print(f"[WARNING] Failed to set window style: {e}", file=sys.stderr)
@@ -765,7 +761,8 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     import sys
                     print(f"[WARNING] Failed to setup window style: {e}", file=sys.stderr)
-            # macOS: 禁用最小化和最大化按钮
+            
+            # macOS: 禁用最小化和最大化按钮（主要方法）
             if platform.system() == "Darwin":
                 def disable_buttons():
                     try:
@@ -825,105 +822,89 @@ class MainWindow(QMainWindow):
                             ns_window.setStyleMask_(style_mask)
                             print(f"[DEBUG] Window style mask updated: {current_mask} -> {style_mask} (removed Miniaturizable=4 and Resizable=8, ensured Titled=1 and Closable=2)", file=sys.stderr)
                             
+                            # 验证设置是否成功
+                            new_mask = ns_window.styleMask()
+                            if new_mask != style_mask:
+                                print(f"[WARNING] Style mask not set correctly! Expected {style_mask}, got {new_mask}", file=sys.stderr)
+                                # 强制设置
+                                ns_window.setStyleMask_(style_mask)
+                                print(f"[DEBUG] Forced style mask to {style_mask}", file=sys.stderr)
+                            
                             # 禁止双击窗口头部扩大（重写 performZoom: 方法）
                             try:
                                 import objc
-                                # 创建一个空的 performZoom: 方法实现
+                                
+                                # 方法1：重写 performZoom: 方法，让它什么都不做
                                 def empty_zoom(self_obj, sender):
                                     # 不执行任何操作，禁止双击扩大
+                                    print(f"[DEBUG] performZoom: called but blocked", file=sys.stderr)
                                     pass
                                 
                                 # 使用 objc 方法替换
                                 # performZoom: 的方法签名是 v@:@ (void return, self, sender)
-                                objc.classAddMethod(
-                                    ns_window.__class__,
-                                    objc.selector(empty_zoom, signature=b'v@:@'),
-                                    'performZoom:'
-                                )
-                                print(f"[DEBUG] Double-click zoom disabled via method override", file=sys.stderr)
+                                try:
+                                    objc.classAddMethod(
+                                        ns_window.__class__,
+                                        objc.selector(empty_zoom, signature=b'v@:@'),
+                                        'performZoom:'
+                                    )
+                                    print(f"[DEBUG] performZoom: method overridden", file=sys.stderr)
+                                except Exception as e1:
+                                    print(f"[WARNING] Failed to override performZoom: {e1}", file=sys.stderr)
+                                    # 尝试直接在实例上添加方法
+                                    try:
+                                        objc.classAddMethod(
+                                            objc.lookUpClass('NSWindow'),
+                                            objc.selector(empty_zoom, signature=b'v@:@'),
+                                            'performZoom:'
+                                        )
+                                        print(f"[DEBUG] performZoom: method overridden on NSWindow class", file=sys.stderr)
+                                    except Exception as e2:
+                                        print(f"[WARNING] Failed to override performZoom on NSWindow class: {e2}", file=sys.stderr)
+                                
+                                # 方法2：重写 windowShouldZoom:toFrame: 方法，返回 False
+                                def should_zoom(self_obj, window, new_frame):
+                                    # 返回 False，禁止缩放
+                                    print(f"[DEBUG] windowShouldZoom:toFrame: called but returning False", file=sys.stderr)
+                                    return False
+                                
+                                try:
+                                    objc.classAddMethod(
+                                        ns_window.__class__,
+                                        objc.selector(should_zoom, signature=b'c@:@{CGRect={CGPoint=dd}{CGSize=dd}}'),
+                                        'windowShouldZoom:toFrame:'
+                                    )
+                                    print(f"[DEBUG] windowShouldZoom:toFrame: method overridden", file=sys.stderr)
+                                except Exception as e3:
+                                    print(f"[WARNING] Failed to override windowShouldZoom:toFrame: {e3}", file=sys.stderr)
+                                
+                                # 方法3：设置窗口的 resizeIncrements 来防止调整大小
+                                try:
+                                    from AppKit import NSSize
+                                    # 设置一个非常大的增量，这样窗口就无法调整大小
+                                    huge_size = NSSize(10000, 10000)
+                                    ns_window.setResizeIncrements_(huge_size)
+                                    print(f"[DEBUG] Resize increments set to prevent resizing", file=sys.stderr)
+                                except Exception as e4:
+                                    print(f"[WARNING] Failed to set resize increments: {e4}", file=sys.stderr)
+                                
                             except Exception as zoom_e:
                                 print(f"[WARNING] Failed to disable zoom method: {zoom_e}", file=sys.stderr)
-                                # 备用方案：通过禁用按钮来实现
-                                print(f"[DEBUG] Falling back to button hiding for zoom prevention", file=sys.stderr)
                         except Exception as e:
                             print(f"[WARNING] Failed to set window style mask: {e}", file=sys.stderr)
                         
-                        # 方法2：通过按钮对象来强制隐藏（必须执行，作为主要方法）
-                        # 禁用并隐藏最小化按钮（0 = NSWindowMiniaturizeButton）
-                        minimize_button = ns_window.standardWindowButton_(0)
-                        if minimize_button:
-                            minimize_button.setEnabled_(False)
-                            minimize_button.setHidden_(True)
-                            # 强制设置 frame 为 CGRectZero 来彻底隐藏
-                            try:
-                                from AppKit import NSRect, NSPoint, NSSize
-                                zero_rect = NSRect(NSPoint(0, 0), NSSize(0, 0))
-                                minimize_button.setFrame_(zero_rect)
-                            except:
-                                pass
-                            print(f"[DEBUG] Minimize button disabled, hidden, and frame set to zero (method 2)", file=sys.stderr)
-                        else:
-                            print(f"[DEBUG] Minimize button not found", file=sys.stderr)
-                        
-                        # 禁用并隐藏最大化按钮（1 = NSWindowZoomButton）- 这是关键！
-                        zoom_button = ns_window.standardWindowButton_(1)
-                        if zoom_button:
-                            zoom_button.setEnabled_(False)
-                            zoom_button.setHidden_(True)
-                            # 强制设置 frame 为 CGRectZero 来彻底隐藏
-                            try:
-                                from AppKit import NSRect, NSPoint, NSSize
-                                zero_rect = NSRect(NSPoint(0, 0), NSSize(0, 0))
-                                zoom_button.setFrame_(zero_rect)
-                            except:
-                                pass
-                            print(f"[DEBUG] Zoom button disabled, hidden, and frame set to zero (method 2)", file=sys.stderr)
-                        else:
-                            print(f"[WARNING] Zoom button not found - this is a problem!", file=sys.stderr)
-                        
-                        # 确保关闭按钮可用且可见（2 = NSWindowCloseButton）
-                        close_button = ns_window.standardWindowButton_(2)
-                        if close_button:
-                            close_button.setEnabled_(True)
-                            close_button.setHidden_(False)
-                            print(f"[DEBUG] Close button enabled and visible", file=sys.stderr)
-                        else:
-                            print(f"[WARNING] Close button not found!", file=sys.stderr)
-                        
-                        # 方法3：再次验证并强制隐藏（防止按钮重新出现）
-                        def verify_and_hide():
-                            try:
-                                zoom_btn = ns_window.standardWindowButton_(1)
-                                if zoom_btn:
-                                    if not zoom_btn.isHidden():
-                                        zoom_btn.setHidden_(True)
-                                        zoom_btn.setEnabled_(False)
-                                        print(f"[DEBUG] Zoom button was visible again, re-hiding it", file=sys.stderr)
-                                min_btn = ns_window.standardWindowButton_(0)
-                                if min_btn:
-                                    if not min_btn.isHidden():
-                                        min_btn.setHidden_(True)
-                                        min_btn.setEnabled_(False)
-                                        print(f"[DEBUG] Minimize button was visible again, re-hiding it", file=sys.stderr)
-                            except Exception as e:
-                                print(f"[WARNING] Failed to verify buttons: {e}", file=sys.stderr)
-                        
-                        # 延迟验证，确保按钮被隐藏
-                        QTimer.singleShot(100, verify_and_hide)
-                        QTimer.singleShot(300, verify_and_hide)
-                        QTimer.singleShot(500, verify_and_hide)
-                        
-                        
                     except Exception as e:
                         import sys
-                        print(f"[WARNING] Failed to disable window buttons: {e}", file=sys.stderr)
                         import traceback
-                        traceback.print_exc()
+                        print(f"[WARNING] Failed to disable window buttons: {e}", file=sys.stderr)
+                        print(f"[WARNING] Traceback: {traceback.format_exc()}", file=sys.stderr)
                 
-                # 窗口显示后再禁用按钮（多次重试）
+                # 窗口显示后再禁用按钮（多次重试，确保按钮被彻底隐藏）
+                QTimer.singleShot(100, disable_buttons)
                 QTimer.singleShot(200, disable_buttons)
                 QTimer.singleShot(500, disable_buttons)
                 QTimer.singleShot(1000, disable_buttons)
+                QTimer.singleShot(2000, disable_buttons)
             # 设置窗口大小和位置
             # 计算合适的窗口大小：能显示22个设备不滚屏
             # 每个设备项高度约100px，加上padding和背景文字区域，总高度约2400px
@@ -933,8 +914,9 @@ class MainWindow(QMainWindow):
             window_width = 480
             # 窗口高度：能显示约22个设备（每个设备约100px高度）+ 顶部padding + 底部背景区域
             # 22 * 100 = 2200px，但考虑到屏幕限制，设置为屏幕高度的80%或最大2400px
+            # 现在改为一半高度
             max_height = min(int(screen.height() * 0.85), 2400)
-            window_height = max(600, max_height)  # 至少600px
+            window_height = max(300, max_height // 2)  # 高度减半，至少300px
             
             self._airdrop_window.resize(window_width, window_height)
             
@@ -1000,7 +982,7 @@ class MainWindow(QMainWindow):
         screen = QApplication.primaryScreen().geometry()
         window_width = 480
         max_height = min(int(screen.height() * 0.85), 2400)
-        window_height = max(600, max_height)
+        window_height = max(300, max_height // 2)  # 高度减半，至少300px
         x = screen.right() - window_width
         y = (screen.height() - window_height) // 2
         
@@ -1036,7 +1018,7 @@ class MainWindow(QMainWindow):
         window_width = 480
         max_height = min(int(screen.height() * 0.85), 2400)
         target_width = window_width
-        target_height = max(600, max_height)
+        target_height = max(300, max_height // 2)  # 高度减半，至少300px
         # 右侧屏幕边缘垂直居中
         target_x = screen.right() - target_width
         target_y = (screen.height() - target_height) // 2
