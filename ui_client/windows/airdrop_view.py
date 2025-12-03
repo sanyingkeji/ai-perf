@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QApplication, QGraphicsDropShadowEffect
 )
 from PySide6.QtCore import Qt, QSize, QTimer, Signal, QMimeData, QPoint, QPropertyAnimation, QEasingCurve, QRect, QEvent
-from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QBrush, QDragEnterEvent, QDropEvent, QMouseEvent
+from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QBrush, QDragEnterEvent, QDropEvent, QMouseEvent, QCursor
 import httpx
 import logging
 
@@ -200,8 +200,8 @@ class DeviceItemWidget(QWidget):
 class AirDropView(QWidget):
     """隔空投送主界面（苹果风格）"""
     
-    # 信号：窗口需要隐藏（变成图标），传递图标位置
-    should_hide_to_icon = Signal(QPoint)
+    # 信号：窗口需要隐藏（已移除悬浮图标，不再需要）
+    # should_hide_to_icon = Signal(QPoint)  # 已移除
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -304,11 +304,30 @@ class AirDropView(QWidget):
         background_layout.setAlignment(Qt.AlignCenter)
         background_layout.setSpacing(12)
         
-        # 信号图标（使用文字模拟，实际可以用图片）
-        signal_label = QLabel("📡")
+        # 信号图标（使用 resources/airdrop.png，转换为黑色）
+        signal_label = QLabel()
         signal_label.setAlignment(Qt.AlignCenter)
-        signal_label.setFont(QFont("SF Pro Display", 48))
-        signal_label.setStyleSheet("color: #D0D0D0;")  # 浅灰色图标
+        # 加载图标
+        app_dir = Path(__file__).parent.parent
+        icon_path = app_dir / "resources" / "airdrop.png"
+        if icon_path.exists():
+            pixmap = QPixmap(str(icon_path))
+            if not pixmap.isNull():
+                # 缩放图标到合适大小（32x32像素，更小）
+                scaled_pixmap = pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                # 将图标转换为黑色
+                black_pixmap = self._tint_pixmap_black(scaled_pixmap)
+                signal_label.setPixmap(black_pixmap)
+            else:
+                # 如果加载失败，使用默认emoji
+                signal_label.setText("📡")
+                signal_label.setFont(QFont("SF Pro Display", 32))
+                signal_label.setStyleSheet("color: #000000;")
+        else:
+            # 如果文件不存在，使用默认emoji
+            signal_label.setText("📡")
+            signal_label.setFont(QFont("SF Pro Display", 32))
+            signal_label.setStyleSheet("color: #000000;")
         background_layout.addWidget(signal_label)
         
         # 背景文字
@@ -364,6 +383,73 @@ class AirDropView(QWidget):
         super().resizeEvent(event)
         self._update_background_label_position()
     
+    def _tint_pixmap_black(self, pixmap: QPixmap) -> QPixmap:
+        """将图标转换为黑色"""
+        # 创建新的pixmap，使用源pixmap的尺寸
+        result = QPixmap(pixmap.size())
+        result.fill(Qt.transparent)
+        
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 使用源pixmap作为mask，然后填充黑色
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        painter.drawPixmap(0, 0, pixmap)
+        
+        # 使用CompositionMode_SourceIn将颜色改为黑色
+        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        painter.fillRect(result.rect(), QColor(9, 105, 218))  # 黑色
+        
+        painter.end()
+        return result
+    
+    def _check_mouse_near_hidden_area(self):
+        """检查鼠标是否在隐藏区域附近（如果窗口已隐藏）"""
+        # 如果正在执行显示动画，不检测鼠标
+        if self._is_showing_animation:
+            return
+        
+        if not self._was_hidden_to_icon or not self._hidden_rect:
+            return
+        
+        if self.isVisible():
+            # 窗口已显示，不需要检测
+            return
+        
+        # 获取全局鼠标位置
+        mouse_pos = QCursor.pos()
+        screen = QApplication.primaryScreen().geometry()
+        
+        # 检查鼠标是否在隐藏区域的上下范围内
+        # 隐藏区域：窗口隐藏位置的X坐标附近（左右各50像素），Y坐标上下各100像素
+        margin_x = 50
+        margin_y = 100
+        
+        hidden_x = self._hidden_rect.x()
+        hidden_y = self._hidden_rect.y()
+        hidden_width = self._hidden_rect.width()
+        hidden_height = self._hidden_rect.height()
+        
+        # 检测区域：隐藏位置的X坐标范围（左右各margin_x像素），Y坐标上下各margin_y像素
+        detect_left = hidden_x - margin_x
+        detect_right = hidden_x + hidden_width + margin_x
+        detect_top = hidden_y - margin_y
+        detect_bottom = hidden_y + hidden_height + margin_y
+        
+        # 检查鼠标是否在检测区域内
+        if (detect_left <= mouse_pos.x() <= detect_right and 
+            detect_top <= mouse_pos.y() <= detect_bottom):
+            # 鼠标在隐藏区域附近，显示窗口
+            # 通知主窗口显示
+            if hasattr(self, 'window') and self.window():
+                # 通过主窗口显示
+                from windows.main_window import MainWindow
+                # 查找主窗口实例
+                for widget in QApplication.allWidgets():
+                    if isinstance(widget, MainWindow):
+                        widget._show_airdrop_window()
+                        break
+    
     def _update_background_label_position(self):
         """更新背景区域位置（水平居中，垂直靠底部）"""
         if not hasattr(self, '_background_frame'):
@@ -384,21 +470,107 @@ class AirDropView(QWidget):
         self._drag_start_pos = None
         self._drag_window_pos = None
         self._is_dragging = False
-        self._edge_triggered = False
+        self._hidden_rect = None  # 窗口隐藏后的位置（用于鼠标检测）
+        self._last_window_pos = self.pos()  # 记录上次窗口位置
+        self._drag_detected = False  # 是否检测到拖拽
+        self._position_unchanged_count = 0  # 位置未变化的连续次数
+        self._is_showing_animation = False  # 是否正在执行显示动画
+        
+        # 启动窗口位置跟踪定时器（用于检测拖拽，特别是 macOS 系统标题栏拖拽）
+        self._position_track_timer = QTimer()
+        self._position_track_timer.timeout.connect(self._check_window_dragging)
+        self._position_track_timer.start(50)  # 每50ms检查一次
+        
+        # 启动全局鼠标跟踪定时器（用于检测鼠标是否在隐藏区域）
+        self._mouse_track_timer = QTimer()
+        self._mouse_track_timer.timeout.connect(self._check_mouse_near_hidden_area)
+        self._mouse_track_timer.start(100)  # 每100ms检查一次
+    
+    def _check_window_dragging(self):
+        """通过窗口位置变化检测拖拽（用于 macOS 系统标题栏拖拽）"""
+        import sys
+        import platform
+        from PySide6.QtGui import QCursor
+        from PySide6.QtCore import Qt
+        
+        # 如果正在执行显示动画，不检测拖拽和隐藏逻辑
+        if self._is_showing_animation:
+            return
+        
+        current_pos = self.pos()
+        # 检查鼠标左键是否还在按下（通过全局鼠标按钮状态）
+        mouse_buttons = QApplication.mouseButtons()
+        is_left_button_pressed = (mouse_buttons & Qt.LeftButton) == Qt.LeftButton
+        
+        if current_pos != self._last_window_pos and self.isVisible():
+            # 窗口位置改变了，可能正在被拖拽
+            if not self._drag_detected:
+                # 首次检测到位置变化，认为是开始拖拽
+                self._drag_detected = True
+                self._position_unchanged_count = 0
+                print(f"[拖放] 开始拖拽窗口 (通过位置检测, macOS={platform.system()=='Darwin'})", file=sys.stderr)
+            
+            self._last_window_pos = current_pos
+            self._position_unchanged_count = 0  # 重置未变化计数
+        else:
+            # 窗口位置没有变化
+            if self._drag_detected:
+                # 如果鼠标左键还在按下，说明还在拖拽中（可能拖到了边缘或暂时停止移动）
+                if is_left_button_pressed:
+                    # 鼠标还在按下，不认为拖拽结束
+                    self._position_unchanged_count = 0
+                else:
+                    # 鼠标已经释放，但需要确认位置确实不再变化（避免误判）
+                    self._position_unchanged_count += 1
+                    # 只有当位置连续多次（约200ms）没有变化，且鼠标已释放时，才认为拖拽结束
+                    if self._position_unchanged_count >= 4:  # 4次 * 50ms = 200ms
+                        # 检查窗口是否超出屏幕
+                        screen = QApplication.primaryScreen().geometry()
+                        window_rect = self.geometry()
+                        
+                        # 只要窗口超出屏幕就应该隐藏（不是完全在屏幕外，而是有任何部分超出）
+                        is_left_outside = window_rect.left() < screen.left()  # 窗口左边缘超出屏幕左边缘
+                        is_right_outside = window_rect.right() > screen.right()  # 窗口右边缘超出屏幕右边缘
+                        should_hide = is_left_outside or is_right_outside
+                        
+                        print(f"[拖放] 释放拖拽窗口 (通过位置检测, 应该隐藏={should_hide})", file=sys.stderr)
+                        
+                        if should_hide:
+                            # 窗口左右超出屏幕，触发隐藏动画
+                            QTimer.singleShot(50, self._animate_to_icon)
+                        
+                        self._drag_detected = False
+                        self._position_unchanged_count = 0
+            else:
+                self._position_unchanged_count = 0
     
     def mousePressEvent(self, event: QMouseEvent):
         """鼠标按下"""
+        import sys
+        import platform
+        
+        # 添加调试日志
+        y_pos = event.position().y()
+        is_title_bar = y_pos <= 50  # macOS 标题栏可能更高，扩大到50像素
+        
         if event.button() == Qt.LeftButton:
-            # 检查是否在标题栏区域（系统标题栏区域，约30像素）
-            # 或者在整个窗口顶部区域（用于拖拽）
-            if event.position().y() <= 30:
+            # macOS 上，系统标题栏可能会拦截事件，所以我们需要检测整个窗口顶部区域
+            # 或者检测是否在窗口的标题栏区域（包括系统标题栏）
+            if is_title_bar:
                 # 记录鼠标按下时的全局位置和窗口位置
                 self._drag_start_pos = event.globalPosition().toPoint()
                 self._drag_window_pos = self.pos()
                 self._is_dragging = False
                 self._edge_triggered = False
+                # 开始拖拽时打印日志
+                print(f"[拖放] 开始拖拽窗口 (y={y_pos:.1f}, macOS={platform.system()=='Darwin'})", file=sys.stderr)
             else:
+                # 调试：记录非标题栏区域的点击
+                if platform.system() == "Darwin":
+                    print(f"[拖放] 鼠标按下但不在标题栏区域 (y={y_pos:.1f})", file=sys.stderr)
                 super().mousePressEvent(event)
+        else:
+            super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event: QMouseEvent):
         """鼠标移动"""
@@ -413,100 +585,193 @@ class AirDropView(QWidget):
                 mouse_delta = event.globalPosition().toPoint() - self._drag_start_pos
                 new_pos = self._drag_window_pos + mouse_delta
                 
-                # 限制窗口不能超出屏幕范围
-                screen = QApplication.primaryScreen().geometry()
-                window_rect = self.geometry()
-                window_size = window_rect.size()
-                
-                # 计算限制后的位置
-                constrained_x = max(screen.left(), min(new_pos.x(), screen.right() - window_size.width()))
-                constrained_y = max(screen.top(), min(new_pos.y(), screen.bottom() - window_size.height()))
-                constrained_pos = QPoint(constrained_x, constrained_y)
-                
-                self.move(constrained_pos)
-                
-                # 检查是否拖到屏幕边缘（只要有一个边靠边缘就触发）
-                # 使用限制后的位置重新计算窗口矩形
-                window_rect = self.geometry()
-                
-                # 检查是否有一个边靠边缘（20像素内，更宽松的检测）
-                margin = 20
-                is_at_edge = (
-                    window_rect.left() <= screen.left() + margin or
-                    window_rect.right() >= screen.right() - margin or
-                    window_rect.top() <= screen.top() + margin or
-                    window_rect.bottom() >= screen.bottom() - margin
-                )
-                
-                if is_at_edge and not self._edge_triggered:
-                    # 触发隐藏到图标（只触发一次）
-                    import sys
-                    print(f"[DEBUG] Edge detected! window_rect={window_rect}, screen={screen}", file=sys.stderr)
-                    self._edge_triggered = True
-                    # 停止当前拖拽，开始动画
-                    self._is_dragging = False
-                    QTimer.singleShot(50, self._animate_to_icon)  # 稍微延迟，确保拖拽结束
+                # 允许窗口超出屏幕范围（不限制）
+                self.move(new_pos)
         else:
             super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event: QMouseEvent):
         """鼠标释放"""
+        import sys
+        
+        if self._drag_start_pos is not None:
+            # 检查窗口是否超出屏幕
+            screen = QApplication.primaryScreen().geometry()
+            window_rect = self.geometry()
+            
+            # 只要窗口超出屏幕就应该隐藏（不是完全在屏幕外，而是有任何部分超出）
+            is_left_outside = window_rect.left() < screen.left()  # 窗口左边缘超出屏幕左边缘
+            is_right_outside = window_rect.right() > screen.right()  # 窗口右边缘超出屏幕右边缘
+            should_hide = is_left_outside or is_right_outside
+            
+            # 释放拖拽时打印日志（只要按下过标题栏就打印，不管是否真正移动了）
+            print(f"[拖放] 释放拖拽窗口 (is_dragging={self._is_dragging}, 应该隐藏={should_hide})", file=sys.stderr)
+            
+            if self._is_dragging and should_hide:
+                # 窗口左右超出屏幕，触发隐藏动画
+                QTimer.singleShot(50, self._animate_to_icon)
+        
         self._drag_start_pos = None
         self._drag_window_pos = None
         self._is_dragging = False
-        if self._edge_triggered:
-            self._edge_triggered = False
         super().mouseReleaseEvent(event)
     
-    def _animate_to_icon(self):
-        """动画：窗口渐渐藏入边缘，然后图标从藏住的位置出现"""
+    def _animate_from_icon(self, target_rect: QRect):
+        """动画：窗口从隐藏位置滑出显示（与隐藏动画对应）"""
         import sys
-        print(f"[DEBUG] _animate_to_icon called, isVisible={self.isVisible()}", file=sys.stderr)
+        
+        # 如果已经在执行显示动画，直接返回，防止重复调用
+        if self._is_showing_animation:
+            print(f"[动画] 显示动画已在执行，忽略重复调用", file=sys.stderr)
+            return
+        
+        screen = QApplication.primaryScreen().geometry()
+        window_width = target_rect.width()
+        window_height = target_rect.height()
+        
+        # 确定窗口从哪个边缘滑出
+        # 根据隐藏方向决定从哪个方向滑出
+        if hasattr(self, '_hidden_to_left') and self._hidden_to_left:
+            # 从左侧滑出：窗口从屏幕左侧外滑入
+            start_x = screen.left() - window_width
+            start_y = target_rect.y()  # 保持Y坐标不变
+        else:
+            # 从右侧滑出：窗口从屏幕右侧外滑入
+            start_x = screen.right()
+            start_y = target_rect.y()  # 保持Y坐标不变
+        
+        # 先设置窗口在隐藏位置（屏幕外）
+        start_rect = QRect(start_x, start_y, window_width, window_height)
+        
+        print(f"[动画] 显示动画: 起始位置=({start_x}, {start_y}), 目标位置=({target_rect.x()}, {target_rect.y()}), 大小={window_width}x{window_height}", file=sys.stderr)
+        
+        # 立即标记正在执行显示动画，防止重复调用和位置检测
+        self._is_showing_animation = True
+        
+        # 如果窗口已经显示，先隐藏它
+        if self.isVisible():
+            self.hide()
+        
+        # 设置窗口在起始位置（屏幕外）
+        self.setGeometry(start_rect)
+        
+        # 使用 QTimer.singleShot 延迟一下，确保窗口位置设置完成
+        # 延迟时间稍微长一点，确保窗口位置不会被其他代码立即修改
+        def start_animation():
+            # 再次检查，防止在延迟期间被重复调用
+            if not self._is_showing_animation:
+                return
+            
+            # 再次强制设置窗口到起始位置（防止被其他代码移动）
+            self.setGeometry(start_rect)
+            
+            # 显示窗口（此时窗口在屏幕外的起始位置）
+            self.show()
+            self.setVisible(True)
+            self.raise_()
+            self.activateWindow()
+            
+            # 再次确认窗口在起始位置（防止被其他代码移动）
+            current_geo = self.geometry()
+            if abs(current_geo.x() - start_rect.x()) > 5 or abs(current_geo.y() - start_rect.y()) > 5:
+                import sys
+                print(f"[动画] 窗口位置不匹配，强制设置起始位置: 当前=({current_geo.x()}, {current_geo.y()}), 期望=({start_rect.x()}, {start_rect.y()})", file=sys.stderr)
+                self.setGeometry(start_rect)
+                # 再延迟一下，确保位置设置生效
+                QTimer.singleShot(10, lambda: self._really_start_animation(start_rect, target_rect))
+                return
+            
+            # 开始动画
+            self._really_start_animation(start_rect, target_rect)
+        
+        def _really_start_animation(self, start_rect: QRect, target_rect: QRect):
+            """真正开始动画"""
+            import sys
+            # 创建窗口显示动画（只改变位置，不改变大小）
+            window_animation = QPropertyAnimation(self, b"geometry")
+            window_animation.setDuration(300)
+            window_animation.setStartValue(start_rect)
+            window_animation.setEndValue(target_rect)
+            window_animation.setEasingCurve(QEasingCurve.InOutCubic)
+            
+            def on_window_animation_finished():
+                try:
+                    # 确保窗口位置正确（防止动画完成后位置不对）
+                    final_rect = self.geometry()
+                    import sys
+                    print(f"[动画] 显示动画完成，最终窗口位置=({final_rect.x()}, {final_rect.y()}), 大小={final_rect.width()}x{final_rect.height()}", file=sys.stderr)
+                    
+                    # 如果最终位置不对，强制设置到目标位置
+                    if abs(final_rect.x() - target_rect.x()) > 5 or abs(final_rect.y() - target_rect.y()) > 5:
+                        print(f"[动画] 位置不匹配，强制设置到目标位置", file=sys.stderr)
+                        self.setGeometry(target_rect)
+                    
+                    # 重置隐藏标记
+                    self._was_hidden_to_icon = False
+                    if hasattr(self, '_hidden_rect'):
+                        self._hidden_rect = None
+                    if hasattr(self, '_before_hide_rect'):
+                        self._before_hide_rect = None
+                    # 标记显示动画完成，允许位置检测
+                    self._is_showing_animation = False
+                    print(f"[动画] 显示动画完成", file=sys.stderr)
+                except Exception as e:
+                    import sys
+                    print(f"[ERROR] Error in show animation finished callback: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc()
+                    # 确保即使出错也重置标志
+                    self._is_showing_animation = False
+            
+            # 确保连接信号
+            window_animation.finished.connect(on_window_animation_finished)
+            window_animation.start()
+            print(f"[动画] 显示动画已启动", file=sys.stderr)
+        
+        # 延迟一下，确保窗口位置设置完成
+        QTimer.singleShot(50, start_animation)
+    
+    def _animate_to_icon(self):
+        """动画：窗口滑动藏入屏幕边缘（不缩放，保持窗口大小）"""
+        # 如果正在执行显示动画，不允许隐藏
+        if self._is_showing_animation:
+            import sys
+            print(f"[动画] 正在执行显示动画，忽略隐藏请求", file=sys.stderr)
+            return
         
         if not self.isVisible():
-            # 如果窗口已经隐藏，直接触发显示图标
-            screen = QApplication.primaryScreen().geometry()
-            # 默认位置：屏幕右侧边缘
-            icon_pos = QPoint(screen.right() - 36, screen.height() // 2 - 18)
-            self.should_hide_to_icon.emit(icon_pos)
+            # 如果窗口已经隐藏，直接隐藏
+            self._was_hidden_to_icon = True
+            self.hide()
+            self.setVisible(False)
             return
         
         screen = QApplication.primaryScreen().geometry()
         current_rect = self.geometry()
-        
-        print(f"[DEBUG] Screen geometry: {screen}", file=sys.stderr)
-        print(f"[DEBUG] Current window rect: {current_rect}", file=sys.stderr)
+        window_width = current_rect.width()
+        window_height = current_rect.height()
         
         # 确定窗口要隐藏到的边缘位置
         # 只允许隐藏到左右边缘，不允许隐藏到上下边缘
         left_dist = abs(current_rect.left() - screen.left())
         right_dist = abs(screen.right() - current_rect.right())
         
-        print(f"[DEBUG] Edge distances: left={left_dist}, right={right_dist}", file=sys.stderr)
-        
         # 找到最近的边缘（只考虑左右）
         if left_dist <= right_dist:
-            # 隐藏到左边缘
-            target_x = screen.left() - 36  # 只露出36像素（图标大小）
-            target_y = max(screen.top(), min(screen.bottom() - 36, current_rect.y() + current_rect.height() // 2 - 18))
-            print(f"[DEBUG] Hiding to LEFT edge: target=({target_x}, {target_y})", file=sys.stderr)
+            # 隐藏到左边缘：窗口完全滑出屏幕左侧
+            target_x = screen.left() - window_width
+            target_y = current_rect.y()  # 保持Y坐标不变
+            # 保存隐藏方向，用于恢复时从正确方向滑出
+            self._hidden_to_left = True
         else:
-            # 隐藏到右边缘
-            target_x = screen.right() - 36
-            target_y = max(screen.top(), min(screen.bottom() - 36, current_rect.y() + current_rect.height() // 2 - 18))
-            print(f"[DEBUG] Hiding to RIGHT edge: target=({target_x}, {target_y})", file=sys.stderr)
+            # 隐藏到右边缘：窗口完全滑出屏幕右侧
+            target_x = screen.right()
+            target_y = current_rect.y()  # 保持Y坐标不变
+            # 保存隐藏方向，用于恢复时从正确方向滑出
+            self._hidden_to_left = False
         
-        # 确保目标位置在屏幕范围内
-        target_x = max(screen.left() - 36, min(screen.right(), target_x))
-        target_y = max(screen.top(), min(screen.bottom() - 36, target_y))
-        
-        # 图标最终位置（从窗口隐藏位置出现）
-        icon_pos = QPoint(target_x, target_y)
-        print(f"[DEBUG] Final icon position: {icon_pos}", file=sys.stderr)
-        
-        # 创建窗口隐藏动画
-        target_rect = QRect(target_x, target_y, 36, 36)
-        print(f"[DEBUG] Animation target rect: {target_rect}", file=sys.stderr)
+        # 创建窗口隐藏动画（只改变位置，不改变大小）
+        target_rect = QRect(target_x, target_y, window_width, window_height)
         
         window_animation = QPropertyAnimation(self, b"geometry")
         window_animation.setDuration(300)
@@ -515,20 +780,16 @@ class AirDropView(QWidget):
         window_animation.setEasingCurve(QEasingCurve.InOutCubic)
         
         def on_window_animation_finished():
-            import sys
-            print(f"[DEBUG] ===== Window animation FINISHED callback called =====", file=sys.stderr)
-            print(f"[DEBUG] Window isVisible before hide: {self.isVisible()}", file=sys.stderr)
             try:
-                # 标记窗口被隐藏到图标（用于后续判断是否从图标恢复）
+                # 标记窗口被隐藏（用于后续判断是否从边缘恢复）
                 self._was_hidden_to_icon = True
-                # 窗口隐藏完成，隐藏窗口（确保互斥）
+                # 保存隐藏位置（用于鼠标检测）
+                self._hidden_rect = target_rect
+                # 保存隐藏前的位置（用于恢复时显示）
+                self._before_hide_rect = current_rect
+                # 窗口隐藏完成，隐藏窗口
                 self.hide()
                 self.setVisible(False)
-                print(f"[DEBUG] Window isVisible after hide: {self.isVisible()}", file=sys.stderr)
-                # 触发显示图标（传递图标位置）
-                print(f"[DEBUG] Emitting should_hide_to_icon signal with icon_pos={icon_pos}", file=sys.stderr)
-                self.should_hide_to_icon.emit(icon_pos)
-                print(f"[DEBUG] Signal emitted successfully", file=sys.stderr)
             except Exception as e:
                 print(f"[ERROR] Error in animation finished callback: {e}", file=sys.stderr)
                 import traceback
@@ -537,48 +798,24 @@ class AirDropView(QWidget):
             if hasattr(self, '_edge_triggered'):
                 self._edge_triggered = False
         
-        def on_animation_state_changed(new_state, old_state):
-            import sys
-            from PySide6.QtCore import QAbstractAnimation
-            state_names = {QAbstractAnimation.Stopped: "Stopped", 
-                          QAbstractAnimation.Running: "Running", 
-                          QAbstractAnimation.Paused: "Paused"}
-            print(f"[DEBUG] Animation state changed: {state_names.get(old_state, old_state)} -> {state_names.get(new_state, new_state)}", file=sys.stderr)
-        
         # 确保连接信号
         window_animation.finished.connect(on_window_animation_finished)
-        window_animation.stateChanged.connect(on_animation_state_changed)
-        
-        print(f"[DEBUG] ===== Starting window animation =====", file=sys.stderr)
-        print(f"[DEBUG] From: {current_rect}", file=sys.stderr)
-        print(f"[DEBUG] To: {target_rect}", file=sys.stderr)
-        print(f"[DEBUG] Animation duration: {window_animation.duration()}ms", file=sys.stderr)
-        
         window_animation.start()
-        
-        print(f"[DEBUG] Animation started, state: {window_animation.state()}", file=sys.stderr)
         
         # 添加一个备用检查：如果动画在预期时间内没有完成，强制触发
         def check_animation_complete():
             from PySide6.QtCore import QAbstractAnimation
             if window_animation.state() == QAbstractAnimation.Stopped:
-                print(f"[DEBUG] Animation stopped, checking if finished callback was called", file=sys.stderr)
                 if self.isVisible():
-                    print(f"[WARNING] Window still visible after animation stopped, forcing hide", file=sys.stderr)
                     on_window_animation_finished()
         
         QTimer.singleShot(350, check_animation_complete)  # 比动画时长稍长一点
     
     def _init_transfer_manager(self):
         """初始化传输管理器（异步执行，避免阻塞UI）"""
-        import sys
-        print(f"[DEBUG] Starting transfer manager initialization (async)", file=sys.stderr)
-        
         def init_in_thread():
             """在后台线程中执行耗时操作"""
             try:
-                import sys
-                print(f"[DEBUG] Fetching user info from API...", file=sys.stderr)
                 api_client = ApiClient.from_config()
                 user_info = api_client._get("/api/user_info")
                 
@@ -587,8 +824,6 @@ class AirDropView(QWidget):
                     user_id = str(data.get("user_id", ""))
                     user_name = data.get("name", "Unknown")
                     avatar_url = data.get("avatar_url")
-                    
-                    print(f"[DEBUG] User info fetched, creating TransferManager...", file=sys.stderr)
                     
                     # 在主线程中创建 TransferManager（因为需要连接信号）
                     def create_manager():
@@ -606,14 +841,11 @@ class AirDropView(QWidget):
                             self._transfer_manager.transfer_progress.connect(self._on_transfer_progress)
                             self._transfer_manager.transfer_completed.connect(self._on_transfer_completed)
                             
-                            print(f"[DEBUG] Starting TransferManager...", file=sys.stderr)
                             self._transfer_manager.start()
                             
                             self._refresh_timer = QTimer()
                             self._refresh_timer.timeout.connect(self._refresh_devices)
                             self._refresh_timer.start(2000)
-                            
-                            print(f"[DEBUG] TransferManager started successfully", file=sys.stderr)
                         except Exception as e:
                             import sys
                             logger.error(f"创建传输管理器失败: {e}")

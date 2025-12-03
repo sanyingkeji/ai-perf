@@ -562,6 +562,14 @@ def main():
         log_warn("开始 macOS 打包...")
         
         # 设置部署目标，确保向后兼容性（支持 macOS 10.13+）
+        # 问题分析：
+        # - 之前没有在编译 Python 时设置 MACOSX_DEPLOYMENT_TARGET，Python 使用了默认值（14.7）
+        # - 导致 Python 库链接了 macOS 13+ 的符号（如 _mkfifoat）
+        # - _mkfifoat 符号在 macOS 13.0+ 才可用，在 macOS 12.7.6 上会找不到
+        # 解决方案：
+        # - 在编译 Python 时设置 MACOSX_DEPLOYMENT_TARGET=10.13
+        # - 编译器会检查符号可用性，避免使用 macOS 13+ 的符号
+        # - 这样既能支持 macOS 10.13+，又能确保在 macOS 12.7.6 上运行
         deployment_target = "10.13"
         log_info(f"设置 macOS 部署目标: {deployment_target}")
         os.environ["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
@@ -1543,13 +1551,13 @@ def main():
             
             for timestamp_attempt in range(1, timestamp_max_retries + 1):
                 log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-                timestamp_result = subprocess.run([
-                    "codesign", "--force", "--verify", "--verbose",
-                    "--sign", codesign_identity,
-                    "--timestamp",  # 使用时间戳，这对公证很重要
-                    str(dmg_path)
-                ], capture_output=True, text=True, check=False)
-                
+            timestamp_result = subprocess.run([
+                "codesign", "--force", "--verify", "--verbose",
+                "--sign", codesign_identity,
+                "--timestamp",  # 使用时间戳，这对公证很重要
+                str(dmg_path)
+            ], capture_output=True, text=True, check=False)
+            
                 if timestamp_result.returncode == 0:
                     log_info("✓ DMG 代码签名完成（已使用时间戳）")
                     timestamp_success = True

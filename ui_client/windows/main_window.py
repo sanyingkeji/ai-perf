@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon, QMenu, QApplication, QMessageBox
 )
 from PySide6.QtCore import Qt, QSize, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
 from typing import Optional
 import platform
 from pathlib import Path
@@ -217,10 +217,8 @@ class MainWindow(QMainWindow):
         self._theme_check_timer.timeout.connect(self._check_and_update_title_bar_theme)
         self._theme_check_timer.start(1000)  # 每秒检查一次
         
-        # 创建悬浮图标（一直存在）
-        self._floating_icon = None
+        # 隔空投送窗口
         self._airdrop_window = None
-        self._setup_floating_icon()
         
         # macOS: 确保应用在窗口关闭后仍然运行
         import platform
@@ -614,8 +612,25 @@ class MainWindow(QMainWindow):
             show_action.triggered.connect(self._show_window_from_tray)
             tray_menu.addAction(show_action)
             MainWindow._app_tray_actions.append(show_action)  # 保存引用
+
+            tray_menu.addSeparator()
+            
+            # 加载隔空投送图标并转换为黑色
+            app_dir = Path(__file__).parent.parent
+            airdrop_icon_path = app_dir / "resources" / "airdrop.png"
+            airdrop_icon = None
+            if airdrop_icon_path.exists():
+                pixmap = QPixmap(str(airdrop_icon_path))
+                if not pixmap.isNull():
+                    # 缩放图标到合适大小（16x16像素，菜单图标通常较小）
+                    scaled_pixmap = pixmap.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    # 将图标转换为黑色
+                    black_pixmap = self._tint_pixmap_black(scaled_pixmap)
+                    airdrop_icon = QIcon(black_pixmap)
             
             airdrop_action = QAction("隔空投送")
+            if airdrop_icon:
+                airdrop_action.setIcon(airdrop_icon)
             airdrop_action.triggered.connect(self._show_airdrop)
             tray_menu.addAction(airdrop_action)
             MainWindow._app_tray_actions.append(airdrop_action)  # 保存引用
@@ -634,7 +649,22 @@ class MainWindow(QMainWindow):
             show_action.triggered.connect(self.activateWindow)
             tray_menu.addAction(show_action)
             
+            # 加载隔空投送图标并转换为黑色
+            app_dir = Path(__file__).parent.parent
+            airdrop_icon_path = app_dir / "resources" / "airdrop.png"
+            airdrop_icon = None
+            if airdrop_icon_path.exists():
+                pixmap = QPixmap(str(airdrop_icon_path))
+                if not pixmap.isNull():
+                    # 缩放图标到合适大小（16x16像素，菜单图标通常较小）
+                    scaled_pixmap = pixmap.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    # 将图标转换为黑色
+                    black_pixmap = self._tint_pixmap_black(scaled_pixmap)
+                    airdrop_icon = QIcon(black_pixmap)
+            
             airdrop_action = QAction("隔空投送", self)
+            if airdrop_icon:
+                airdrop_action.setIcon(airdrop_icon)
             airdrop_action.triggered.connect(self._show_airdrop)
             tray_menu.addAction(airdrop_action)
             
@@ -652,6 +682,26 @@ class MainWindow(QMainWindow):
         # 显示托盘图标
         self._tray_icon.show()
     
+    def _tint_pixmap_black(self, pixmap: QPixmap) -> QPixmap:
+        """将图标转换为黑色"""
+        # 创建新的pixmap，使用源pixmap的尺寸
+        result = QPixmap(pixmap.size())
+        result.fill(Qt.transparent)
+        
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 使用源pixmap作为mask，然后填充黑色
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        painter.drawPixmap(0, 0, pixmap)
+        
+        # 使用CompositionMode_SourceIn将颜色改为黑色
+        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        painter.fillRect(result.rect(), QColor(0, 0, 0))  # 黑色
+        
+        painter.end()
+        return result
+    
     def _show_window_from_tray(self):
         """从托盘菜单打开窗口"""
         # 确保窗口存在且可见
@@ -660,32 +710,8 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
     
-    def _setup_floating_icon(self):
-        """设置悬浮图标（一直存在，不随主窗口关闭）"""
-        try:
-            from widgets.floating_icon import FloatingIcon
-            # 使用类变量确保图标独立于主窗口实例
-            if not hasattr(MainWindow, '_global_floating_icon'):
-                MainWindow._global_floating_icon = FloatingIcon()
-                MainWindow._global_floating_icon.clicked.connect(self._show_airdrop_from_icon)
-                # 初始状态：显示图标（因为窗口还没创建）
-                MainWindow._global_floating_icon.animate_show()
-            else:
-                # 如果已经存在，连接信号
-                MainWindow._global_floating_icon.clicked.connect(self._show_airdrop_from_icon)
-            
-            self._floating_icon = MainWindow._global_floating_icon
-        except Exception as e:
-            import sys
-            print(f"[WARNING] 创建悬浮图标失败: {e}", file=sys.stderr)
-            self._floating_icon = None
-    
     def _show_airdrop(self):
         """显示隔空投送窗口（从系统托盘菜单调用）"""
-        self._show_airdrop_window()
-    
-    def _show_airdrop_from_icon(self):
-        """从悬浮图标显示窗口"""
         self._show_airdrop_window()
     
     def _show_airdrop_window(self):
@@ -742,7 +768,6 @@ class MainWindow(QMainWindow):
                             # NSWindowStyleMaskResizable = 8
                             # 获取当前样式掩码
                             current_mask = ns_window.styleMask()
-                            print(f"[DEBUG] Current window style mask: {current_mask}", file=sys.stderr)
                             
                             # 移除 Miniaturizable (4) 和 Resizable (8)
                             # 保留 Titled (1) 和 Closable (2)
@@ -750,7 +775,6 @@ class MainWindow(QMainWindow):
                             style_mask = style_mask | 1 | 2  # 确保 Titled 和 Closable 存在
                             
                             ns_window.setStyleMask_(style_mask)
-                            print(f"[DEBUG] Window style mask updated: {current_mask} -> {style_mask} (removed Miniaturizable=4 and Resizable=8, ensured Titled=1 and Closable=2)", file=sys.stderr)
                         except Exception as e:
                             import sys
                             print(f"[WARNING] Failed to set window style: {e}", file=sys.stderr)
@@ -773,14 +797,12 @@ class MainWindow(QMainWindow):
                         # 获取QWindow对象
                         qwindow = self._airdrop_window.windowHandle()
                         if not qwindow:
-                            print(f"[DEBUG] QWindow not available yet, retrying...", file=sys.stderr)
                             QTimer.singleShot(100, disable_buttons)
                             return
                         
                         # 获取NSView
                         ns_view = qwindow.winId()
                         if not ns_view:
-                            print(f"[DEBUG] NSView not available", file=sys.stderr)
                             return
                         
                         # 通过NSView获取NSWindow
@@ -788,16 +810,12 @@ class MainWindow(QMainWindow):
                         from ctypes import c_void_p
                         view = objc.objc_object(c_void_p=c_void_p(int(ns_view)))
                         if not view:
-                            print(f"[DEBUG] NSView object not available", file=sys.stderr)
                             return
                         
                         # 获取窗口
                         ns_window = view.window()
                         if not ns_window:
-                            print(f"[DEBUG] NSWindow not available", file=sys.stderr)
                             return
-                        
-                        print(f"[DEBUG] Got NSWindow, disabling buttons", file=sys.stderr)
                         
                         # 方法1：通过设置窗口样式掩码来隐藏按钮（更可靠）
                         try:
@@ -808,7 +826,6 @@ class MainWindow(QMainWindow):
                             # NSWindowStyleMaskResizable = 8 (调整大小，通常包含最大化)
                             # 获取当前样式掩码，只移除 Miniaturizable 和 Resizable，保留其他所有样式
                             current_mask = ns_window.styleMask()
-                            print(f"[DEBUG] Current window style mask: {current_mask}", file=sys.stderr)
                             
                             # 移除 Miniaturizable (4) 和 Resizable (8)
                             # 保留其他所有样式（包括 Titled=1 和 Closable=2）
@@ -820,7 +837,6 @@ class MainWindow(QMainWindow):
                             style_mask = style_mask | 2  # 确保 Closable
                             
                             ns_window.setStyleMask_(style_mask)
-                            print(f"[DEBUG] Window style mask updated: {current_mask} -> {style_mask} (removed Miniaturizable=4 and Resizable=8, ensured Titled=1 and Closable=2)", file=sys.stderr)
                             
                             # 验证设置是否成功
                             new_mask = ns_window.styleMask()
@@ -828,68 +844,15 @@ class MainWindow(QMainWindow):
                                 print(f"[WARNING] Style mask not set correctly! Expected {style_mask}, got {new_mask}", file=sys.stderr)
                                 # 强制设置
                                 ns_window.setStyleMask_(style_mask)
-                                print(f"[DEBUG] Forced style mask to {style_mask}", file=sys.stderr)
                             
-                            # 禁止双击窗口头部扩大（重写 performZoom: 方法）
+                            # 禁止双击窗口头部扩大（通过设置 resizeIncrements 来防止调整大小）
                             try:
-                                import objc
-                                
-                                # 方法1：重写 performZoom: 方法，让它什么都不做
-                                def empty_zoom(self_obj, sender):
-                                    # 不执行任何操作，禁止双击扩大
-                                    print(f"[DEBUG] performZoom: called but blocked", file=sys.stderr)
-                                    pass
-                                
-                                # 使用 objc 方法替换
-                                # performZoom: 的方法签名是 v@:@ (void return, self, sender)
-                                try:
-                                    objc.classAddMethod(
-                                        ns_window.__class__,
-                                        objc.selector(empty_zoom, signature=b'v@:@'),
-                                        'performZoom:'
-                                    )
-                                    print(f"[DEBUG] performZoom: method overridden", file=sys.stderr)
-                                except Exception as e1:
-                                    print(f"[WARNING] Failed to override performZoom: {e1}", file=sys.stderr)
-                                    # 尝试直接在实例上添加方法
-                                    try:
-                                        objc.classAddMethod(
-                                            objc.lookUpClass('NSWindow'),
-                                            objc.selector(empty_zoom, signature=b'v@:@'),
-                                            'performZoom:'
-                                        )
-                                        print(f"[DEBUG] performZoom: method overridden on NSWindow class", file=sys.stderr)
-                                    except Exception as e2:
-                                        print(f"[WARNING] Failed to override performZoom on NSWindow class: {e2}", file=sys.stderr)
-                                
-                                # 方法2：重写 windowShouldZoom:toFrame: 方法，返回 False
-                                def should_zoom(self_obj, window, new_frame):
-                                    # 返回 False，禁止缩放
-                                    print(f"[DEBUG] windowShouldZoom:toFrame: called but returning False", file=sys.stderr)
-                                    return False
-                                
-                                try:
-                                    objc.classAddMethod(
-                                        ns_window.__class__,
-                                        objc.selector(should_zoom, signature=b'c@:@{CGRect={CGPoint=dd}{CGSize=dd}}'),
-                                        'windowShouldZoom:toFrame:'
-                                    )
-                                    print(f"[DEBUG] windowShouldZoom:toFrame: method overridden", file=sys.stderr)
-                                except Exception as e3:
-                                    print(f"[WARNING] Failed to override windowShouldZoom:toFrame: {e3}", file=sys.stderr)
-                                
-                                # 方法3：设置窗口的 resizeIncrements 来防止调整大小
-                                try:
-                                    from AppKit import NSSize
-                                    # 设置一个非常大的增量，这样窗口就无法调整大小
-                                    huge_size = NSSize(10000, 10000)
-                                    ns_window.setResizeIncrements_(huge_size)
-                                    print(f"[DEBUG] Resize increments set to prevent resizing", file=sys.stderr)
-                                except Exception as e4:
-                                    print(f"[WARNING] Failed to set resize increments: {e4}", file=sys.stderr)
-                                
-                            except Exception as zoom_e:
-                                print(f"[WARNING] Failed to disable zoom method: {zoom_e}", file=sys.stderr)
+                                from AppKit import NSSize
+                                # 设置一个非常大的增量，这样窗口就无法调整大小
+                                huge_size = NSSize(10000, 10000)
+                                ns_window.setResizeIncrements_(huge_size)
+                            except Exception as e4:
+                                print(f"[WARNING] Failed to set resize increments: {e4}", file=sys.stderr)
                         except Exception as e:
                             print(f"[WARNING] Failed to set window style mask: {e}", file=sys.stderr)
                         
@@ -925,22 +888,18 @@ class MainWindow(QMainWindow):
             y = (screen.height() - window_height) // 2
             self._airdrop_window.move(x, y)
             
-            # 连接信号：窗口拖到边缘时隐藏并显示图标（传递图标位置）
-            self._airdrop_window.should_hide_to_icon.connect(self._hide_airdrop_to_icon)
+            # 窗口关闭时直接隐藏（不再需要悬浮图标）
             # 监听窗口关闭事件
             self._airdrop_window.destroyed.connect(self._on_airdrop_window_destroyed)
             # 重写关闭事件
             def custom_close_event(event):
                 # 不真正关闭，而是隐藏到图标（关闭时也触发边缘隐藏动画）
-                import sys
-                print(f"[DEBUG] Close button clicked!", file=sys.stderr)
                 event.ignore()
                 # 停止传输管理器
                 if hasattr(self._airdrop_window, '_transfer_manager') and self._airdrop_window._transfer_manager:
                     self._airdrop_window._transfer_manager.stop()
                 # 触发窗口隐藏动画（模拟拖到边缘）
                 if self._airdrop_window:
-                    print(f"[DEBUG] Window isVisible={self._airdrop_window.isVisible()}", file=sys.stderr)
                     # 重置拖拽状态
                     if hasattr(self._airdrop_window, '_edge_triggered'):
                         self._airdrop_window._edge_triggered = False
@@ -948,23 +907,16 @@ class MainWindow(QMainWindow):
             self._airdrop_window.closeEvent = custom_close_event
             
         
-        # 显示窗口，隐藏图标（确保互斥）
-        # 判断逻辑：如果窗口已经存在且之前被隐藏过（从图标恢复），否则是首次打开
+        # 判断逻辑：如果窗口已经存在且之前被隐藏过（从边缘恢复），否则是首次打开
         is_restoring = (self._airdrop_window is not None and 
                        hasattr(self._airdrop_window, '_was_hidden_to_icon') and 
                        self._airdrop_window._was_hidden_to_icon)
         
-        if is_restoring and self._floating_icon and self._floating_icon.isVisible():
-            # 从图标恢复：执行恢复动画
-            import sys
-            print(f"[DEBUG] Restoring window from icon (with animation)", file=sys.stderr)
-            self._floating_icon.animate_hide()
-            # 等待图标隐藏完成后再显示窗口（带动画）
-            QTimer.singleShot(250, lambda: self._show_window_after_icon_hidden())
+        if is_restoring:
+            # 从边缘恢复：执行恢复动画
+            QTimer.singleShot(50, lambda: self._show_window_after_hidden())
         else:
             # 首次打开：直接显示正常大小的窗口（无动画）
-            import sys
-            print(f"[DEBUG] First time opening window (direct show)", file=sys.stderr)
             self._show_window_directly()
     
     def _show_window_directly(self):
@@ -973,11 +925,6 @@ class MainWindow(QMainWindow):
             return
         
         import sys
-        # 确保图标已完全隐藏（互斥）
-        if self._floating_icon:
-            self._floating_icon.hide()
-            self._floating_icon.setVisible(False)
-        
         # 计算窗口尺寸和位置
         screen = QApplication.primaryScreen().geometry()
         window_width = 480
@@ -986,8 +933,6 @@ class MainWindow(QMainWindow):
         x = screen.right() - window_width
         y = (screen.height() - window_height) // 2
         
-        print(f"[DEBUG] Showing window directly at ({x}, {y}) with size ({window_width}, {window_height})", file=sys.stderr)
-        
         # 直接设置窗口大小和位置
         self._airdrop_window.setGeometry(QRect(x, y, window_width, window_height))
         self._airdrop_window.show()
@@ -995,126 +940,84 @@ class MainWindow(QMainWindow):
         self._airdrop_window.raise_()
         self._airdrop_window.activateWindow()
     
-    def _show_window_after_icon_hidden(self):
-        """图标隐藏后显示窗口（带动画：从图标位置恢复到正常大小）"""
+    def _show_window_after_hidden(self):
+        """从隐藏位置恢复显示窗口（从隐藏位置显示）"""
         if not self._airdrop_window:
             return
         
         import sys
         from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
         
-        # 确保图标已完全隐藏（互斥）
-        if self._floating_icon:
-            icon_pos = self._floating_icon.pos()
-            self._floating_icon.hide()
-            self._floating_icon.setVisible(False)
-        else:
-            # 如果没有图标位置，使用屏幕右侧边缘
-            screen = QApplication.primaryScreen().geometry()
-            icon_pos = QPoint(screen.right() - 36, screen.height() // 2 - 18)
-        
-        # 目标位置和大小（正常窗口）- 使用与创建窗口时相同的尺寸计算逻辑
         screen = QApplication.primaryScreen().geometry()
         window_width = 480
         max_height = min(int(screen.height() * 0.85), 2400)
         target_width = window_width
         target_height = max(300, max_height // 2)  # 高度减半，至少300px
-        # 右侧屏幕边缘垂直居中
+        
+        # 检查是否有保存的隐藏前位置（窗口隐藏前的位置）
+        if hasattr(self._airdrop_window, '_before_hide_rect') and self._airdrop_window._before_hide_rect:
+            # 从隐藏前的位置恢复：使用隐藏前的位置和大小
+            before_hide_rect = self._airdrop_window._before_hide_rect
+            target_x = before_hide_rect.x()
+            target_y = before_hide_rect.y()
+            target_width = before_hide_rect.width()
+            target_height = before_hide_rect.height()
+            
+            import sys
+            print(f"[主窗口] 隐藏前位置: ({target_x}, {target_y}), 大小={target_width}x{target_height}", file=sys.stderr)
+            print(f"[主窗口] 屏幕范围: left={screen.left()}, right={screen.right()}, width={screen.width()}, height={screen.height()}", file=sys.stderr)
+            
+            # 确保窗口完全在屏幕内（如果位置在屏幕外，调整到屏幕边缘）
+            # 检查左边缘
+            if target_x < screen.left():
+                target_x = screen.left()
+                print(f"[主窗口] 调整X: 左边缘超出，调整为 {target_x}", file=sys.stderr)
+            # 检查右边缘
+            elif target_x + target_width > screen.right():
+                target_x = screen.right() - target_width
+                print(f"[主窗口] 调整X: 右边缘超出，调整为 {target_x}", file=sys.stderr)
+            
+            # 检查上边缘
+            if target_y < screen.top():
+                target_y = screen.top()
+                print(f"[主窗口] 调整Y: 上边缘超出，调整为 {target_y}", file=sys.stderr)
+            # 检查下边缘
+            elif target_y + target_height > screen.bottom():
+                target_y = screen.bottom() - target_height
+                print(f"[主窗口] 调整Y: 下边缘超出，调整为 {target_y}", file=sys.stderr)
+            
+            # 最终检查：确保窗口完全在屏幕内
+            if target_x < screen.left() or target_x + target_width > screen.right():
+                # 如果还是超出，使用默认位置（右侧屏幕边缘垂直居中）
+                target_x = screen.right() - target_width
+                target_y = (screen.height() - target_height) // 2
+                print(f"[主窗口] 使用默认位置: ({target_x}, {target_y})", file=sys.stderr)
+            
+            # 使用动画从隐藏位置滑出显示
+            target_rect = QRect(target_x, target_y, target_width, target_height)
+            print(f"[主窗口] 最终目标位置=({target_x}, {target_y}), 大小={target_width}x{target_height}, 窗口右边缘={target_x + target_width}, 屏幕右边缘={screen.right()}", file=sys.stderr)
+            self._airdrop_window._animate_from_icon(target_rect)
+            return
+        
+        # 如果没有隐藏位置（不应该发生，但作为备用）
+        # 从右侧屏幕边缘垂直居中显示
         target_x = screen.right() - target_width
         target_y = (screen.height() - target_height) // 2
         
-        # 起始位置和大小（从图标位置开始）
-        start_x = icon_pos.x()
-        start_y = icon_pos.y()
-        start_width = 36
-        start_height = 36
-        
-        print(f"[DEBUG] Restoring window from icon position ({start_x}, {start_y}, {start_width}x{start_height}) to ({target_x}, {target_y}, {target_width}x{target_height})", file=sys.stderr)
-        
-        # 设置窗口初始状态（小尺寸，在图标位置）
-        self._airdrop_window.setGeometry(QRect(start_x, start_y, start_width, start_height))
+        self._airdrop_window.setGeometry(QRect(target_x, target_y, target_width, target_height))
         self._airdrop_window.show()
         self._airdrop_window.setVisible(True)
         self._airdrop_window.raise_()
+        self._airdrop_window.activateWindow()
         
-        # 创建恢复动画
-        restore_animation = QPropertyAnimation(self._airdrop_window, b"geometry")
-        restore_animation.setDuration(300)
-        restore_animation.setStartValue(QRect(start_x, start_y, start_width, start_height))
-        restore_animation.setEndValue(QRect(target_x, target_y, target_width, target_height))
-        restore_animation.setEasingCurve(QEasingCurve.OutCubic)
-        
-        def on_restore_finished():
-            print(f"[DEBUG] ===== Window restore animation FINISHED =====", file=sys.stderr)
-            # 重置隐藏标记（恢复完成）
-            if self._airdrop_window:
-                self._airdrop_window._was_hidden_to_icon = False
-                # 强制确保窗口尺寸正确（防止动画未完全执行）
-                current_rect = self._airdrop_window.geometry()
-                print(f"[DEBUG] Current window rect after animation: {current_rect}", file=sys.stderr)
-                print(f"[DEBUG] Expected size: {target_width}x{target_height}, position: ({target_x}, {target_y})", file=sys.stderr)
-                
-                # 无论尺寸是否正确，都强制设置一次（确保窗口尺寸正确）
-                self._airdrop_window.setGeometry(QRect(target_x, target_y, target_width, target_height))
-                print(f"[DEBUG] Window size forced to {target_width}x{target_height} at ({target_x}, {target_y})", file=sys.stderr)
-                
-                # 验证设置是否成功
-                verify_rect = self._airdrop_window.geometry()
-                if verify_rect.width() == target_width and verify_rect.height() == target_height:
-                    print(f"[DEBUG] Window size verified: {verify_rect.width()}x{verify_rect.height()}", file=sys.stderr)
-                else:
-                    print(f"[ERROR] Window size verification failed: {verify_rect.width()}x{verify_rect.height()}, expected {target_width}x{target_height}", file=sys.stderr)
-            
-            self._airdrop_window.activateWindow()
-        
-        def on_animation_state_changed(new_state, old_state):
-            from PySide6.QtCore import QAbstractAnimation
-            state_names = {QAbstractAnimation.Stopped: "Stopped", 
-                          QAbstractAnimation.Running: "Running", 
-                          QAbstractAnimation.Paused: "Paused"}
-            print(f"[DEBUG] Restore animation state changed: {state_names.get(old_state, old_state)} -> {state_names.get(new_state, new_state)}", file=sys.stderr)
-            if new_state == QAbstractAnimation.Stopped:
-                print(f"[DEBUG] Restore animation stopped, checking if finished callback was called", file=sys.stderr)
-                # 如果动画停止但回调未执行，手动触发
-                QTimer.singleShot(50, on_restore_finished)
-        
-        restore_animation.finished.connect(on_restore_finished)
-        restore_animation.stateChanged.connect(on_animation_state_changed)
-        restore_animation.start()
-        
-        print(f"[DEBUG] Window restore animation started: from ({start_x}, {start_y}, {start_width}x{start_height}) to ({target_x}, {target_y}, {target_width}x{target_height})", file=sys.stderr)
+        # 重置隐藏标记
+        if self._airdrop_window:
+            self._airdrop_window._was_hidden_to_icon = False
     
-    
-    def _hide_airdrop_to_icon(self, icon_target_pos: Optional[QPoint] = None):
-        """窗口拖到边缘/关闭，隐藏窗口并显示图标"""
-        import sys
-        print(f"[DEBUG] _hide_airdrop_to_icon called with icon_target_pos={icon_target_pos}", file=sys.stderr)
-        
-        if not self._airdrop_window:
-            print(f"[DEBUG] _airdrop_window is None", file=sys.stderr)
-            return
-        
-        # 确保窗口已隐藏（互斥）
-        if self._airdrop_window.isVisible():
-            print(f"[DEBUG] Window still visible, hiding it", file=sys.stderr)
-            self._airdrop_window.hide()
-            self._airdrop_window.setVisible(False)
-        
-        # 显示悬浮图标（带动画，确保互斥）
-        if self._floating_icon:
-            print(f"[DEBUG] Showing floating icon at {icon_target_pos}", file=sys.stderr)
-            # 延迟一点显示图标，让窗口完全隐藏后再显示
-            # 如果指定了目标位置（从窗口隐藏位置），从该位置动画出现
-            QTimer.singleShot(100, lambda: self._floating_icon.animate_show(icon_target_pos))
-        else:
-            print(f"[DEBUG] _floating_icon is None", file=sys.stderr)
     
     def _on_airdrop_window_destroyed(self):
         """隔空投送窗口被销毁"""
         self._airdrop_window = None
-        # 显示悬浮图标（确保互斥）
-        if self._floating_icon:
-            self._floating_icon.animate_show()
     
     def _on_tray_icon_activated(self, reason):
         """托盘图标激活事件"""

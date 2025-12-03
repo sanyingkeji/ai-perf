@@ -65,6 +65,23 @@ jobs:
           export PATH="$PYENV_ROOT/bin:$PATH"
           eval "$(pyenv init - bash)"
           echo "使用 pyenv 安装 Python 3.10.4..."
+          # 设置部署目标为 10.13，确保向后兼容性
+          # 问题分析：
+          # - 之前没有设置 MACOSX_DEPLOYMENT_TARGET，Python 使用了默认值（14.7）
+          # - 导致 Python 库链接了 macOS 13+ 的符号（如 _mkfifoat）
+          # - _mkfifoat 符号在 macOS 13.0+ 才可用，在 macOS 12.7.6 上会找不到
+          # 解决方案：
+          # - 在编译 Python 时设置 MACOSX_DEPLOYMENT_TARGET=10.13
+          # - 编译器会检查符号可用性，避免使用 macOS 13+ 的符号
+          # - 这样既能支持 macOS 10.13+，又能确保在 macOS 12.7.6 上运行
+          export MACOSX_DEPLOYMENT_TARGET=10.13
+          export CFLAGS="-mmacosx-version-min=10.13"
+          export LDFLAGS="-mmacosx-version-min=10.13"
+          export CPPFLAGS="-mmacosx-version-min=10.13"
+          # 确保编译器遵守部署目标，避免使用新版本符号
+          export CC="clang -mmacosx-version-min=10.13"
+          export CXX="clang++ -mmacosx-version-min=10.13"
+          echo "设置部署目标: MACOSX_DEPLOYMENT_TARGET=10.13 (支持 macOS 10.13+，避免使用 macOS 13+ 符号)"
           # 安装 Python 3.10.4（这可能需要几分钟）
           pyenv install -s 3.10.4 || {
             echo "警告: Python 3.10.4 安装失败，尝试继续..."
@@ -187,6 +204,9 @@ jobs:
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
+          CFLAGS: '-mmacosx-version-min=10.13'
+          LDFLAGS: '-mmacosx-version-min=10.13'
+          CPPFLAGS: '-mmacosx-version-min=10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
           SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
@@ -202,6 +222,48 @@ jobs:
           fi
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           "$PYTHON" ../scripts/build_client.py ${{ matrix.client }} macos
+      
+      - name: Verify deployment target
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 查找打包后的 .app 文件
+          APP_BUNDLE=$(find dist -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "⚠ 未找到 .app 文件，跳过验证"
+            exit 0
+          fi
+          echo "========================================"
+          echo "验证部署目标: $APP_BUNDLE"
+          echo "========================================"
+          # 检查 Python 库的部署目标
+          PYTHON_LIB="$APP_BUNDLE/Contents/Resources/libpython3.10.dylib"
+          if [ -f "$PYTHON_LIB" ]; then
+            echo "检查 Python 库部署目标:"
+            BUILD_VERSION=$(otool -l "$PYTHON_LIB" 2>/dev/null | grep -A 5 "LC_BUILD_VERSION" | grep "minos" || echo "")
+            if [ -n "$BUILD_VERSION" ]; then
+              echo "  $BUILD_VERSION"
+              if echo "$BUILD_VERSION" | grep -q "minos 1[0-1]\."; then
+                echo "  ✓ 部署目标正确（macOS 10.x 或 11.x）"
+              elif echo "$BUILD_VERSION" | grep -q "minos 12\."; then
+                echo "  ✓ 部署目标正确（macOS 12.x）"
+              else
+                echo "  ⚠ 警告: 部署目标可能过高"
+              fi
+            else
+              echo "  ⚠ 未找到构建版本信息"
+            fi
+            echo "检查是否引用 macOS 13+ 符号 (_mkfifoat):"
+            if nm -u "$PYTHON_LIB" 2>/dev/null | grep -q "_mkfifoat"; then
+              echo "  ⚠ 警告: Python 库仍引用 _mkfifoat 符号（macOS 13+）"
+              echo "  这可能导致在 macOS 12.7.6 上运行时出错"
+            else
+              echo "  ✓ Python 库未引用 _mkfifoat 符号"
+            fi
+          else
+            echo "⚠ 未找到 Python 库，跳过验证"
+          fi
+          echo "========================================"
       
       - name: Fix executable permissions
         if: steps.check_build.outputs.should_build == 'true'
@@ -261,6 +323,23 @@ jobs:
           export PATH="$PYENV_ROOT/bin:$PATH"
           eval "$(pyenv init - bash)"
           echo "使用 pyenv 安装 Python 3.10.4..."
+          # 设置部署目标为 10.13，确保向后兼容性
+          # 问题分析：
+          # - 之前没有设置 MACOSX_DEPLOYMENT_TARGET，Python 使用了默认值（14.7）
+          # - 导致 Python 库链接了 macOS 13+ 的符号（如 _mkfifoat）
+          # - _mkfifoat 符号在 macOS 13.0+ 才可用，在 macOS 12.7.6 上会找不到
+          # 解决方案：
+          # - 在编译 Python 时设置 MACOSX_DEPLOYMENT_TARGET=10.13
+          # - 编译器会检查符号可用性，避免使用 macOS 13+ 的符号
+          # - 这样既能支持 macOS 10.13+，又能确保在 macOS 12.7.6 上运行
+          export MACOSX_DEPLOYMENT_TARGET=10.13
+          export CFLAGS="-mmacosx-version-min=10.13"
+          export LDFLAGS="-mmacosx-version-min=10.13"
+          export CPPFLAGS="-mmacosx-version-min=10.13"
+          # 确保编译器遵守部署目标，避免使用新版本符号
+          export CC="clang -mmacosx-version-min=10.13"
+          export CXX="clang++ -mmacosx-version-min=10.13"
+          echo "设置部署目标: MACOSX_DEPLOYMENT_TARGET=10.13 (支持 macOS 10.13+，避免使用 macOS 13+ 符号)"
           # 安装 Python 3.10.4（这可能需要几分钟）
           pyenv install -s 3.10.4 || {
             echo "警告: Python 3.10.4 安装失败，尝试继续..."
@@ -383,6 +462,9 @@ jobs:
         if: steps.check_build.outputs.should_build == 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
+          CFLAGS: '-mmacosx-version-min=10.13'
+          LDFLAGS: '-mmacosx-version-min=10.13'
+          CPPFLAGS: '-mmacosx-version-min=10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
           SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
@@ -398,6 +480,48 @@ jobs:
           fi
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           "$PYTHON" ../scripts/build_client.py ${{ matrix.client }} macos
+      
+      - name: Verify deployment target
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 查找打包后的 .app 文件
+          APP_BUNDLE=$(find dist -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "⚠ 未找到 .app 文件，跳过验证"
+            exit 0
+          fi
+          echo "========================================"
+          echo "验证部署目标: $APP_BUNDLE"
+          echo "========================================"
+          # 检查 Python 库的部署目标
+          PYTHON_LIB="$APP_BUNDLE/Contents/Resources/libpython3.10.dylib"
+          if [ -f "$PYTHON_LIB" ]; then
+            echo "检查 Python 库部署目标:"
+            BUILD_VERSION=$(otool -l "$PYTHON_LIB" 2>/dev/null | grep -A 5 "LC_BUILD_VERSION" | grep "minos" || echo "")
+            if [ -n "$BUILD_VERSION" ]; then
+              echo "  $BUILD_VERSION"
+              if echo "$BUILD_VERSION" | grep -q "minos 1[0-1]\."; then
+                echo "  ✓ 部署目标正确（macOS 10.x 或 11.x）"
+              elif echo "$BUILD_VERSION" | grep -q "minos 12\."; then
+                echo "  ✓ 部署目标正确（macOS 12.x）"
+              else
+                echo "  ⚠ 警告: 部署目标可能过高"
+              fi
+            else
+              echo "  ⚠ 未找到构建版本信息"
+            fi
+            echo "检查是否引用 macOS 13+ 符号 (_mkfifoat):"
+            if nm -u "$PYTHON_LIB" 2>/dev/null | grep -q "_mkfifoat"; then
+              echo "  ⚠ 警告: Python 库仍引用 _mkfifoat 符号（macOS 13+）"
+              echo "  这可能导致在 macOS 12.7.6 上运行时出错"
+            else
+              echo "  ✓ Python 库未引用 _mkfifoat 符号"
+            fi
+          else
+            echo "⚠ 未找到 Python 库，跳过验证"
+          fi
+          echo "========================================"
       
       - name: Fix executable permissions
         if: steps.check_build.outputs.should_build == 'true'

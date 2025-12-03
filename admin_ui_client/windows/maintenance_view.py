@@ -2940,6 +2940,390 @@ class _RestartServicesWorker(QRunnable):
             self.signals.error.emit(f"重启服务失败: {e}")
 
 
+class _ServerFileListWorkerSignals(QObject):
+    finished = Signal(list)  # List[Dict]
+    error = Signal(str)
+
+
+class _ServerFileListWorker(QRunnable):
+    """后台线程：通过SSH获取服务器文件列表"""
+    def __init__(self, ssh_config: Dict[str, Any], remote_dir: str):
+        super().__init__()
+        self.signals = _ServerFileListWorkerSignals()
+        self._ssh_config = ssh_config
+        self._remote_dir = remote_dir
+
+    @Slot()
+    def run(self) -> None:
+        # 检查SSH配置
+        if not self._ssh_config.get("host") or not self._ssh_config.get("username"):
+            self.signals.error.emit("请先配置SSH服务器信息")
+            return
+        
+        try:
+            # 创建SSH客户端
+            ssh = SSHClient(
+                host=self._ssh_config["host"],
+                port=self._ssh_config.get("port", 22),
+                username=self._ssh_config["username"],
+                password=self._ssh_config.get("password"),
+                key_path=self._ssh_config.get("key_path")
+            )
+            
+            if not ssh.connect():
+                self.signals.error.emit("SSH连接失败，请检查配置")
+                return
+            
+            # 列出目录下的文件和文件夹
+            result = ssh.list_files(self._remote_dir, recursive=False)
+            ssh.close()
+            
+            if not result["success"]:
+                self.signals.error.emit(result.get("error", "获取文件列表失败"))
+                return
+            
+            # 排序：目录在前，文件在后，都按名称排序
+            files = result["files"]
+            dirs = [f for f in files if f["is_dir"]]
+            regular_files = [f for f in files if not f["is_dir"]]
+            dirs.sort(key=lambda x: x["name"].lower())
+            regular_files.sort(key=lambda x: x["name"].lower())
+            
+            # 合并：目录在前，文件在后
+            sorted_files = dirs + regular_files
+            self.signals.finished.emit(sorted_files)
+        except Exception as e:
+            self.signals.error.emit(f"获取文件列表失败：{e}")
+
+
+class ServerFileBrowserDialog(QDialog):
+    """通过SSH浏览服务器文件的对话框"""
+    def __init__(self, parent=None, ssh_config: Dict[str, Any] = None, initial_dir: str = "/ai-perf/scripts"):
+        super().__init__(parent)
+        self.setWindowTitle("选择服务器脚本文件")
+        self.setMinimumSize(600, 500)
+        self._ssh_config = ssh_config
+        self._current_dir = initial_dir
+        self._selected_path = None
+        self._thread_pool = QThreadPool()
+        self._init_ui()
+        self._load_directory(initial_dir)
+    
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        
+        # 路径显示和导航
+        path_layout = QHBoxLayout()
+        path_layout.setSpacing(8)
+        
+        path_label = QLabel("当前路径:")
+        path_label.setFixedWidth(80)
+        path_layout.addWidget(path_label)
+        
+        self.path_input = QLineEdit()
+        self.path_input.setReadOnly(False)  # 允许手动输入路径
+        self.path_input.setFont(QFont("Courier New", 10))
+        self.path_input.returnPressed.connect(self._on_path_entered)  # 按回车键跳转到输入的路径
+        path_layout.addWidget(self.path_input, 1)
+        
+        # 返回上一级按钮
+        self.up_btn = QPushButton("↑")
+        self.up_btn.setFixedWidth(40)
+        self.up_btn.setToolTip("返回上一级目录")
+        self.up_btn.clicked.connect(self._on_up_clicked)
+        path_layout.addWidget(self.up_btn)
+        
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setFixedWidth(60)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        path_layout.addWidget(self.refresh_btn)
+        
+        layout.addLayout(path_layout)
+        
+        # 文件列表
+        self.file_list = QListWidget()
+        self.file_list.setFont(QFont("Courier New", 10))
+        self.file_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        layout.addWidget(self.file_list, 1)
+        
+        # 状态标签
+        self.status_label = QLabel("正在加载...")
+        self.status_label.setStyleSheet("color: #666; padding: 4px;")
+        layout.addWidget(self.status_label)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setFixedWidth(80)
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_btn)
+        
+        self.select_btn = QPushButton("选择")
+        self.select_btn.setFixedWidth(80)
+        self.select_btn.clicked.connect(self._on_select_clicked)
+        self.select_btn.setEnabled(False)
+        button_layout.addWidget(self.select_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # 连接文件列表选择事件
+        self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
+    
+    def _load_directory(self, remote_dir: str):
+        """加载指定目录的文件列表"""
+        if not self._ssh_config or not self._ssh_config.get("host"):
+            QMessageBox.warning(self, "错误", "请先配置SSH服务器信息（在系统设置TAB中配置）")
+            self.reject()
+            return
+        
+        self._current_dir = remote_dir
+        self.path_input.setText(remote_dir)
+        self.status_label.setText("正在加载...")
+        self.file_list.clear()
+        self.select_btn.setEnabled(False)
+        
+        # 创建后台任务
+        worker = _ServerFileListWorker(self._ssh_config, remote_dir)
+        worker.signals.finished.connect(self._on_files_loaded)
+        worker.signals.error.connect(self._on_load_error)
+        self._thread_pool.start(worker)
+    
+    def _on_files_loaded(self, files: List[Dict]):
+        """文件列表加载完成"""
+        self.file_list.clear()
+        
+        if not files:
+            self.status_label.setText("目录为空")
+            return
+        
+        for file_info in files:
+            name = file_info["name"]
+            is_dir = file_info["is_dir"]
+            
+            # 创建列表项
+            item = QListWidgetItem(name)
+            if is_dir:
+                item.setText(f"📁 {name}")
+                item.setData(Qt.ItemDataRole.UserRole, {"path": file_info["path"], "is_dir": True})
+            else:
+                # 只显示 .sh 文件
+                if name.endswith(".sh"):
+                    item.setText(f"📄 {name}")
+                    item.setData(Qt.ItemDataRole.UserRole, {"path": file_info["path"], "is_dir": False})
+                else:
+                    continue  # 跳过非 .sh 文件
+        
+        self.status_label.setText(f"共 {self.file_list.count()} 个文件/目录")
+    
+    def _on_load_error(self, error_msg: str):
+        """加载文件列表失败"""
+        self.status_label.setText(f"加载失败: {error_msg}")
+        QMessageBox.warning(self, "错误", f"无法加载目录：\n{error_msg}")
+    
+    def _on_item_double_clicked(self, item: QListWidgetItem):
+        """双击列表项"""
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        
+        if data["is_dir"]:
+            # 如果是目录，进入该目录
+            self._load_directory(data["path"])
+        else:
+            # 如果是文件，直接选择
+            self._selected_path = data["path"]
+            self.accept()
+    
+    def _on_selection_changed(self):
+        """选择项改变"""
+        current_item = self.file_list.currentItem()
+        if current_item:
+            data = current_item.data(Qt.ItemDataRole.UserRole)
+            if data and not data["is_dir"]:
+                self.select_btn.setEnabled(True)
+            else:
+                self.select_btn.setEnabled(False)
+        else:
+            self.select_btn.setEnabled(False)
+    
+    def _on_select_clicked(self):
+        """选择按钮点击"""
+        current_item = self.file_list.currentItem()
+        if current_item:
+            data = current_item.data(Qt.ItemDataRole.UserRole)
+            if data and not data["is_dir"]:
+                self._selected_path = data["path"]
+                self.accept()
+    
+    def _on_up_clicked(self):
+        """返回上一级目录"""
+        if self._current_dir == "/":
+            return
+        
+        # 获取父目录
+        parent_dir = str(Path(self._current_dir).parent)
+        if parent_dir == ".":
+            parent_dir = "/"
+        self._load_directory(parent_dir)
+    
+    def _on_refresh_clicked(self):
+        """刷新当前目录"""
+        self._load_directory(self._current_dir)
+    
+    def _on_path_entered(self):
+        """用户手动输入路径并按回车"""
+        entered_path = self.path_input.text().strip()
+        if entered_path:
+            # 规范化路径（确保以 / 开头）
+            if not entered_path.startswith("/"):
+                entered_path = "/" + entered_path
+            self._load_directory(entered_path)
+    
+    def get_selected_path(self) -> Optional[str]:
+        """获取选中的文件路径"""
+        return self._selected_path
+
+
+class _ReadScreenOutputWorkerSignals(QObject):
+    output = Signal(str)  # 新的输出内容
+    length_updated = Signal(int)  # 更新后的总长度
+
+
+class _ReadScreenOutputWorker(QRunnable):
+    """后台线程：读取screen输出"""
+    def __init__(self, ssh_client, screen_name: str, last_length: int):
+        super().__init__()
+        self.signals = _ReadScreenOutputWorkerSignals()
+        self._ssh_client = ssh_client
+        self._screen_name = screen_name
+        self._last_length = last_length
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            # 获取 screen 的输出
+            cmd = f"screen -S {self._screen_name} -X hardcopy /tmp/screen_output_{self._screen_name}.txt 2>/dev/null && cat /tmp/screen_output_{self._screen_name}.txt 2>/dev/null || echo ''"
+            result = self._ssh_client.execute(cmd)
+            
+            if result.get("stdout"):
+                full_output = result["stdout"]
+                # 只返回新增的内容（增量读取）
+                if len(full_output) > self._last_length:
+                    new_output = full_output[self._last_length:]
+                    self.signals.output.emit(new_output)
+                    self.signals.length_updated.emit(len(full_output))
+                else:
+                    # 没有新内容，也要通知更新长度（重置标志）
+                    self.signals.length_updated.emit(self._last_length)
+            else:
+                # 没有输出，也要通知更新长度（重置标志）
+                self.signals.length_updated.emit(self._last_length)
+        except Exception as e:
+            # 发生错误时也要重置标志
+            self.signals.length_updated.emit(self._last_length)
+
+
+class _SendCommandWorkerSignals(QObject):
+    finished = Signal()
+    error = Signal(str)
+
+
+class _SendCommandWorker(QRunnable):
+    """后台线程：发送命令到screen"""
+    def __init__(self, ssh_client, screen_name: str, cmd: str):
+        super().__init__()
+        self.signals = _SendCommandWorkerSignals()
+        self._ssh_client = ssh_client
+        self._screen_name = screen_name
+        self._cmd = cmd
+    
+    @Slot()
+    def run(self) -> None:
+        try:
+            # 转义特殊字符
+            cmd_escaped = self._cmd.replace("'", "'\\''")
+            # 发送命令到 screen（使用 stuff 命令）
+            execute_cmd = f"screen -S {self._screen_name} -X stuff '{cmd_escaped}\\n'"
+            result = self._ssh_client.execute(execute_cmd)
+            
+            if not result.get("success"):
+                self.signals.error.emit(f"发送命令失败: {result.get('stderr', '未知错误')}")
+            else:
+                self.signals.finished.emit()
+        except Exception as e:
+            self.signals.error.emit(f"发送命令失败: {e}")
+
+
+class _InitSSHWorkerSignals(QObject):
+    connected = Signal(object)  # SSH客户端对象
+    content_loaded = Signal(str)  # screen内容
+    error = Signal(str)  # 错误消息
+
+
+class _InitSSHWorker(QRunnable):
+    """后台线程：初始化SSH连接并加载screen内容"""
+    def __init__(self, ssh_config: Dict[str, Any], screen_name: str):
+        super().__init__()
+        self.signals = _InitSSHWorkerSignals()
+        self._ssh_config = ssh_config
+        self._screen_name = screen_name
+    
+    @Slot()
+    def run(self) -> None:
+        import logging
+        # 临时禁用paramiko的详细日志，避免控制台输出大量错误信息
+        paramiko_logger = logging.getLogger("paramiko")
+        original_level = paramiko_logger.level
+        paramiko_logger.setLevel(logging.ERROR)  # 只显示ERROR级别以上的日志
+        
+        try:
+            from utils.ssh_client import SSHClient
+            
+            # 创建并连接SSH（使用较少的重试次数，避免长时间阻塞和大量日志）
+            ssh = SSHClient(**self._ssh_config)
+            # 只重试1次，延迟1秒，避免产生大量错误日志
+            if not ssh.connect(max_retries=1, retry_delay=1.0):
+                self.signals.error.emit("SSH连接失败，请检查配置")
+                return
+            
+            # 确保 screen 存在
+            check_cmd = f"screen -list | grep -q {self._screen_name} || screen -dmS {self._screen_name}"
+            result = ssh.execute(check_cmd)
+            
+            if not result.get("success"):
+                ssh.close()
+                self.signals.error.emit(f"创建 screen 失败: {result.get('stderr', '未知错误')}")
+                return
+            
+            # 读取screen内容
+            cmd = f"screen -S {self._screen_name} -X hardcopy /tmp/screen_output_{self._screen_name}.txt 2>/dev/null && cat /tmp/screen_output_{self._screen_name}.txt 2>/dev/null || echo ''"
+            result = ssh.execute(cmd)
+            
+            content = ""
+            if result.get("stdout"):
+                content = result["stdout"]
+            
+            # 发送SSH客户端和内容（总是发送，即使内容为空）
+            self.signals.connected.emit(ssh)
+            self.signals.content_loaded.emit(content if content else "")
+        except Exception as e:
+            # 简化错误消息，避免输出详细的堆栈信息
+            error_msg = str(e)
+            if "Error reading SSH protocol banner" in error_msg:
+                error_msg = "SSH连接失败：无法读取SSH协议横幅，请检查网络连接和SSH配置"
+            elif "SSHException" in error_msg:
+                error_msg = "SSH连接失败，请检查SSH服务器地址、端口和认证信息"
+            self.signals.error.emit(error_msg)
+        finally:
+            # 恢复原始日志级别
+            paramiko_logger.setLevel(original_level)
+
+
 class ScriptExecutionTab(QWidget):
     """脚本执行 TAB：通过 SSH 在服务器端 screen 中执行脚本"""
     def __init__(self, parent=None):
@@ -2948,6 +3332,10 @@ class ScriptExecutionTab(QWidget):
         self._ssh_client = None
         self._screen_name = "fromAdminClient"
         self._output_timer = None
+        self._last_output_length = 0  # 上次读取的输出长度，用于增量读取
+        self._is_reading_output = False  # 是否正在读取输出（防止重复执行）
+        self._is_initializing_ssh = False  # 是否正在初始化SSH（防止重复初始化）
+        self._ssh_init_failed = False  # SSH初始化是否已失败（避免重复尝试）
         self._search_matches = []  # 存储所有匹配项的位置
         self._current_match_index = -1  # 当前匹配项的索引
         self._search_highlight_format = None  # 高亮格式
@@ -2959,6 +3347,8 @@ class ScriptExecutionTab(QWidget):
         self._load_readme()
         self._init_theme_detection()
         self._init_theme_detection()
+        # 延迟初始化SSH连接（在UI加载完成后，使用后台线程避免卡顿）
+        QTimer.singleShot(2000, self._init_ssh_connection)
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -3081,49 +3471,48 @@ class ScriptExecutionTab(QWidget):
         right_layout.setSpacing(8)
         
         # 标题
-        title_label = QLabel("脚本执行")
+        title_label = QLabel("命令行执行")
         title_label.setFont(QFont("Arial", 14, QFont.Bold))
         right_layout.addWidget(title_label)
         
-        # Script path 输入框和文件选择按钮
-        script_layout = QHBoxLayout()
-        script_layout.setSpacing(8)
+        # 命令行输入框（类似终端提示符）
+        command_layout = QHBoxLayout()
+        command_layout.setSpacing(8)
         
-        script_label = QLabel("Script path:")
-        script_label.setFixedWidth(100)
-        script_layout.addWidget(script_label)
+        # 提示符标签
+        prompt_label = QLabel("$")
+        prompt_label.setFont(QFont("Menlo", 12, QFont.Bold))
+        prompt_label.setStyleSheet("color: #00FF00;")  # 绿色提示符
+        prompt_label.setFixedWidth(20)
+        command_layout.addWidget(prompt_label)
         
-        self.script_path_input = QLineEdit()
-        self.script_path_input.setPlaceholderText("例如: /ai-perf/scripts/run_daily_pipeline.sh")
-        script_layout.addWidget(self.script_path_input, 1)
+        # 命令行输入框
+        self.command_input = QLineEdit()
+        self.command_input.setPlaceholderText("输入命令并按回车执行，例如: /ai-perf/scripts/run_daily_pipeline.sh 2025-11-10")
+        self.command_input.setFont(QFont("Menlo", 12))
+        self.command_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+                border: 1px solid #3C3C3C;
+                border-radius: 3px;
+                padding: 6px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #007ACC;
+            }
+        """)
+        self.command_input.returnPressed.connect(self._on_command_entered)
+        command_layout.addWidget(self.command_input, 1)
         
-        browse_btn = QPushButton("浏览...")
-        browse_btn.setFixedWidth(80)
-        browse_btn.clicked.connect(self._on_browse_script)
-        script_layout.addWidget(browse_btn)
+        # 清空输出按钮
+        clear_btn = QPushButton("清空")
+        clear_btn.setFixedWidth(60)
+        clear_btn.setFixedHeight(32)
+        clear_btn.clicked.connect(self._on_clear_output)
+        command_layout.addWidget(clear_btn)
         
-        right_layout.addLayout(script_layout)
-        
-        # Parameters 输入框和 Run 按钮
-        params_layout = QHBoxLayout()
-        params_layout.setSpacing(8)
-        
-        params_label = QLabel("Parameters:")
-        params_label.setFixedWidth(100)
-        params_layout.addWidget(params_label)
-        
-        self.params_input = QLineEdit()
-        self.params_input.setPlaceholderText("例如: 2025-11-10 --steps 1,2,3")
-        params_layout.addWidget(self.params_input, 1)
-        
-        # Run 按钮
-        self.run_btn = QPushButton("Run")
-        self.run_btn.setFixedWidth(100)
-        self.run_btn.setFixedHeight(32)
-        self.run_btn.clicked.connect(self._on_run_clicked)
-        params_layout.addWidget(self.run_btn)
-        
-        right_layout.addLayout(params_layout)
+        right_layout.addLayout(command_layout)
         
         # 输出区域（苹果终端风格，支持 ANSI 颜色）
         output_label = QLabel("执行输出:")
@@ -3875,44 +4264,38 @@ class ScriptExecutionTab(QWidget):
         # 包装在美观的容器中
         return f'<div style="font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', \'Helvetica Neue\', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 100%; padding: 20px; background-color: #ffffff;">{html}</div>'
     
-    def _on_browse_script(self):
-        """浏览脚本文件"""
-        current_file = Path(__file__).resolve()
-        project_root = current_file.parent.parent.parent
-        scripts_dir = project_root / "scripts"
+    def _on_command_entered(self):
+        """命令行输入回车执行"""
+        cmd = self.command_input.text().strip()
+        if not cmd:
+            return
         
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择脚本文件",
-            str(scripts_dir) if scripts_dir.exists() else str(project_root),
-            "Shell Scripts (*.sh);;All Files (*)"
-        )
+        # 显示命令提示符和命令
+        self._append_output(f"$ {cmd}\n")
         
-        if file_path:
-            # 转换为服务器路径（假设脚本在服务器的 /ai-perf/scripts/ 目录下）
-            rel_path = Path(file_path).relative_to(project_root)
-            server_path = f"/ai-perf/{rel_path}"
-            self.script_path_input.setText(server_path)
+        # 清空输入框
+        self.command_input.clear()
+        
+        # 确保SSH连接和screen已初始化
+        if not self._ensure_ssh_connected():
+            return
+        
+        # 发送命令到 screen
+        self._send_command_to_screen(cmd)
+        
+        # 启动定时器读取输出（如果还没启动）
+        if not self._output_timer:
+            self._output_timer = QTimer()
+            self._output_timer.timeout.connect(self._read_screen_output)
+            self._output_timer.start(500)  # 每500ms读取一次
     
-    def _on_run_clicked(self):
-        """执行脚本按钮点击事件"""
-        if self._is_running:
-            reply = QMessageBox.question(
-                self,
-                "确认停止",
-                "脚本正在执行中，确定要停止吗？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self._stop_execution()
-            return
-        
-        script_path = self.script_path_input.text().strip()
-        if not script_path:
-            QMessageBox.warning(self, "错误", "请输入脚本路径")
-            return
-        
+    def _on_clear_output(self):
+        """清空输出"""
+        self.output_text.clear()
+        self._last_output_length = 0
+    
+    def _ensure_ssh_connected(self) -> bool:
+        """确保SSH连接和screen已初始化"""
         # 加载 SSH 配置
         from utils.config_manager import ConfigManager
         config = ConfigManager.load()
@@ -3926,81 +4309,185 @@ class ScriptExecutionTab(QWidget):
         
         if not ssh_config.get("host") or not ssh_config.get("username"):
             QMessageBox.warning(self, "错误", "请先配置 SSH 连接信息（在系统设置中）")
+            return False
+        
+        # 如果SSH客户端未连接，则连接
+        if not self._ssh_client:
+            from utils.ssh_client import SSHClient
+            self._ssh_client = SSHClient(**ssh_config)
+            if not self._ssh_client.connect():
+                QMessageBox.warning(self, "错误", "SSH 连接失败，请检查配置")
+                self._ssh_client = None
+                return False
+        
+        # 确保 screen 存在
+        check_cmd = f"screen -list | grep -q {self._screen_name} || screen -dmS {self._screen_name}"
+        result = self._ssh_client.execute(check_cmd)
+        
+        if not result.get("success"):
+            QMessageBox.warning(self, "错误", f"创建 screen 失败: {result.get('stderr', '未知错误')}")
+            return False
+        
+        return True
+    
+    def _send_command_to_screen(self, cmd: str):
+        """发送命令到 screen（在后台线程中执行）"""
+        if not self._ssh_client:
             return
         
-        # 清空输出
-        self.output_text.clear()
-        
-        # 显示头部信息
-        params = self.params_input.text().strip()
-        cmd = f"{script_path} {params}".strip()
-        header_text = f"$ {cmd}\n"
-        header_text += "=" * 80 + "\n\n"
-        self._append_output(header_text)
-        
-        # 开始执行
-        self._is_running = True
-        self.run_btn.setText("停止")
-        self.run_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #dc3545;
-                color: white;
-                border: none;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-        """)
-        
-        # 在后台线程中执行
-        worker = _ScriptExecutionWorker(ssh_config, script_path, params, self._screen_name)
-        worker.signals.output.connect(self._append_output_with_ansi)
-        worker.signals.finished.connect(self._on_execution_finished)
-        worker.signals.error.connect(self._on_execution_error)
+        # 在后台线程中发送命令，避免阻塞UI
+        worker = _SendCommandWorker(self._ssh_client, self._screen_name, cmd)
+        worker.signals.finished.connect(self._on_command_sent)
+        worker.signals.error.connect(self._on_command_send_error)
         QThreadPool.globalInstance().start(worker)
-        
-        # 启动定时器，定期读取 screen 输出
-        self._output_timer = QTimer()
-        self._output_timer.timeout.connect(self._read_screen_output)
-        self._output_timer.start(500)  # 每500ms读取一次
     
-    def _read_screen_output(self):
-        """读取 screen 的输出"""
-        if not self._is_running:
-            if self._output_timer:
-                self._output_timer.stop()
-                self._output_timer = None
+    def _on_command_sent(self):
+        """命令发送成功"""
+        pass  # 命令已发送，等待输出
+    
+    def _on_command_send_error(self, error_msg: str):
+        """命令发送失败"""
+        self._append_output(f"错误: {error_msg}\n")
+    
+    def _load_screen_content(self):
+        """加载screen的当前内容并显示"""
+        if not self._ssh_client:
             return
         
         try:
-            from utils.config_manager import ConfigManager
-            from utils.ssh_client import SSHClient
+            # 获取 screen 的输出
+            cmd = f"screen -S {self._screen_name} -X hardcopy /tmp/screen_output_{self._screen_name}.txt 2>/dev/null && cat /tmp/screen_output_{self._screen_name}.txt 2>/dev/null || echo ''"
+            result = self._ssh_client.execute(cmd)
             
-            config = ConfigManager.load()
-            ssh_config = {
-                "host": config.get("ssh_host", ""),
-                "port": config.get("ssh_port", 22),
-                "username": config.get("ssh_username", ""),
-                "password": config.get("ssh_password", ""),
-                "key_path": config.get("ssh_key_path", ""),
-            }
-            
-            ssh = SSHClient(**ssh_config)
-            if ssh.connect():
-                # 获取 screen 的输出
-                # 使用 hardcopy 命令获取 screen 的内容
-                cmd = f"screen -S {self._screen_name} -X hardcopy /tmp/screen_output_{self._screen_name}.txt 2>/dev/null && cat /tmp/screen_output_{self._screen_name}.txt 2>/dev/null || echo ''"
-                result = ssh.execute(cmd)
-                
-                if result.get("stdout"):
-                    # 只显示新增的内容（简化处理，实际应该做增量读取）
-                    self._append_output_with_ansi(result["stdout"])
-                
-                ssh.close()
+            if result.get("stdout"):
+                full_output = result["stdout"]
+                # 显示全部内容
+                if full_output.strip():
+                    self._append_output_with_ansi(full_output)
+                    self._last_output_length = len(full_output)
+                else:
+                    # screen为空，显示提示信息
+                    self._append_output("Screen 'fromAdminClient' 已连接，等待命令输入...\n")
+                    self._append_output("提示：输入命令并按回车执行，例如: /ai-perf/scripts/run_daily_pipeline.sh 2025-11-10\n\n")
         except Exception as e:
-            # 静默处理错误，避免频繁弹窗
+            # 静默处理错误
             pass
+    
+    def _read_screen_output(self):
+        """读取 screen 的输出（增量读取）- 触发后台线程读取"""
+        if not self._ssh_client or self._is_reading_output:
+            return
+        
+        # 设置标志，防止重复执行
+        self._is_reading_output = True
+        
+        # 在后台线程中读取输出，避免阻塞UI
+        worker = _ReadScreenOutputWorker(self._ssh_client, self._screen_name, self._last_output_length)
+        worker.signals.output.connect(self._on_new_output_received)
+        worker.signals.length_updated.connect(self._on_output_length_updated)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_new_output_received(self, new_output: str):
+        """接收到新的输出内容"""
+        if new_output:
+            self._append_output_with_ansi(new_output)
+        # 重置标志，允许下次读取
+        self._is_reading_output = False
+    
+    def _on_output_length_updated(self, new_length: int):
+        """更新输出长度"""
+        self._last_output_length = new_length
+        # 重置标志，允许下次读取
+        self._is_reading_output = False
+    
+    def _append_output(self, text: str):
+        """追加输出文本（纯文本）"""
+        cursor = self.output_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.setCharFormat(self._default_format)
+        cursor.insertText(text)
+        self.output_text.setTextCursor(cursor)
+        # 自动滚动到底部
+        scrollbar = self.output_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def _init_ssh_connection(self):
+        """初始化SSH连接并显示screen内容（在后台线程中执行，避免UI卡顿）"""
+        # 防止重复初始化
+        if self._is_initializing_ssh or self._ssh_init_failed or self._ssh_client:
+            return
+        
+        # 获取SSH配置
+        from utils.config_manager import ConfigManager
+        config = ConfigManager.load()
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "port": config.get("ssh_port", 22),
+            "username": config.get("ssh_username", ""),
+            "password": config.get("ssh_password", ""),
+            "key_path": config.get("ssh_key_path", ""),
+        }
+        
+        if not ssh_config.get("host") or not ssh_config.get("username"):
+            # 没有配置SSH，静默失败
+            self._ssh_init_failed = True
+            self._append_output("提示：未配置SSH服务器信息，请在系统设置TAB中配置SSH连接信息\n")
+            self._append_output("配置后，输入命令时会自动连接。\n\n")
+            return
+        
+        # 设置初始化标志
+        self._is_initializing_ssh = True
+        
+        # 在后台线程中初始化SSH连接
+        worker = _InitSSHWorker(ssh_config, self._screen_name)
+        worker.signals.connected.connect(self._on_ssh_connected)
+        worker.signals.content_loaded.connect(self._on_screen_content_loaded)
+        worker.signals.error.connect(self._on_ssh_init_error)
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_ssh_connected(self, ssh_client):
+        """SSH连接成功回调"""
+        self._ssh_client = ssh_client
+        self._is_initializing_ssh = False
+        self._ssh_init_failed = False
+    
+    def _on_screen_content_loaded(self, content: str):
+        """Screen内容加载完成回调"""
+        # 显示内容（即使为空也显示提示信息）
+        if content and content.strip():
+            self._append_output_with_ansi(content)
+            self._last_output_length = len(content)
+        else:
+            # screen为空，显示提示信息
+            self._append_output("Screen 'fromAdminClient' 已连接，等待命令输入...\n")
+            self._append_output("提示：输入命令并按回车执行，例如: /ai-perf/scripts/run_daily_pipeline.sh 2025-11-10\n\n")
+            self._last_output_length = 0
+        
+        # 启动定时器，持续读取screen输出（确保总是启动，实现实时更新）
+        if not self._output_timer:
+            self._output_timer = QTimer()
+            self._output_timer.timeout.connect(self._read_screen_output)
+            self._output_timer.start(500)  # 每500ms读取一次
+        elif not self._output_timer.isActive():
+            # 如果定时器存在但未激活，重新启动
+            self._output_timer.start(500)
+    
+    def _on_ssh_init_error(self, error_msg: str):
+        """SSH初始化错误回调（静默处理，不弹窗）"""
+        self._is_initializing_ssh = False
+        self._ssh_init_failed = True
+        # 显示友好的错误提示，但不弹窗
+        self._append_output(f"SSH连接失败: {error_msg}\n")
+        self._append_output("提示：请检查SSH配置（在系统设置TAB中），或稍后手动输入命令时会自动重试连接。\n\n")
+    
+    def __del__(self):
+        """析构函数，关闭SSH连接"""
+        if self._ssh_client:
+            try:
+                self._ssh_client.close()
+            except:
+                pass
+            self._ssh_client = None
     
     def _append_output_with_ansi(self, text: str):
         """追加输出文本，支持 ANSI 颜色代码"""
@@ -4065,42 +4552,6 @@ class ScriptExecutionTab(QWidget):
         scrollbar = self.output_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
     
-    def _on_execution_finished(self):
-        """执行完成"""
-        self._is_running = False
-        self.run_btn.setText("Run")
-        self.run_btn.setStyleSheet("")
-        
-        if self._output_timer:
-            self._output_timer.stop()
-            self._output_timer = None
-        
-        self._append_output("\n" + "=" * 80 + "\n")
-        self._append_output("[完成] 脚本执行完成\n")
-    
-    def _on_execution_error(self, error_msg: str):
-        """执行错误"""
-        self._is_running = False
-        self.run_btn.setText("Run")
-        self.run_btn.setStyleSheet("")
-        
-        if self._output_timer:
-            self._output_timer.stop()
-            self._output_timer = None
-        
-        self._append_output(f"\n[错误] {error_msg}\n")
-    
-    def _stop_execution(self):
-        """停止执行"""
-        self._is_running = False
-        self.run_btn.setText("Run")
-        self.run_btn.setStyleSheet("")
-        
-        if self._output_timer:
-            self._output_timer.stop()
-            self._output_timer = None
-        
-        self._append_output("\n[已停止] 用户手动停止执行\n")
 
 
 class _ScriptExecutionWorkerSignals(QObject):

@@ -209,7 +209,14 @@ class SSHClient:
                     return False
             except Exception as e:
                 last_error = e
-                logger.warning(f"SSH连接失败（尝试 {attempt + 1}/{max_retries}）: {e}")
+                # 只在最后一次尝试失败时记录错误，避免大量重复日志
+                if attempt == max_retries - 1:
+                    # 简化错误消息，避免输出详细的堆栈信息
+                    error_str = str(e)
+                    if "Error reading SSH protocol banner" in error_str:
+                        logger.warning(f"SSH连接失败（已重试 {max_retries} 次）: 无法读取SSH协议横幅，请检查网络连接")
+                    else:
+                        logger.warning(f"SSH连接失败（已重试 {max_retries} 次）: {error_str}")
                 
                 # 清理失败的连接
                 try:
@@ -221,11 +228,9 @@ class SSHClient:
                 
                 # 如果不是最后一次尝试，等待后重试
                 if attempt < max_retries - 1:
-                    logger.info(f"等待 {retry_delay} 秒后重试...")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"SSH连接失败（已重试 {max_retries} 次）: {last_error}")
                     return False
         
         return False

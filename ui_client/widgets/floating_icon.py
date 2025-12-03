@@ -57,6 +57,11 @@ class FloatingIcon(QWidget):
         
         # 加载图标
         self._load_icon()
+        
+        # macOS: 设置窗口级别（延迟执行，确保窗口已创建）
+        if platform.system() == "Darwin":
+            QTimer.singleShot(100, self._set_macos_window_level)
+            QTimer.singleShot(500, self._set_macos_window_level)
     
     def _load_icon(self):
         """加载图标"""
@@ -164,31 +169,52 @@ class FloatingIcon(QWidget):
         elif pos.y() <= screen.top() + margin:
             pos.setY(screen.top())
     
+    def _set_macos_window_level(self):
+        """设置 macOS 窗口级别（确保置顶）"""
+        if platform.system() != "Darwin":
+            return
+        
+        try:
+            qwindow = self.windowHandle()
+            if not qwindow:
+                # 如果窗口句柄还没准备好，延迟重试
+                QTimer.singleShot(100, self._set_macos_window_level)
+                return
+            
+            ns_view = qwindow.winId()
+            if not ns_view:
+                QTimer.singleShot(100, self._set_macos_window_level)
+                return
+            
+            import objc
+            from ctypes import c_void_p
+            view = objc.objc_object(c_void_p=c_void_p(int(ns_view)))
+            if not view:
+                QTimer.singleShot(100, self._set_macos_window_level)
+                return
+            
+            ns_window = view.window()
+            if not ns_window:
+                QTimer.singleShot(100, self._set_macos_window_level)
+                return
+            
+            # 设置窗口级别为浮动窗口级别（置顶）
+            # NSFloatingWindowLevel = 3
+            ns_window.setLevel_(3)
+            # 只调用 raise_()，不调用 activateWindow()，避免影响其他窗口聚焦
+            self.raise_()
+        except Exception as e:
+            import sys
+    
     def showEvent(self, event):
         """显示事件"""
         super().showEvent(event)
-        # 确保窗口置顶
+        # 只调用 raise_()，不调用 activateWindow()，避免影响其他窗口聚焦
         self.raise_()
-        self.activateWindow()
-        # macOS: 额外确保置顶
+        # macOS: 设置窗口级别
         if platform.system() == "Darwin":
-            try:
-                from PySide6.QtGui import QWindow
-                qwindow = self.windowHandle()
-                if qwindow:
-                    ns_view = qwindow.winId()
-                    if ns_view:
-                        import objc
-                        from ctypes import c_void_p
-                        view = objc.objc_object(c_void_p=c_void_p(int(ns_view)))
-                        if view:
-                            ns_window = view.window()
-                            if ns_window:
-                                # 设置窗口级别为浮动窗口级别（置顶）
-                                # NSFloatingWindowLevel = 3
-                                ns_window.setLevel_(3)
-            except Exception:
-                pass
+            QTimer.singleShot(50, self._set_macos_window_level)
+            QTimer.singleShot(200, self._set_macos_window_level)
     
     def animate_show(self, from_pos: Optional[QPoint] = None):
         """动画显示（从指定位置出现）"""
@@ -202,9 +228,12 @@ class FloatingIcon(QWidget):
         
         self.show()
         self.setVisible(True)  # 确保可见
-        # 确保窗口置顶
+        # 只调用 raise_()，不调用 activateWindow()，避免影响其他窗口聚焦
         self.raise_()
-        self.activateWindow()
+        # macOS: 设置窗口级别
+        if platform.system() == "Darwin":
+            QTimer.singleShot(50, self._set_macos_window_level)
+            QTimer.singleShot(200, self._set_macos_window_level)
         self.update()
         
         animation = QPropertyAnimation(self, b"opacity")

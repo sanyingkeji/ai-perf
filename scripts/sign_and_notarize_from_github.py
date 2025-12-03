@@ -80,7 +80,10 @@ class Step(Enum):
     VERIFY = "verify"  # 验证签名
     CREATE_DMG = "create_dmg"  # 创建 DMG
     SIGN_DMG = "sign_dmg"  # 签名 DMG
-    NOTARIZE = "notarize"  # 公证
+    NOTARIZE_DMG = "notarize_dmg"  # 公证 DMG
+    CREATE_PKG = "create_pkg"  # 创建 PKG
+    SIGN_PKG = "sign_pkg"  # 签名 PKG
+    NOTARIZE_PKG = "notarize_pkg"  # 公证 PKG
 
 def get_step_order():
     """返回步骤执行顺序"""
@@ -95,7 +98,10 @@ def get_step_order():
         Step.VERIFY,
         Step.CREATE_DMG,
         Step.SIGN_DMG,
-        Step.NOTARIZE,
+        Step.NOTARIZE_DMG,
+        Step.CREATE_PKG,
+        Step.SIGN_PKG,
+        Step.NOTARIZE_PKG,
     ]
 
 def should_skip_step(current_step: Step, start_from_step: Step = None) -> bool:
@@ -1028,7 +1034,8 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                     # 修复主可执行文件的权限（GitHub Actions 打包的文件可能没有执行权限）
                     current_mode = main_executable.stat().st_mode
                     # 确保有执行权限：所有者、组、其他用户都有执行权限 (755)
-                    if not (current_mode & stat.S_IXUSR):
+                    # 使用数字常量 0o100 (S_IXUSR) 避免与 pathlib.Path.stat() 冲突
+                    if not (current_mode & 0o100):  # 0o100 = stat.S_IXUSR (所有者执行权限)
                         os.chmod(main_executable, 0o755)
                         log_info("✓ 修复主可执行文件权限 (755)")
                     
@@ -1166,8 +1173,499 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
         else:
             log_warn("⚠ 跳过代码签名（设置 CODESIGN_IDENTITY 环境变量以启用）")
         
-        # TODO: 创建 DMG 和 PKG（需要复用 build_client.py 的逻辑）
-        log_warn("创建 DMG 和 PKG（待实现）...")
+        # 创建 DMG 和 PKG（复用 build_client.py 的逻辑）
+        dmg_path = None
+        pkg_path = None
+        pkg_signed_successfully = False
+        
+        if codesign_identity:
+            # 创建 DMG
+            dmg_name = app_name.replace(" ", "_")
+            dmg_path = dist_dir / f"{dmg_name}.dmg"
+            
+            if not should_skip_step(Step.CREATE_DMG, start_from_step):
+                log_info("=" * 50)
+                log_warn("开始创建 DMG...")
+                print()  # 空行分隔
+                
+                # 创建临时目录
+                temp_dmg_dir = dist_dir / "dmg_temp"
+                if temp_dmg_dir.exists():
+                    shutil.rmtree(temp_dmg_dir)
+                temp_dmg_dir.mkdir(parents=True)
+                
+                # 使用 ditto 复制应用（保留扩展属性和签名）
+                log_warn("复制应用包到临时目录（保留签名）...")
+                subprocess.run([
+                    "ditto", str(target_app), str(temp_dmg_dir / target_app.name)
+                ], check=True)
+                
+                # 创建 Applications 链接
+                os.symlink("/Applications", temp_dmg_dir / "Applications")
+                
+                # 创建 DMG
+                log_warn("创建 DMG 文件...")
+                subprocess.run([
+                    "hdiutil", "create",
+                    "-volname", app_name,
+                    "-srcfolder", str(temp_dmg_dir),
+                    "-ov",
+                    "-format", "UDZO",
+                    str(dmg_path)
+                ], check=True)
+                
+                # 清理临时目录
+                if temp_dmg_dir.exists():
+                    shutil.rmtree(temp_dmg_dir)
+                
+                log_info(f"✓ DMG 创建成功: {dmg_path}")
+            else:
+                log_info(f"[跳过] 创建 DMG（从步骤 {start_from_step.value} 开始）")
+                if not dmg_path.exists():
+                    log_warn(f"⚠ DMG 文件不存在: {dmg_path}，跳过后续步骤")
+                    dmg_path = None
+            
+            # DMG 代码签名
+            if not should_skip_step(Step.SIGN_DMG, start_from_step) and dmg_path and dmg_path.exists():
+                log_step(Step.SIGN_DMG, "DMG 代码签名...")
+                timestamp_max_retries = 3
+                timestamp_retry_delay = 5
+                timestamp_success = False
+                
+                for timestamp_attempt in range(1, timestamp_max_retries + 1):
+                    log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
+                    timestamp_result = subprocess.run([
+                        "codesign", "--force", "--verify", "--verbose",
+                        "--sign", codesign_identity,
+                        "--timestamp",
+                        str(dmg_path)
+                    ], capture_output=True, text=True, check=False)
+                    
+                    if timestamp_result.returncode == 0:
+                        log_info("✓ DMG 代码签名完成（已使用时间戳）")
+                        timestamp_success = True
+                        break
+                    else:
+                        error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                        if "timestamp service is not available" in error_msg or "network" in error_msg.lower() or "timeout" in error_msg.lower():
+                            if timestamp_attempt < timestamp_max_retries:
+                                log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
+                                time.sleep(timestamp_retry_delay)
+                                timestamp_retry_delay *= 2
+                            else:
+                                log_warn(f"  ⚠ 时间戳服务不可用（已重试 {timestamp_max_retries} 次），将回退到不使用时间戳")
+                        else:
+                            log_error(f"DMG 签名失败: {error_msg[:200]}")
+                            raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
+                
+                if not timestamp_success:
+                    log_warn("⚠ 时间戳服务不可用，尝试不使用时间戳签名...")
+                    subprocess.run([
+                        "codesign", "--force", "--verify", "--verbose",
+                        "--sign", codesign_identity,
+                        "--timestamp=none",
+                        str(dmg_path)
+                    ], check=True)
+                    log_info("✓ DMG 代码签名完成（未使用时间戳）")
+                
+                # 验证 DMG 签名
+                log_warn("验证 DMG 签名...")
+                dmg_verify = subprocess.run([
+                    "codesign", "--verify", "--verbose",
+                    str(dmg_path)
+                ], capture_output=True, text=True, check=False)
+                if dmg_verify.returncode == 0:
+                    log_info("✓ DMG 签名验证通过")
+                else:
+                    log_error(f"DMG 签名验证失败: {dmg_verify.stderr}")
+            else:
+                log_info(f"[跳过] 签名 DMG（从步骤 {start_from_step.value} 开始）")
+            
+            # Apple 公证 DMG
+            if not should_skip_step(Step.NOTARIZE_DMG, start_from_step) and apple_id and team_id and notary_password and dmg_path and dmg_path.exists():
+                log_step(Step.NOTARIZE_DMG, "提交 DMG 到 Apple 公证...")
+                max_retries = 3
+                retry_delay = 10
+                notarized = False
+                
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        log_info(f"  尝试 {attempt}/{max_retries}...")
+                        log_info("  正在上传 DMG 文件到 Apple 服务器（可能需要几分钟）...")
+                        submit_result = subprocess.run([
+                            "xcrun", "notarytool", "submit", str(dmg_path),
+                            "--apple-id", apple_id,
+                            "--team-id", team_id,
+                            "--password", notary_password
+                        ], check=True, capture_output=True, text=True, timeout=600)
+                        
+                        submission_id = None
+                        for line in submit_result.stdout.split('\n'):
+                            if 'id:' in line.lower():
+                                submission_id = line.split(':')[-1].strip()
+                                break
+                        
+                        if submission_id:
+                            log_info(f"  ✓ 上传完成，提交 ID: {submission_id}")
+                            log_info("  等待 Apple 处理公证（可能需要 5-15 分钟，最长 30 分钟）...")
+                            
+                            max_wait_time = 1800  # 30分钟
+                            poll_interval = 30
+                            notary_start_time = time.time()
+                            status = None
+                            
+                            while time.time() - notary_start_time < max_wait_time:
+                                try:
+                                    status_result = subprocess.run([
+                                        "xcrun", "notarytool", "log", submission_id,
+                                        "--apple-id", apple_id,
+                                        "--team-id", team_id,
+                                        "--password", notary_password
+                                    ], capture_output=True, text=True, timeout=60, check=False)
+                                    
+                                    if status_result.returncode == 0 and status_result.stdout:
+                                        if "not yet available" in status_result.stdout.lower():
+                                            elapsed = int(time.time() - notary_start_time)
+                                            log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
+                                        else:
+                                            import json
+                                            try:
+                                                log_data = json.loads(status_result.stdout)
+                                                status = log_data.get("status", "").lower()
+                                                
+                                                if status in ['accepted', 'success']:
+                                                    log_info("  ✓ DMG 公证成功！")
+                                                    notarized = True
+                                                    break
+                                                elif status in ['invalid', 'rejected', 'failed']:
+                                                    log_error(f"  ✗ DMG 公证失败，状态: {status}")
+                                                    break
+                                                elif status == 'in progress':
+                                                    elapsed = int(time.time() - notary_start_time)
+                                                    log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
+                                            except json.JSONDecodeError:
+                                                pass
+                                except Exception as e:
+                                    log_warn(f"  查询状态时出错: {e}")
+                                
+                                time.sleep(poll_interval)
+                            
+                            if notarized:
+                                break
+                            elif status in ['invalid', 'rejected', 'failed']:
+                                # 非网络错误，不重试
+                                break
+                        else:
+                            log_warn("  ⚠ 无法获取提交 ID")
+                    except subprocess.CalledProcessError as e:
+                        error_msg = e.stderr or e.stdout or ""
+                        if "network" in error_msg.lower() or "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                            if attempt < max_retries:
+                                log_error(f"✗ 网络错误（尝试 {attempt}/{max_retries}）")
+                                log_warn(f"  等待 {retry_delay} 秒后重试...")
+                                time.sleep(retry_delay)
+                                retry_delay *= 2
+                            else:
+                                log_error("✗ DMG 公证最终失败（已重试所有次数）")
+                        else:
+                            log_error(f"✗ DMG 公证失败: {error_msg[:200]}")
+                            break
+                    except Exception as e:
+                        log_error(f"✗ DMG 公证出错: {e}")
+                        if attempt < max_retries:
+                            log_warn(f"  等待 {retry_delay} 秒后重试...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                        else:
+                            break
+                
+                if notarized:
+                    log_info("✓ DMG 公证完成")
+                else:
+                    log_warn("⚠ 继续执行，但 DMG 未通过公证")
+            else:
+                if apple_id and team_id and notary_password:
+                    log_info(f"[跳过] 公证 DMG（从步骤 {start_from_step.value} 开始）")
+                else:
+                    log_warn("⚠ 跳过 DMG 公证（需要设置 APPLE_ID, TEAM_ID, NOTARY_PASSWORD 环境变量）")
+            
+            # 创建 PKG 安装包
+            pkg_name = app_name.replace(" ", "_")
+            pkg_path = dist_dir / f"{pkg_name}.pkg"
+            
+            if not should_skip_step(Step.CREATE_PKG, start_from_step):
+                log_step(Step.CREATE_PKG, "创建 PKG 安装包...")
+                
+                # 准备 PKG 资源目录
+                pkg_resources = dist_dir / "pkg_resources"
+                if pkg_resources.exists():
+                    shutil.rmtree(pkg_resources)
+                pkg_resources.mkdir(parents=True)
+                
+                # 创建 Distribution.xml
+                distribution_xml = pkg_resources / "Distribution.xml"
+                with open(distribution_xml, "w", encoding="utf-8") as f:
+                    f.write(f'''<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <title>{app_name}</title>
+    <organization>site.sanying</organization>
+    <domains enable_localSystem="true"/>
+    <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
+    <pkg-ref id="{app_id}"/>
+    <product id="{app_id}" version="1.0.1" />
+    <choices-outline>
+        <line choice="{app_id}"/>
+    </choices-outline>
+    <choice id="{app_id}" visible="false">
+        <pkg-ref id="{app_id}"/>
+    </choice>
+    <pkg-ref id="{app_id}" version="1.0.1" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
+</installer-gui-script>''')
+                
+                # 使用 pkgbuild 创建组件包
+                component_pkg = pkg_resources / f"{pkg_name}_component.pkg"
+                log_warn("  使用 pkgbuild 创建组件包...")
+                pkg_root = pkg_resources / "pkg_root"
+                pkg_root.mkdir(exist_ok=True)
+                applications_dir = pkg_root / "Applications"
+                applications_dir.mkdir(exist_ok=True)
+                
+                # 使用 ditto 复制应用包（保留签名）
+                log_warn("    复制应用包（保留签名）...")
+                subprocess.run([
+                    "ditto", str(target_app), str(applications_dir / target_app.name)
+                ], check=True)
+                
+                subprocess.run([
+                    "pkgbuild",
+                    "--root", str(pkg_root),
+                    "--identifier", app_id,
+                    "--version", "1.0.1",
+                    "--install-location", "/",
+                    str(component_pkg)
+                ], check=True)
+                log_info("  ✓ 组件包创建成功")
+                
+                # 使用 productbuild 创建最终安装包
+                log_warn("  使用 productbuild 创建最终安装包...")
+                subprocess.run([
+                    "productbuild",
+                    "--distribution", str(distribution_xml),
+                    "--package-path", str(pkg_resources),
+                    "--resources", str(pkg_resources),
+                    str(pkg_path)
+                ], check=True)
+                log_info("  ✓ PKG 安装包创建成功")
+            else:
+                log_info(f"[跳过] 创建 PKG（从步骤 {start_from_step.value} 开始）")
+                if not pkg_path.exists():
+                    log_warn(f"⚠ PKG 文件不存在: {pkg_path}，跳过后续步骤")
+                    pkg_path = None
+            
+            # 签名 PKG（需要 Installer 证书）
+            if not should_skip_step(Step.SIGN_PKG, start_from_step) and pkg_path and pkg_path.exists():
+                log_step(Step.SIGN_PKG, "签名 PKG（使用 Installer 证书）...")
+                
+                if not installer_identity and codesign_identity:
+                    if "Developer ID Application" in codesign_identity:
+                        installer_identity = codesign_identity.replace("Developer ID Application", "Developer ID Installer")
+                    else:
+                        log_warn("  查找可用的 Installer 证书...")
+                        find_result = subprocess.run([
+                            "security", "find-identity", "-v", "-p", "codesigning"
+                        ], capture_output=True, text=True, check=False)
+                        
+                        if find_result.returncode == 0:
+                            import re
+                            for line in find_result.stdout.split('\n'):
+                                if "Developer ID Installer" in line:
+                                    match = re.search(r'"([^"]+)"', line)
+                                    if match:
+                                        installer_identity = match.group(1)
+                                        log_info(f"  找到 Installer 证书: {installer_identity}")
+                                        break
+                
+                pkg_signed_successfully = False
+                if installer_identity:
+                    log_warn("签名 PKG（使用 Installer 证书）...")
+                pkg_signed = dist_dir / f"{pkg_name}_signed.pkg"
+                
+                timestamp_max_retries = 3
+                timestamp_retry_delay = 5
+                timestamp_success = False
+                
+                for timestamp_attempt in range(1, timestamp_max_retries + 1):
+                    log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
+                    timestamp_result = subprocess.run([
+                        "productsign",
+                        "--sign", installer_identity,
+                        "--timestamp",
+                        str(pkg_path),
+                        str(pkg_signed)
+                    ], capture_output=True, text=True, check=False)
+                    
+                    if timestamp_result.returncode == 0:
+                        log_info("  ✓ PKG 签名完成（已使用时间戳）")
+                        timestamp_success = True
+                        break
+                    else:
+                        error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                        if "timestamp service is not available" in error_msg or "network" in error_msg.lower():
+                            if timestamp_attempt < timestamp_max_retries:
+                                log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
+                                time.sleep(timestamp_retry_delay)
+                                timestamp_retry_delay *= 2
+                            else:
+                                log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                        else:
+                            log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
+                            raise Exception(f"PKG 签名失败: {error_msg[:200]}")
+                
+                if not timestamp_success:
+                    error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                    log_error(f"  ✗ PKG 签名失败（已重试 {timestamp_max_retries} 次）: {error_msg[:200]}")
+                    log_error("     无时间戳签名无法通过公证，构建终止")
+                    raise Exception(f"PKG 签名失败：时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                
+                if timestamp_success and pkg_signed.exists():
+                    pkg_path.unlink()
+                    pkg_signed.rename(pkg_path)
+                    log_info("  ✓ PKG 文件已替换为签名版本")
+                    pkg_signed_successfully = True
+                else:
+                    pkg_signed_successfully = False
+            else:
+                if installer_identity:
+                    log_warn("⚠ 跳过 PKG 签名（需要 Developer ID Installer 证书）")
+                else:
+                    log_info(f"[跳过] 签名 PKG（从步骤 {start_from_step.value} 开始）")
+                pkg_signed_successfully = False
+            
+            # 验证 PKG 签名
+            if pkg_signed_successfully and pkg_path.exists():
+                log_warn("验证 PKG 签名...")
+                pkg_verify = subprocess.run([
+                    "pkgutil", "--check-signature", str(pkg_path)
+                ], capture_output=True, text=True, check=False)
+                if pkg_verify.returncode == 0:
+                    log_info("  ✓ PKG 签名验证通过")
+                else:
+                    log_warn(f"  ⚠ PKG 签名验证警告: {pkg_verify.stderr[:200]}")
+            
+            # PKG 公证
+            if not should_skip_step(Step.NOTARIZE_PKG, start_from_step) and apple_id and team_id and notary_password and pkg_signed_successfully and pkg_path and pkg_path.exists():
+                log_step(Step.NOTARIZE_PKG, "提交 PKG 到 Apple 公证...")
+                max_retries = 3
+                retry_delay = 10
+                pkg_notarized = False
+                
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        log_info(f"  尝试 {attempt}/{max_retries}...")
+                        log_info("  正在上传 PKG 文件到 Apple 服务器...")
+                        
+                        submit_result = subprocess.run([
+                            "xcrun", "notarytool", "submit", str(pkg_path),
+                            "--apple-id", apple_id,
+                            "--team-id", team_id,
+                            "--password", notary_password
+                        ], check=True, capture_output=True, text=True, timeout=600)
+                        
+                        submission_id = None
+                        for line in submit_result.stdout.split('\n'):
+                            if 'id:' in line.lower():
+                                submission_id = line.split(':')[-1].strip()
+                                break
+                        
+                        if submission_id:
+                            log_info(f"  ✓ 上传完成，提交 ID: {submission_id}")
+                            log_info("  等待 Apple 处理公证...")
+                            
+                            max_wait_time = 1800
+                            poll_interval = 30
+                            notary_start_time = time.time()
+                            status = None
+                            
+                            while time.time() - notary_start_time < max_wait_time:
+                                try:
+                                    status_result = subprocess.run([
+                                        "xcrun", "notarytool", "log", submission_id,
+                                        "--apple-id", apple_id,
+                                        "--team-id", team_id,
+                                        "--password", notary_password
+                                    ], capture_output=True, text=True, timeout=60, check=False)
+                                    
+                                    if status_result.returncode == 0 and status_result.stdout:
+                                        if "not yet available" in status_result.stdout.lower():
+                                            elapsed = int(time.time() - notary_start_time)
+                                            log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
+                                        else:
+                                            import json
+                                            try:
+                                                log_data = json.loads(status_result.stdout)
+                                                status = log_data.get("status", "").lower()
+                                                
+                                                if status in ['accepted', 'success']:
+                                                    log_info("  ✓ PKG 公证成功！")
+                                                    pkg_notarized = True
+                                                    break
+                                                elif status in ['invalid', 'rejected', 'failed']:
+                                                    log_error(f"  ✗ PKG 公证失败，状态: {status}")
+                                                    break
+                                                elif status == 'in progress':
+                                                    elapsed = int(time.time() - notary_start_time)
+                                                    log_info(f"  处理中... (已等待 {elapsed//60} 分 {elapsed%60} 秒)")
+                                            except json.JSONDecodeError:
+                                                pass
+                                except Exception as e:
+                                    log_warn(f"  查询状态时出错: {e}")
+                                
+                                time.sleep(poll_interval)
+                            
+                            if pkg_notarized:
+                                break
+                            elif status in ['invalid', 'rejected', 'failed']:
+                                break
+                    except subprocess.CalledProcessError as e:
+                        error_msg = e.stderr or e.stdout or ""
+                        if "network" in error_msg.lower() or "connection" in error_msg.lower():
+                            if attempt < max_retries:
+                                log_error(f"✗ 网络错误（尝试 {attempt}/{max_retries}）")
+                                log_warn(f"  等待 {retry_delay} 秒后重试...")
+                                time.sleep(retry_delay)
+                                retry_delay *= 2
+                            else:
+                                log_error("✗ PKG 公证最终失败（已重试所有次数）")
+                        else:
+                            log_error(f"✗ PKG 公证失败: {error_msg[:200]}")
+                            break
+                    except Exception as e:
+                        log_error(f"✗ PKG 公证出错: {e}")
+                        if attempt < max_retries:
+                            log_warn(f"  等待 {retry_delay} 秒后重试...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                        else:
+                            break
+                
+                if pkg_notarized:
+                    log_info("✓ PKG 公证完成")
+                else:
+                    log_warn("⚠ 继续执行，但 PKG 未通过公证")
+            else:
+                if not pkg_signed_successfully:
+                    log_warn("⚠ 跳过 PKG 公证（PKG 未签名）")
+                elif apple_id and team_id and notary_password:
+                    log_info(f"[跳过] 公证 PKG（从步骤 {start_from_step.value} 开始）")
+                else:
+                    log_warn("⚠ 跳过 PKG 公证（需要设置 APPLE_ID, TEAM_ID, NOTARY_PASSWORD 环境变量）")
+            
+            log_info("=" * 50)
+            log_info("✓ DMG 和 PKG 创建完成")
+            log_info(f"  DMG: {dmg_path}")
+            log_info(f"  PKG: {pkg_path}")
+        else:
+            log_warn("⚠ 跳过 DMG 和 PKG 创建（需要设置 CODESIGN_IDENTITY 环境变量）")
             
     finally:
         # 恢复原始工作目录和 sys.argv

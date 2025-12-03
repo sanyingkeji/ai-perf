@@ -134,3 +134,4 @@ pip install PySide6 httpx google-auth-oauthlib google-auth PyJWT
 4. 员工删除为软删除（设置 `active=0`），不会真正删除数据库记录
 
 
+
