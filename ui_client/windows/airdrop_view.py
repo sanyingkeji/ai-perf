@@ -428,10 +428,10 @@ class AirDropView(QWidget):
         mouse_pos = QCursor.pos()
         screen = QApplication.primaryScreen().geometry()
         
-        # 边缘检测区域：只在屏幕边缘的很小范围内（比如0-10像素）
-        edge_margin = 5  # 边缘检测范围（像素）
-        # Y坐标范围：使用隐藏窗口的Y坐标范围，上下各扩展一些
-        margin_y = 10  # Y坐标上下扩展范围
+        # 边缘检测区域：扩大检测范围，使触发更容易
+        edge_margin = 20  # 边缘检测范围（像素），从5增加到20，更容易触发
+        # Y坐标范围：使用隐藏窗口的Y坐标范围，上下各扩展更多
+        margin_y = 100  # Y坐标上下扩展范围，从10增加到100，更容易触发
         
         hidden_y = self._hidden_rect.y()
         hidden_height = self._hidden_rect.height()
@@ -443,18 +443,21 @@ class AirDropView(QWidget):
             # 从左侧隐藏，检测屏幕左边缘
             detect_left = screen.left()
             detect_right = screen.left() + edge_margin
+            self._log_with_timestamp(f"[边缘检测] 左侧边缘检测: X范围=[{detect_left}, {detect_right}], Y范围=[{hidden_y - margin_y}, {hidden_y + hidden_height + margin_y}]")
         else:
             # 从右侧隐藏，检测屏幕右边缘
             detect_left = screen.right() - edge_margin
             detect_right = screen.right()
+            self._log_with_timestamp(f"[边缘检测] 右侧边缘检测: X范围=[{detect_left}, {detect_right}], Y范围=[{hidden_y - margin_y}, {hidden_y + hidden_height + margin_y}], 鼠标位置=({mouse_pos.x()}, {mouse_pos.y()})")
         
         # Y坐标范围：隐藏窗口的Y坐标上下各扩展margin_y像素
         detect_top = hidden_y - margin_y
         detect_bottom = hidden_y + hidden_height + margin_y
         
-        # 检查鼠标是否完全在边缘检测区域内
-        if (detect_left <= mouse_pos.x() <= detect_right and 
-            detect_top <= mouse_pos.y() <= detect_bottom):
+        # 检查鼠标是否在边缘检测区域内
+        is_in_x_range = detect_left <= mouse_pos.x() <= detect_right
+        is_in_y_range = detect_top <= mouse_pos.y() <= detect_bottom
+        if is_in_x_range and is_in_y_range:
             # 鼠标完全在屏幕边缘上，显示窗口
             # 通知主窗口显示
             if hasattr(self, 'window') and self.window():
@@ -813,7 +816,7 @@ class AirDropView(QWidget):
             # 只动画X坐标，Y坐标保持实际值（接受系统调整，避免累积偏移）
             from PySide6.QtCore import QPropertyAnimation, QPoint
             pos_animation = QPropertyAnimation(self, b"pos")
-            pos_animation.setDuration(1000)  # 调慢动画时间，从300ms改为1000ms，便于观察Y坐标变化
+            pos_animation.setDuration(300)  # 动画时间300ms
             # 起始位置使用实际位置，目标位置X使用目标值，Y使用实际值（避免累积偏移）
             pos_animation.setStartValue(QPoint(actual_start_x, actual_start_y))
             pos_animation.setEndValue(QPoint(target_rect.x(), target_y))  # Y坐标保持实际值
@@ -891,7 +894,7 @@ class AirDropView(QWidget):
             # 确保连接信号
             pos_animation.finished.connect(on_window_animation_finished)
             pos_animation.start()
-            self._log_with_timestamp(f"[动画] 显示动画已启动，持续时间1000ms (使用pos动画)")
+            self._log_with_timestamp(f"[动画] 显示动画已启动，持续时间300ms (使用pos动画)")
             
             # 添加超时保护：如果动画在1200ms后还没完成，强制完成（动画时间1000ms + 200ms缓冲）
             def timeout_handler():
@@ -902,7 +905,7 @@ class AirDropView(QWidget):
                     if hasattr(self, '_current_pos_animation') and self._current_pos_animation:
                         self._current_pos_animation.stop()
                     on_window_animation_finished()
-            QTimer.singleShot(1200, timeout_handler)  # 从400ms改为1200ms，匹配新的动画时间
+            QTimer.singleShot(500, timeout_handler)  # 动画时间300ms + 200ms缓冲
         
         # 延迟一下，确保窗口位置设置完成
         QTimer.singleShot(50, start_animation)
@@ -982,7 +985,7 @@ class AirDropView(QWidget):
         # 在 macOS 上，使用 pos 属性动画可能更可靠
         from PySide6.QtCore import QPoint
         pos_animation = QPropertyAnimation(self, b"pos")
-        pos_animation.setDuration(1000)  # 调慢动画时间，从300ms改为1000ms，便于观察Y坐标变化
+        pos_animation.setDuration(300)  # 动画时间300ms
         # 使用保存的原始位置作为起始位置（使用 pos() 的当前 X，但使用保存的原始 Y）
         current_pos = self.pos()
         pos_animation.setStartValue(QPoint(current_pos.x(), original_y))  # 强制使用保存的原始 Y 坐标
@@ -993,8 +996,8 @@ class AirDropView(QWidget):
         self._current_hide_pos_animation = pos_animation
         
         # 在动画完成前50ms提前隐藏窗口，避免系统在动画完成后调整位置
-        animation_duration = 1000  # 动画持续时间（毫秒）
-        hide_before_finish = 0  # 提前隐藏的时间（毫秒）
+        animation_duration = 300  # 动画持续时间（毫秒）
+        hide_before_finish = 50  # 提前隐藏的时间（毫秒）
         hide_time = animation_duration - hide_before_finish
         
         def hide_window_early():
