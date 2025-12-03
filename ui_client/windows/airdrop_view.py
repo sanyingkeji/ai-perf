@@ -211,6 +211,54 @@ class AirDropView(QWidget):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # 精确到毫秒
         print(f"[{timestamp}] {message}", file=sys.stderr)
     
+    @staticmethod
+    def _get_macos_y_offset(window=None):
+        """获取 macOS Y 坐标偏移量（用于补偿系统自动调整）
+        
+        在 macOS 上，系统可能会自动调整窗口的 Y 坐标（通常是标题栏高度），
+        导致 geometry().y() 和 pos().y() 有差值。这个方法动态检测这个偏移量。
+        
+        Args:
+            window: 窗口对象，如果提供则动态检测，否则根据系统版本估算
+        
+        Returns:
+            int: Y 坐标偏移量（像素），非 macOS 系统返回 0
+        """
+        import platform
+        if platform.system() != "Darwin":
+            return 0  # Windows/Linux 不需要偏移
+        
+        # 如果提供了窗口对象，动态检测偏移量
+        if window is not None:
+            try:
+                geo = window.geometry()
+                pos = window.pos()
+                # 计算差值（通常是标题栏高度）
+                offset = geo.y() - pos.y()
+                if offset > 0:
+                    return offset
+            except:
+                pass
+        
+        # 如果动态检测失败，根据 macOS 版本估算
+        try:
+            import platform as plat
+            mac_version = plat.mac_ver()[0]  # 例如 "14.7.8"
+            if mac_version:
+                major_version = int(mac_version.split('.')[0])
+                # macOS 11+ 通常有 28 像素偏移（标题栏高度）
+                # macOS 10.13-10.15 可能偏移不同或没有偏移
+                if major_version >= 11:
+                    return 28
+                elif major_version == 10:
+                    # macOS 10.13-10.15，可能需要检测，暂时返回 0
+                    # 如果实际测试发现有偏移，可以调整
+                    return 0
+        except:
+            pass
+        
+        return 0  # 默认不偏移
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self._transfer_manager: Optional[TransferManager] = None
@@ -241,14 +289,15 @@ class AirDropView(QWidget):
     
     def mouseDoubleClickEvent(self, event):
         """禁止双击窗口头部扩大"""
-        # 检查是否在标题栏区域（顶部30像素）
-        if event.position().y() <= 30:
+        # 检查是否在标题栏区域（顶部50像素，macOS标题栏可能更高）
+        if event.position().y() <= 50:
             # 完全忽略双击事件，不执行默认的扩大操作
             event.ignore()
             # 不调用 super()，完全阻止事件传播
             return
-        # 非标题栏区域的双击事件正常处理
-        super().mouseDoubleClickEvent(event)
+        # 非标题栏区域的双击事件也禁止（防止任何双击放大）
+        event.ignore()
+        return
     
     def _setup_ui(self):
         """设置UI（苹果风格）"""
@@ -312,7 +361,7 @@ class AirDropView(QWidget):
         background_layout.setAlignment(Qt.AlignCenter)
         background_layout.setSpacing(12)
         
-        # 信号图标（使用 resources/airdrop.png，转换为黑色）
+        # 信号图标
         signal_label = QLabel()
         signal_label.setAlignment(Qt.AlignCenter)
         # 加载图标
@@ -326,6 +375,7 @@ class AirDropView(QWidget):
                 # 将图标转换为黑色
                 black_pixmap = self._tint_pixmap_black(scaled_pixmap)
                 signal_label.setPixmap(black_pixmap)
+                signal_label.setStyleSheet("color: #0969da;")
             else:
                 # 如果加载失败，使用默认emoji
                 signal_label.setText("📡")
@@ -387,7 +437,15 @@ class AirDropView(QWidget):
         self._update_background_label_position()
     
     def resizeEvent(self, event):
-        """窗口大小改变时调整背景文字位置"""
+        """窗口大小改变时调整背景文字位置，并禁止窗口大小改变"""
+        # 如果窗口大小被改变，立即恢复为原始大小
+        if hasattr(self, '_fixed_size') and self._fixed_size:
+            current_size = self.size()
+            if current_size != self._fixed_size:
+                # 窗口大小被改变，立即恢复
+                self.setFixedSize(self._fixed_size)
+                return
+        
         super().resizeEvent(event)
         self._update_background_label_position()
     
@@ -667,14 +725,30 @@ class AirDropView(QWidget):
         # 根据隐藏方向决定从哪个方向滑出
         # 注意：起始位置应该与隐藏位置一致（保留1像素可见）
         visible_pixel = 1  # 保留1像素可见
+        
+        # 计算Y坐标的最大值：屏幕高度 - 窗口高度 - macOS Y偏移量
+        # 当窗口被下边缘挡住时，固定Y坐标为这个最大值
+        # 动画出现时的Y坐标和动画隐藏时的Y坐标都应该使用这个值
+        y_offset = self._get_macos_y_offset(self)  # 动态检测 macOS Y 坐标偏移量
+        max_y = screen.height() - window_height - y_offset
+        
+        # 检查目标Y坐标是否会导致窗口下边缘超出屏幕下边缘
+        # 如果会超出，使用Y坐标的最大值（这样显示和隐藏动画的Y坐标就一致了）
+        target_y = target_rect.y()
+        if target_y + window_height > screen.bottom():
+            target_y = max_y  # 使用Y坐标的最大值
+        
         if hasattr(self, '_hidden_to_left') and self._hidden_to_left:
             # 从左侧滑出：窗口从屏幕左侧外滑入（保留1像素可见的位置）
             start_x = screen.left() - window_width + visible_pixel
-            start_y = target_rect.y()  # 保持Y坐标不变
+            start_y = target_y  # 使用调整后的Y坐标（与隐藏动画一致）
         else:
             # 从右侧滑出：窗口从屏幕右侧外滑入（保留1像素可见的位置）
             start_x = screen.right() - visible_pixel
-            start_y = target_rect.y()  # 保持Y坐标不变
+            start_y = target_y  # 使用调整后的Y坐标（与隐藏动画一致）
+        
+        # 更新 target_rect 的 Y 坐标，确保使用调整后的值（当窗口被下边缘挡住时，使用Y坐标的最大值）
+        target_rect = QRect(target_rect.x(), target_y, target_rect.width(), target_rect.height())
         
         # 先设置窗口在隐藏位置（屏幕外）
         start_rect = QRect(start_x, start_y, window_width, window_height)
@@ -741,6 +815,7 @@ class AirDropView(QWidget):
             """真正开始动画，使用实际起始位置"""
             import sys
             nonlocal target_rect  # 声明 target_rect 是外部作用域的变量
+            nonlocal target_y  # 声明 target_y 是外部作用域的变量（在回调函数中使用）
             
             # 在显示动画开始时，检查Y坐标是否已被系统调整
             actual_pos_before_animation = self.pos()
@@ -777,16 +852,22 @@ class AirDropView(QWidget):
             # _before_hide_rect 中保存的是隐藏前的原始位置
             original_y = target_rect.y()  # 目标位置已经是从 _before_hide_rect 计算出来的，使用它
             
-            # 如果Y坐标被系统调整了，我们需要决定是使用实际Y还是原始Y
-            # 系统在显示窗口时可能会自动调整Y坐标（通常是增加28像素左右）
-            # 为了保持一致性，我们使用原始Y坐标作为目标，但在动画完成后更新_before_hide_rect
-            if abs(actual_start_y - original_y) > 5:
-                import sys
-                # 仍然使用原始Y坐标作为目标，但在动画完成后更新_before_hide_rect
-                target_y = original_y
+            # 计算Y坐标的最大值：屏幕高度 - 窗口高度 - macOS Y偏移量
+            # 当窗口被下边缘挡住时，固定Y坐标为这个最大值
+            # 动画出现时的Y坐标和动画隐藏时的Y坐标都应该使用这个值
+            screen = QApplication.primaryScreen().geometry()
+            y_offset = self._get_macos_y_offset(self)  # 动态检测 macOS Y 坐标偏移量
+            max_y = screen.height() - actual_start_rect.height() - y_offset
+            
+            # 检查原始Y坐标是否会导致窗口下边缘超出屏幕下边缘
+            # 如果会超出，使用Y坐标的最大值（这样显示和隐藏动画的Y坐标就一致了）
+            if original_y + actual_start_rect.height() > screen.bottom():
+                target_y = max_y  # 使用Y坐标的最大值
             else:
-                # Y坐标偏差不大，使用原始Y坐标
                 target_y = original_y
+            
+            # 更新 target_rect 的 Y 坐标，确保使用调整后的值（在回调函数中也会使用这个值）
+            target_rect = QRect(target_rect.x(), target_y, target_rect.width(), target_rect.height())
             
             # 使用 pos 属性动画窗口位置（而不是 geometry）
             # 只动画X坐标，Y坐标保持实际值（接受系统调整，避免累积偏移）
@@ -823,17 +904,17 @@ class AirDropView(QWidget):
                     final_rect = self.geometry()
                     import sys
                     
-                    # 只检查X坐标是否匹配（Y坐标可能被系统调整，接受系统调整后的Y坐标，避免累积偏移）
+                    # 检查X坐标是否匹配
                     if abs(final_rect.x() - target_rect.x()) > 5:
-                        # 只移动X坐标，保持当前Y坐标（避免抖动和累积偏移）
+                        # 只移动X坐标，保持当前Y坐标
                         self.move(target_rect.x(), final_rect.y())
                     
-                    # 如果Y坐标被系统调整了，强制调整回目标Y坐标
-                    # 因为系统在显示窗口时会自动调整Y坐标，我们需要强制使用目标Y坐标
-                    if abs(final_rect.y() - target_rect.y()) > 5:
+                    # 强制调整Y坐标到目标位置（使用调整后的 target_y，如果超出下边缘则使用 max_y）
+                    # 确保动画完成后窗口位置与目标位置一致
+                    if abs(final_rect.y() - target_y) > 5:
                         import sys
-                        # 强制调整窗口Y坐标到目标位置
-                        self.move(final_rect.x(), target_rect.y())
+                        # 强制调整窗口Y坐标到目标位置（使用调整后的 target_y）
+                        self.move(final_rect.x(), target_y)
                         # 重新获取位置确认
                         final_rect = self.geometry()
                         final_pos = self.pos()
@@ -925,16 +1006,28 @@ class AirDropView(QWidget):
         # 找到最近的边缘（只考虑左右）
         # 注意：保留1像素可见，避免macOS系统自动调整位置
         visible_pixel = 1  # 保留1像素可见
+        
+        # 计算Y坐标的最大值：屏幕高度 - 窗口高度 - macOS Y偏移量
+        # 当窗口被下边缘挡住时，固定Y坐标为这个最大值
+        # 动画出现时的Y坐标和动画隐藏时的Y坐标都应该使用这个值
+        y_offset = self._get_macos_y_offset(self)  # 动态检测 macOS Y 坐标偏移量
+        max_y = screen.height() - window_height - y_offset  # Y坐标的最大值
+        
+        # 检查原始Y坐标是否会导致窗口下边缘超出屏幕下边缘
+        # 如果会超出，使用Y坐标的最大值（这样显示和隐藏动画的Y坐标就一致了）
+        if original_y + window_height > screen.bottom():
+            target_y = max_y  # 使用Y坐标的最大值
+        else:
+            target_y = original_y  # 使用保存的原始Y坐标
+        
         if left_dist <= right_dist:
             # 隐藏到左边缘：窗口几乎完全滑出屏幕左侧，但保留1像素可见
             target_x = screen.left() - window_width + visible_pixel
-            target_y = original_y  # 使用保存的原始Y坐标，保持不变
             # 保存隐藏方向，用于恢复时从正确方向滑出
             self._hidden_to_left = True
         else:
             # 隐藏到右边缘：窗口几乎完全滑出屏幕右侧，但保留1像素可见
             target_x = screen.right() - visible_pixel
-            target_y = original_y  # 使用保存的原始Y坐标，保持不变
             # 保存隐藏方向，用于恢复时从正确方向滑出
             self._hidden_to_left = False
         
@@ -948,7 +1041,7 @@ class AirDropView(QWidget):
         # 使用保存的原始位置作为起始位置（使用 pos() 的当前 X，但使用保存的原始 Y）
         current_pos = self.pos()
         pos_animation.setStartValue(QPoint(current_pos.x(), original_y))  # 强制使用保存的原始 Y 坐标
-        pos_animation.setEndValue(QPoint(target_x, original_y))  # Y坐标保持不变，使用保存的原始 Y
+        pos_animation.setEndValue(QPoint(target_x, target_y))  # 使用调整后的 target_y（可能已调整以避免下边缘超出）
         pos_animation.setEasingCurve(QEasingCurve.InOutCubic)
         
         # 保存动画对象，防止被垃圾回收
@@ -962,9 +1055,9 @@ class AirDropView(QWidget):
         def hide_window_early():
             """在动画完成前提前隐藏窗口"""
             try:
-                # 强制设置窗口位置到目标位置
-                self.setGeometry(target_x, original_y, window_width, window_height)
-                self.move(target_x, original_y)
+                # 强制设置窗口位置到目标位置（使用调整后的 target_y）
+                self.setGeometry(target_x, target_y, window_width, window_height)
+                self.move(target_x, target_y)
                 pos_before_hide = self.pos()
                 rect_before_hide = self.geometry()
                 
@@ -995,21 +1088,21 @@ class AirDropView(QWidget):
                     pos_after_animation = self.pos()
                     rect_after_animation = self.geometry()
                     
-                    # 强制设置窗口位置到目标位置
-                    self.setGeometry(target_x, original_y, window_width, window_height)
-                    self.move(target_x, original_y)
-                    
-                    # 标记窗口被隐藏
-                    self._was_hidden_to_icon = True
-                    self._hidden_rect = target_rect
-                    
-                    # 隐藏窗口
-                    self.hide()
-                    self.setVisible(False)
-                    
-                    # 重新启用位置检测
-                    if hasattr(self, '_position_track_timer'):
-                        self._position_track_timer.start(50)
+                # 强制设置窗口位置到目标位置（使用调整后的 target_y）
+                self.setGeometry(target_x, target_y, window_width, window_height)
+                self.move(target_x, target_y)
+                
+                # 标记窗口被隐藏
+                self._was_hidden_to_icon = True
+                self._hidden_rect = target_rect
+                
+                # 隐藏窗口
+                self.hide()
+                self.setVisible(False)
+                
+                # 重新启用位置检测
+                if hasattr(self, '_position_track_timer'):
+                    self._position_track_timer.start(50)
                 # 窗口已经隐藏
                 
                 # 清理动画对象

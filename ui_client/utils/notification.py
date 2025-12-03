@@ -3,7 +3,7 @@
 """
 跨平台系统通知工具
 使用系统原生 API（类似 iOS 的机制）
-支持 macOS 和 Windows
+支持 macOS、Windows 和 Linux
 """
 
 import sys
@@ -41,7 +41,7 @@ class SystemNotification:
                 icon_paths = [
                     project_root / "resources" / "app_icon.icns",  # macOS
                     project_root / "resources" / "app_icon.ico",   # Windows
-                    project_root / "resources" / "app_icon.png",   # 通用
+                    project_root / "resources" / "app_icon.png",   # Linux/通用
                 ]
                 for icon_path in icon_paths:
                     if icon_path.exists():
@@ -72,6 +72,8 @@ class SystemNotification:
             return SystemNotification._send_macos_native(title, message, subtitle, sound, icon_path)
         elif system == "Windows":  # Windows
             return SystemNotification._send_windows_native(title, message, sound, icon_path)
+        elif system == "Linux":  # Linux
+            return SystemNotification._send_linux_native(title, message, sound, icon_path)
         else:
             print(f"不支持的操作系统: {system}")
             return False
@@ -266,6 +268,109 @@ $notifier.Show($toast)
             return False
     
     @staticmethod
+    def _send_linux_native(title: str, message: str, sound: bool = True, icon_path: Optional[str] = None) -> bool:
+        """
+        Linux 系统通知（使用 notify-send 命令，基于 D-Bus）
+        """
+        import subprocess
+        try:
+            # 方法1: 尝试使用 notify-send（大多数 Linux 发行版都支持）
+            try:
+                cmd = ["notify-send", title, message]
+                
+                # 添加图标（如果提供）
+                if icon_path:
+                    import os
+                    if not os.path.isabs(icon_path):
+                        icon_path = os.path.abspath(icon_path)
+                    if os.path.exists(icon_path):
+                        cmd.extend(["--icon", icon_path])
+                
+                # 添加超时时间（毫秒，默认 5 秒）
+                cmd.extend(["--expire-time", "5000"])
+                
+                # 添加应用名称
+                cmd.extend(["--app-name", "Ai Perf Client"])
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                return result.returncode == 0
+            except FileNotFoundError:
+                # notify-send 不可用，尝试使用 Python 的 plyer 库
+                return SystemNotification._send_linux_fallback(title, message, sound, icon_path)
+            except Exception as e:
+                print(f"Linux notify-send 调用失败: {e}")
+                return SystemNotification._send_linux_fallback(title, message, sound, icon_path)
+        except Exception as e:
+            print(f"Linux 通知发送失败: {e}")
+            return False
+    
+    @staticmethod
+    def _send_linux_fallback(title: str, message: str, sound: bool = True, icon_path: Optional[str] = None) -> bool:
+        """Linux 回退方案：使用 plyer 库或 dbus-python"""
+        try:
+            # 方法1: 尝试使用 plyer（跨平台通知库）
+            try:
+                from plyer import notification
+                notification.notify(
+                    title=title,
+                    message=message,
+                    app_name="Ai Perf Client",
+                    timeout=5,
+                    app_icon=icon_path if icon_path else None
+                )
+                return True
+            except ImportError:
+                pass
+            
+            # 方法2: 尝试使用 dbus-python（需要安装 python3-dbus）
+            try:
+                import dbus
+                
+                # 获取 D-Bus 会话总线
+                bus = dbus.SessionBus()
+                notify_obj = bus.get_object('org.freedesktop.Notifications', '/org/freedesktop/Notifications')
+                notify_iface = dbus.Interface(notify_obj, 'org.freedesktop.Notifications')
+                
+                # 准备参数
+                app_name = "Ai Perf Client"
+                replaces_id = 0
+                app_icon = icon_path if icon_path else ""
+                summary = title
+                body = message
+                actions = []
+                hints = {}
+                expire_timeout = 5000  # 5秒
+                
+                # 调用 Notify 方法
+                notify_iface.Notify(
+                    app_name,
+                    replaces_id,
+                    app_icon,
+                    summary,
+                    body,
+                    actions,
+                    hints,
+                    expire_timeout
+                )
+                return True
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"Linux dbus-python 调用失败: {e}")
+            
+            # 如果所有方法都失败，返回 False
+            print("Linux 通知发送失败：未找到可用的通知方法（需要 notify-send、plyer 或 dbus-python）")
+            return False
+        except Exception as e:
+            print(f"Linux 回退方案失败: {e}")
+            return False
+    
+    @staticmethod
     def check_permission():
         """
         检查通知权限（使用系统原生 API）
@@ -300,13 +405,43 @@ $notifier.Show($toast)
         elif system == "Windows":
             # Windows 10+ 不需要显式权限检查
             return True
+        elif system == "Linux":
+            # Linux: 检查是否有 notify-send 或 D-Bus
+            try:
+                import subprocess
+                # 检查 notify-send 是否可用
+                result = subprocess.run(
+                    ["which", "notify-send"],
+                    capture_output=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    return True
+                
+                # 检查 dbus-python 是否可用
+                try:
+                    import dbus
+                    return True
+                except ImportError:
+                    pass
+                
+                # 检查 plyer 是否可用
+                try:
+                    from plyer import notification
+                    return True
+                except ImportError:
+                    pass
+                
+                return False
+            except Exception:
+                return False
         else:
             return True
     
     @staticmethod
     def open_system_settings():
         """
-        打开系统通知设置页面（仅 macOS）
+        打开系统通知设置页面
         """
         system = platform.system()
         if system == "Darwin":
@@ -339,6 +474,25 @@ $notifier.Show($toast)
                     return True
                 except Exception:
                     return False
+        elif system == "Linux":
+            # Linux: 打开系统通知设置（不同发行版命令不同）
+            import subprocess
+            try:
+                # 尝试常见的设置命令
+                commands = [
+                    ["gnome-control-center", "notifications"],  # GNOME
+                    ["kde5-settings", "notifications"],        # KDE
+                    ["xfce4-settings-manager"],                 # XFCE
+                ]
+                for cmd in commands:
+                    try:
+                        subprocess.Popen(cmd)
+                        return True
+                    except FileNotFoundError:
+                        continue
+                return False
+            except Exception:
+                return False
         return False
     
     @staticmethod
@@ -366,6 +520,16 @@ $notifier.Show($toast)
         elif system == "Windows":
             # Windows 10+ 不需要显式请求权限
             return True
+        elif system == "Linux":
+            # Linux: 通常不需要显式请求权限，直接发送测试通知
+            try:
+                return SystemNotification.send(
+                    title="通知权限",
+                    message="正在测试通知功能",
+                    subtitle=None
+                )
+            except Exception:
+                return False
         else:
             return False
 

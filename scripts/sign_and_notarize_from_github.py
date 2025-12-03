@@ -614,18 +614,46 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                     log_warn(f"    删除失败: {e}")
                 
                 # 修复 Frameworks 中的资源文件符号链接
-                # 检查 base_library.zip
+                # 检查 base_library.zip（Python 需要在 Frameworks 目录中找到它）
                 zip_file = frameworks_dir / "base_library.zip"
-                if zip_file.exists() and not zip_file.is_symlink():
-                    resources_zip = resources_dir / "base_library.zip"
-                    if resources_zip.exists():
-                        log_warn(f"  将 base_library.zip 转换为符号链接: {zip_file.relative_to(target_app)}")
+                resources_zip = resources_dir / "base_library.zip"
+                
+                if resources_zip.exists():
+                    # Resources 中有 base_library.zip
+                    if zip_file.exists():
+                        # Frameworks 中也有，检查是否是符号链接
+                        if zip_file.is_symlink():
+                            # 已经是符号链接，检查是否指向正确位置
+                            target = zip_file.readlink()
+                            if str(target) != "../Resources/base_library.zip":
+                                log_warn(f"  修复 base_library.zip 符号链接指向: {zip_file.relative_to(target_app)}")
+                                try:
+                                    zip_file.unlink()
+                                    zip_file.symlink_to("../Resources/base_library.zip")
+                                    log_info(f"    ✓ 已修复: base_library.zip -> ../Resources/base_library.zip")
+                                except Exception as e:
+                                    log_warn(f"    修复失败: {e}")
+                            else:
+                                log_info(f"  base_library.zip 符号链接已正确: {zip_file.relative_to(target_app)}")
+                        else:
+                            # Frameworks 中是真实文件，需要转换为符号链接
+                            log_warn(f"  将 base_library.zip 转换为符号链接: {zip_file.relative_to(target_app)}")
+                            try:
+                                zip_file.unlink()
+                                zip_file.symlink_to("../Resources/base_library.zip")
+                                log_info(f"    ✓ 已转换: base_library.zip -> ../Resources/base_library.zip")
+                            except Exception as e:
+                                log_warn(f"    转换失败: {e}")
+                    else:
+                        # Frameworks 中不存在，创建符号链接
+                        log_warn(f"  在 Frameworks 中创建 base_library.zip 符号链接: {zip_file.relative_to(target_app)}")
                         try:
-                            zip_file.unlink()
                             zip_file.symlink_to("../Resources/base_library.zip")
-                            log_info(f"    ✓ 已转换: base_library.zip -> ../Resources/base_library.zip")
+                            log_info(f"    ✓ 已创建: base_library.zip -> ../Resources/base_library.zip")
                         except Exception as e:
-                            log_warn(f"    转换失败: {e}")
+                            log_warn(f"    创建失败: {e}")
+                else:
+                    log_warn(f"  ⚠ Resources 中未找到 base_library.zip，无法创建符号链接")
                 
                 # 检查 config.json
                 config_file = frameworks_dir / "config.json"
@@ -652,6 +680,53 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                             log_info(f"    ✓ 已转换: google_client_secret.json -> ../Resources/google_client_secret.json")
                         except Exception as e:
                             log_warn(f"    转换失败: {e}")
+                
+                # 修复 python3.10 目录位置（关键修复：解决 _struct 等模块缺失问题）
+                # Python 运行时需要在 Frameworks/python3.10/lib-dynload 中找到 C 扩展模块
+                python310_in_resources = resources_dir / "python3.10"
+                python310_in_frameworks = frameworks_dir / "python3.10"
+                
+                if python310_in_resources.exists() and not python310_in_frameworks.exists():
+                    log_warn(f"  发现 python3.10 目录在 Resources 中，需要移动到 Frameworks（修复 _struct 等模块缺失问题）")
+                    try:
+                        # 移动整个 python3.10 目录到 Frameworks
+                        shutil.move(str(python310_in_resources), str(python310_in_frameworks))
+                        log_info(f"    ✓ 已移动: python3.10 目录从 Resources 移动到 Frameworks")
+                        
+                        # 验证 lib-dynload 目录是否存在
+                        lib_dynload = python310_in_frameworks / "lib-dynload"
+                        if lib_dynload.exists():
+                            so_files = list(lib_dynload.glob("*.so"))
+                            log_info(f"    ✓ lib-dynload 目录包含 {len(so_files)} 个 .so 文件")
+                            # 检查关键模块
+                            key_modules = ["_struct.cpython-310-darwin.so", "_ctypes.cpython-310-darwin.so"]
+                            for module in key_modules:
+                                module_path = lib_dynload / module
+                                if module_path.exists():
+                                    log_info(f"    ✓ 找到关键模块: {module}")
+                                else:
+                                    log_warn(f"    ⚠ 未找到关键模块: {module}")
+                        else:
+                            log_warn(f"    ⚠ lib-dynload 目录不存在")
+                    except Exception as e:
+                        log_error(f"    移动失败: {e}")
+                        # 如果移动失败，尝试创建符号链接作为回退
+                        try:
+                            log_warn(f"    尝试创建符号链接作为回退...")
+                            python310_in_frameworks.symlink_to("../Resources/python3.10")
+                            log_info(f"    ✓ 已创建符号链接: python3.10 -> ../Resources/python3.10")
+                        except Exception as e2:
+                            log_error(f"    创建符号链接也失败: {e2}")
+                elif python310_in_resources.exists() and python310_in_frameworks.exists():
+                    # 两个位置都存在，检查是否是符号链接
+                    if python310_in_frameworks.is_symlink():
+                        log_info(f"  python3.10 在 Frameworks 中已是符号链接: {python310_in_frameworks.relative_to(target_app)}")
+                    else:
+                        log_warn(f"  python3.10 在两个位置都存在，但 Frameworks 中不是符号链接，可能需要清理 Resources 中的版本")
+                elif python310_in_frameworks.exists():
+                    log_info(f"  python3.10 已在 Frameworks 中: {python310_in_frameworks.relative_to(target_app)}")
+                else:
+                    log_warn(f"  ⚠ 未找到 python3.10 目录（可能导致 C 扩展模块缺失）")
                 
                 # 检查 resources 目录
                 resources_in_frameworks = frameworks_dir / "resources"

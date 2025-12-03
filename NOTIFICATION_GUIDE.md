@@ -2,19 +2,21 @@
 
 ## 功能概述
 
-系统通知功能使用**系统原生 API**（类似 iOS 的 UNUserNotificationCenter），支持在应用运行时和未运行时发送通知，适用于 macOS 和 Windows 平台。
+系统通知功能使用**系统原生 API**（类似 iOS 的 UNUserNotificationCenter），支持在应用运行时和未运行时发送通知，适用于 macOS、Windows 和 Linux 平台。
 
 ### 实现方式
 
 - **macOS**: 使用 `NSUserNotificationCenter` / `UserNotifications` framework（系统原生 API）
 - **Windows**: 使用 `Windows.UI.Notifications` API（系统原生 API）
+- **Linux**: 使用 `notify-send`（基于 D-Bus）或 `plyer` / `dbus-python` 库
 
 ### 依赖项
 
 - **macOS**: 使用 `PyObjC`（通常系统 Python 已包含，pyenv 需要安装：`pip install pyobjc`）
 - **Windows**: 使用 `winrt`（Windows 10+）或 `win10toast`（回退方案）
+- **Linux**: 使用 `notify-send`（系统自带）或 `plyer` / `dbus-python`（可选，`pip install plyer` 或 `pip install dbus-python`）
 
-如果原生 API 不可用，会自动回退到命令行方案（osascript/PowerShell）。
+如果原生 API 不可用，会自动回退到命令行方案（osascript/PowerShell/notify-send）。
 
 ## 基本使用
 
@@ -181,6 +183,14 @@ notifier.clear_notification_queue()
 - ✅ 支持自定义声音
 - ✅ 无需权限（Windows 10+）
 - ✅ 应用未运行时可以通过 PowerShell 发送通知
+
+### Linux
+- ✅ 支持原生通知（基于 D-Bus）
+- ❌ 不支持副标题（notify-send 不支持）
+- ⚠️ 声音支持取决于桌面环境
+- ✅ 通常无需权限（取决于桌面环境设置）
+- ✅ 应用未运行时可以通过 `notify-send` 发送通知
+- 📦 需要安装：`notify-send`（系统自带）或 `plyer` / `dbus-python`（可选）
 
 ## 最佳实践
 

@@ -33,6 +33,54 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # 精确到毫秒
         print(f"[{timestamp}] {message}", file=sys.stderr)
     
+    @staticmethod
+    def _get_macos_y_offset(window=None):
+        """获取 macOS Y 坐标偏移量（用于补偿系统自动调整）
+        
+        在 macOS 上，系统可能会自动调整窗口的 Y 坐标（通常是标题栏高度），
+        导致 geometry().y() 和 pos().y() 有差值。这个方法动态检测这个偏移量。
+        
+        Args:
+            window: 窗口对象，如果提供则动态检测，否则根据系统版本估算
+        
+        Returns:
+            int: Y 坐标偏移量（像素），非 macOS 系统返回 0
+        """
+        import platform
+        if platform.system() != "Darwin":
+            return 0  # Windows/Linux 不需要偏移
+        
+        # 如果提供了窗口对象，动态检测偏移量
+        if window is not None:
+            try:
+                geo = window.geometry()
+                pos = window.pos()
+                # 计算差值（通常是标题栏高度）
+                offset = geo.y() - pos.y()
+                if offset > 0:
+                    return offset
+            except:
+                pass
+        
+        # 如果动态检测失败，根据 macOS 版本估算
+        try:
+            import platform as plat
+            mac_version = plat.mac_ver()[0]  # 例如 "14.7.8"
+            if mac_version:
+                major_version = int(mac_version.split('.')[0])
+                # macOS 11+ 通常有 28 像素偏移（标题栏高度）
+                # macOS 10.13-10.15 可能偏移不同或没有偏移
+                if major_version >= 11:
+                    return 28
+                elif major_version == 10:
+                    # macOS 10.13-10.15，可能需要检测，暂时返回 0
+                    # 如果实际测试发现有偏移，可以调整
+                    return 0
+        except:
+            pass
+        
+        return 0  # 默认不偏移
+    
     def __init__(self):
         super().__init__()
 
@@ -630,7 +678,7 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap(str(airdrop_icon_path))
                 if not pixmap.isNull():
                     # 缩放图标到合适大小（16x16像素，菜单图标通常较小）
-                    scaled_pixmap = pixmap.scaled(14, 14, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     # 将图标转换为黑色
                     black_pixmap = self._tint_pixmap_black(scaled_pixmap)
                     airdrop_icon = QIcon(black_pixmap)
@@ -664,7 +712,7 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap(str(airdrop_icon_path))
                 if not pixmap.isNull():
                     # 缩放图标到合适大小（16x16像素，菜单图标通常较小）
-                    scaled_pixmap = pixmap.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     # 将图标转换为黑色
                     black_pixmap = self._tint_pixmap_black(scaled_pixmap)
                     airdrop_icon = QIcon(black_pixmap)
@@ -727,11 +775,9 @@ class MainWindow(QMainWindow):
         
         # 如果窗口正在执行显示动画，等待完成或强制重置
         if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
-            self._log_with_timestamp(f"[主窗口] 窗口正在执行显示动画，等待完成...")
             # 等待一下，如果还是在进行，强制重置
             def check_and_reset():
                 if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
-                    self._log_with_timestamp(f"[主窗口] 动画仍在进行，强制重置标志")
                     self._airdrop_window._is_showing_animation = False
                     # 重新调用显示
                     self._show_airdrop_window()
@@ -865,6 +911,16 @@ class MainWindow(QMainWindow):
                                 # 强制设置
                                 ns_window.setStyleMask_(style_mask)
                             
+                            # 方法2：直接禁用最大化按钮（通过 NSWindowButton）
+                            try:
+                                # NSWindowButtonZoom = 2 (最大化/全屏按钮)
+                                # 直接使用数值 2，因为 NSWindowButton 在 PyObjC 中可能不是枚举
+                                zoom_button = ns_window.standardWindowButton_(2)
+                                if zoom_button:
+                                    zoom_button.setEnabled_(False)  # 禁用最大化按钮
+                            except Exception as e_zoom:
+                                print(f"[WARNING] Failed to disable zoom button: {e_zoom}", file=sys.stderr)
+                            
                             # 禁止双击窗口头部扩大（通过设置 resizeIncrements 来防止调整大小）
                             try:
                                 from AppKit import NSSize
@@ -873,6 +929,16 @@ class MainWindow(QMainWindow):
                                 ns_window.setResizeIncrements_(huge_size)
                             except Exception as e4:
                                 print(f"[WARNING] Failed to set resize increments: {e4}", file=sys.stderr)
+                            
+                            # 额外措施：在 macOS 14+ 上，尝试直接禁止调整大小
+                            try:
+                                # 通过设置窗口的 contentMinSize 和 contentMaxSize 为相同值来禁止调整大小
+                                from AppKit import NSSize
+                                fixed_size = NSSize(window_width, window_height)
+                                ns_window.setContentMinSize_(fixed_size)
+                                ns_window.setContentMaxSize_(fixed_size)
+                            except Exception as e5:
+                                print(f"[WARNING] Failed to set window fixed size: {e5}", file=sys.stderr)
                         except Exception as e:
                             print(f"[WARNING] Failed to set window style mask: {e}", file=sys.stderr)
                         
@@ -901,7 +967,14 @@ class MainWindow(QMainWindow):
             max_height = min(int(screen.height() * 0.85), 2400)
             window_height = max(300, max_height // 2)  # 高度减半，至少300px
             
-            self._airdrop_window.resize(window_width, window_height)
+            # 在 macOS 上，设置窗口为固定大小，防止用户调整大小
+            if platform.system() == "Darwin":
+                from PySide6.QtCore import QSize
+                self._airdrop_window.setFixedSize(window_width, window_height)
+                # 保存固定大小，用于 resizeEvent 中恢复
+                self._airdrop_window._fixed_size = QSize(window_width, window_height)
+            else:
+                self._airdrop_window.resize(window_width, window_height)
             
             # 默认位置：右侧屏幕边缘垂直居中
             x = screen.right() - window_width
@@ -925,7 +998,6 @@ class MainWindow(QMainWindow):
                     current_pos = self._airdrop_window.pos()
                     # 使用 pos() 的 Y 坐标，因为它是实际窗口位置，geometry() 的 Y 可能包含标题栏等偏移
                     self._airdrop_window._before_hide_rect = QRect(current_pos.x(), current_pos.y(), current_geo.width(), current_geo.height())
-                    self._log_with_timestamp(f"[主窗口] 关闭按钮：保存位置: geometry=({current_geo.x()}, {current_geo.y()}), pos=({current_pos.x()}, {current_pos.y()}), 使用pos保存: ({current_pos.x()}, {current_pos.y()})")
                     # 重置拖拽状态
                     if hasattr(self._airdrop_window, '_edge_triggered'):
                         self._airdrop_window._edge_triggered = False
@@ -988,8 +1060,6 @@ class MainWindow(QMainWindow):
             target_height = before_hide_rect.height()
             
             import sys
-            self._log_with_timestamp(f"[主窗口] 隐藏前位置: ({before_hide_rect.x()}, {before_hide_rect.y()}), 大小={target_width}x{target_height}")
-            self._log_with_timestamp(f"[主窗口] 屏幕范围: left={screen.left()}, right={screen.right()}, width={screen.width()}, height={screen.height()}")
             
             # 根据隐藏方向决定目标位置
             # 如果从右侧隐藏，窗口右边缘应该接近屏幕右边缘
@@ -997,26 +1067,25 @@ class MainWindow(QMainWindow):
             if hasattr(self._airdrop_window, '_hidden_to_left') and self._airdrop_window._hidden_to_left:
                 # 从左侧隐藏的，恢复时窗口左边缘接近屏幕左边缘
                 target_x = screen.left()
-                self._log_with_timestamp(f"[主窗口] 从左侧隐藏，恢复时左边缘对齐屏幕左边缘: {target_x}")
             else:
                 # 从右侧隐藏的，恢复时窗口右边缘接近屏幕右边缘
                 target_x = screen.right() - target_width
-                self._log_with_timestamp(f"[主窗口] 从右侧隐藏，恢复时右边缘对齐屏幕右边缘: {target_x} (窗口右边缘={target_x + target_width})")
             
             # Y坐标：使用隐藏前的位置（使用pos()保存的Y坐标），但确保在屏幕内
             # 注意：before_hide_rect 中保存的是 pos() 的 Y 坐标，这是实际窗口位置
+            # 计算Y坐标的最大值：屏幕高度 - 窗口高度 - macOS Y偏移量
+            y_offset = self._get_macos_y_offset(self._airdrop_window)  # 动态检测 macOS Y 坐标偏移量
+            max_y = screen.height() - target_height - y_offset
+            
             target_y = before_hide_rect.y()
-            self._log_with_timestamp(f"[主窗口] 使用保存的Y坐标: {target_y} (来自_before_hide_rect)")
             if target_y < screen.top():
                 target_y = screen.top()
-                self._log_with_timestamp(f"[主窗口] 调整Y: 上边缘超出，调整为 {target_y}")
             elif target_y + target_height > screen.bottom():
-                target_y = screen.bottom() - target_height
-                self._log_with_timestamp(f"[主窗口] 调整Y: 下边缘超出，调整为 {target_y}")
+                # 当窗口被下边缘挡住时，固定Y坐标为最大值
+                target_y = max_y
             
             # 使用动画从隐藏位置滑出显示
             target_rect = QRect(target_x, target_y, target_width, target_height)
-            self._log_with_timestamp(f"[主窗口] 最终目标位置=({target_x}, {target_y}), 大小={target_width}x{target_height}, 窗口左边缘={target_x}, 窗口右边缘={target_x + target_width}, 屏幕左边缘={screen.left()}, 屏幕右边缘={screen.right()}")
             self._airdrop_window._animate_from_icon(target_rect)
             return
         
