@@ -623,7 +623,7 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap(str(airdrop_icon_path))
                 if not pixmap.isNull():
                     # 缩放图标到合适大小（16x16像素，菜单图标通常较小）
-                    scaled_pixmap = pixmap.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(14, 14, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     # 将图标转换为黑色
                     black_pixmap = self._tint_pixmap_black(scaled_pixmap)
                     airdrop_icon = QIcon(black_pixmap)
@@ -717,6 +717,20 @@ class MainWindow(QMainWindow):
     def _show_airdrop_window(self):
         """显示隔空投送窗口（内部方法）"""
         from windows.airdrop_view import AirDropView
+        import sys
+        
+        # 如果窗口正在执行显示动画，等待完成或强制重置
+        if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
+            print(f"[主窗口] 窗口正在执行显示动画，等待完成...", file=sys.stderr)
+            # 等待一下，如果还是在进行，强制重置
+            def check_and_reset():
+                if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
+                    print(f"[主窗口] 动画仍在进行，强制重置标志", file=sys.stderr)
+                    self._airdrop_window._is_showing_animation = False
+                    # 重新调用显示
+                    self._show_airdrop_window()
+            QTimer.singleShot(500, check_and_reset)
+            return
         
         if self._airdrop_window is None:
             self._airdrop_window = AirDropView()
@@ -958,44 +972,37 @@ class MainWindow(QMainWindow):
         if hasattr(self._airdrop_window, '_before_hide_rect') and self._airdrop_window._before_hide_rect:
             # 从隐藏前的位置恢复：使用隐藏前的位置和大小
             before_hide_rect = self._airdrop_window._before_hide_rect
-            target_x = before_hide_rect.x()
-            target_y = before_hide_rect.y()
             target_width = before_hide_rect.width()
             target_height = before_hide_rect.height()
             
             import sys
-            print(f"[主窗口] 隐藏前位置: ({target_x}, {target_y}), 大小={target_width}x{target_height}", file=sys.stderr)
+            print(f"[主窗口] 隐藏前位置: ({before_hide_rect.x()}, {before_hide_rect.y()}), 大小={target_width}x{target_height}", file=sys.stderr)
             print(f"[主窗口] 屏幕范围: left={screen.left()}, right={screen.right()}, width={screen.width()}, height={screen.height()}", file=sys.stderr)
             
-            # 确保窗口完全在屏幕内（如果位置在屏幕外，调整到屏幕边缘）
-            # 检查左边缘
-            if target_x < screen.left():
+            # 根据隐藏方向决定目标位置
+            # 如果从右侧隐藏，窗口右边缘应该接近屏幕右边缘
+            # 如果从左侧隐藏，窗口左边缘应该接近屏幕左边缘
+            if hasattr(self._airdrop_window, '_hidden_to_left') and self._airdrop_window._hidden_to_left:
+                # 从左侧隐藏的，恢复时窗口左边缘接近屏幕左边缘
                 target_x = screen.left()
-                print(f"[主窗口] 调整X: 左边缘超出，调整为 {target_x}", file=sys.stderr)
-            # 检查右边缘
-            elif target_x + target_width > screen.right():
+                print(f"[主窗口] 从左侧隐藏，恢复时左边缘对齐屏幕左边缘: {target_x}", file=sys.stderr)
+            else:
+                # 从右侧隐藏的，恢复时窗口右边缘接近屏幕右边缘
                 target_x = screen.right() - target_width
-                print(f"[主窗口] 调整X: 右边缘超出，调整为 {target_x}", file=sys.stderr)
+                print(f"[主窗口] 从右侧隐藏，恢复时右边缘对齐屏幕右边缘: {target_x} (窗口右边缘={target_x + target_width})", file=sys.stderr)
             
-            # 检查上边缘
+            # Y坐标：使用隐藏前的位置，但确保在屏幕内
+            target_y = before_hide_rect.y()
             if target_y < screen.top():
                 target_y = screen.top()
                 print(f"[主窗口] 调整Y: 上边缘超出，调整为 {target_y}", file=sys.stderr)
-            # 检查下边缘
             elif target_y + target_height > screen.bottom():
                 target_y = screen.bottom() - target_height
                 print(f"[主窗口] 调整Y: 下边缘超出，调整为 {target_y}", file=sys.stderr)
             
-            # 最终检查：确保窗口完全在屏幕内
-            if target_x < screen.left() or target_x + target_width > screen.right():
-                # 如果还是超出，使用默认位置（右侧屏幕边缘垂直居中）
-                target_x = screen.right() - target_width
-                target_y = (screen.height() - target_height) // 2
-                print(f"[主窗口] 使用默认位置: ({target_x}, {target_y})", file=sys.stderr)
-            
             # 使用动画从隐藏位置滑出显示
             target_rect = QRect(target_x, target_y, target_width, target_height)
-            print(f"[主窗口] 最终目标位置=({target_x}, {target_y}), 大小={target_width}x{target_height}, 窗口右边缘={target_x + target_width}, 屏幕右边缘={screen.right()}", file=sys.stderr)
+            print(f"[主窗口] 最终目标位置=({target_x}, {target_y}), 大小={target_width}x{target_height}, 窗口左边缘={target_x}, 窗口右边缘={target_x + target_width}, 屏幕左边缘={screen.left()}, 屏幕右边缘={screen.right()}", file=sys.stderr)
             self._airdrop_window._animate_from_icon(target_rect)
             return
         

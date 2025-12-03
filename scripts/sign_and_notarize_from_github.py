@@ -163,10 +163,14 @@ def download_file(url: str, dest_path: Path, api_key: str = None) -> bool:
             
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # 检测是否在终端环境中（支持 ANSI 转义序列）
+            is_tty = sys.stderr.isatty() if hasattr(sys.stderr, 'isatty') else False
+            
             # 使用 stderr 输出进度，避免与日志输出冲突
             # 先打印一个空行到 stderr，确保进度显示在独立行
-            sys.stderr.write("\n")
-            sys.stderr.flush()
+            if is_tty:
+                sys.stderr.write("\n")
+                sys.stderr.flush()
             
             with open(dest_path, "wb") as f:
                 for chunk in response.iter_bytes(chunk_size=8192):
@@ -180,15 +184,20 @@ def download_file(url: str, dest_path: Path, api_key: str = None) -> bool:
                             downloaded_mb = downloaded / (1024 * 1024)
                             total_mb = total_size / (1024 * 1024)
                             # 使用 stderr 输出进度，避免与日志输出冲突
-                            # 使用 \r 在同一行更新，\033[K 清除到行尾
                             progress_text = f"  进度: {percent:.1f}% ({downloaded_mb:.2f}/{total_mb:.2f} MB)"
-                            sys.stderr.write(f"\r{progress_text}\033[K")  # \033[K 清除到行尾
+                            if is_tty:
+                                # 在终端环境中，使用 \r 在同一行更新，\033[K 清除到行尾
+                                sys.stderr.write(f"\r{progress_text}\033[K")
+                            else:
+                                # 在非终端环境中，直接换行输出（避免显示转义序列）
+                                sys.stderr.write(f"{progress_text}\n")
                             sys.stderr.flush()
                             last_percent = int(percent)
             
             # 下载完成后，清除进度行并打印完成信息
-            sys.stderr.write("\r" + " " * 80 + "\r\n")  # 清除进度行并换行
-            sys.stderr.flush()
+            if is_tty:
+                sys.stderr.write("\r" + " " * 80 + "\r\n")  # 清除进度行并换行
+                sys.stderr.flush()
             log_info(f"✓ 下载完成: {dest_path}")
             return True
     except Exception as e:

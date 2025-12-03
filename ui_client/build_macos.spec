@@ -57,6 +57,14 @@ a = Analysis(
     binaries=[],
     datas=datas_list,
     hiddenimports=[
+        # Python 标准库核心模块（确保被包含，修复 encodings 缺失问题）
+        'encodings',
+        'encodings.utf_8',
+        'encodings.latin_1',
+        'encodings.ascii',
+        'encodings.cp1252',
+        'encodings.idna',
+        # 其他依赖
         'PySide6.QtCore',
         'PySide6.QtGui',
         'PySide6.QtWidgets',

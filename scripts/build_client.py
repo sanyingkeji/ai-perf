@@ -700,8 +700,16 @@ def main():
         # 打包
         log_warn("执行 PyInstaller 打包...")
         # 确保 PyInstaller 使用部署目标环境变量
+        # 注意：只传递 MACOSX_DEPLOYMENT_TARGET，不传递 CFLAGS/LDFLAGS
+        # 避免干扰 PyInstaller 的标准库收集过程
         pyinstaller_env = os.environ.copy()
         pyinstaller_env["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
+        # 移除可能干扰的编译标志（PyInstaller 需要自己管理这些）
+        pyinstaller_env.pop("CFLAGS", None)
+        pyinstaller_env.pop("LDFLAGS", None)
+        pyinstaller_env.pop("CPPFLAGS", None)
+        pyinstaller_env.pop("CC", None)
+        pyinstaller_env.pop("CXX", None)
         
         # 获取日志级别（默认为 INFO，可以通过环境变量覆盖）
         log_level = os.environ.get("PYINSTALLER_LOG_LEVEL", "INFO")
