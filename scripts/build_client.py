@@ -723,6 +723,7 @@ def main():
                 spec_file,
                 "--clean",
                 "--noconfirm",
+                "--collect-all", "encodings",  # 强制收集所有 encodings 模块（修复 ModuleNotFoundError）
                 f"--log-level={log_level}"
             ], check=True, env=pyinstaller_env, timeout=3600)  # 1小时超时，实时输出
             result = subprocess.CompletedProcess([], 0, "", "")  # 创建成功结果对象

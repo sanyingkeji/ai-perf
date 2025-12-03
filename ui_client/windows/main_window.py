@@ -22,10 +22,17 @@ from utils.api_client import ApiClient, ApiError, AuthError
 from utils.polling_service import get_polling_service
 from widgets.toast import Toast
 from widgets.loading_overlay import LoadingOverlay
-from datetime import date
+from datetime import date, datetime
+import sys
 
 
 class MainWindow(QMainWindow):
+    @staticmethod
+    def _log_with_timestamp(message: str):
+        """打印带时间戳的日志（精确到毫秒）"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # 精确到毫秒
+        print(f"[{timestamp}] {message}", file=sys.stderr)
+    
     def __init__(self):
         super().__init__()
 
@@ -717,15 +724,14 @@ class MainWindow(QMainWindow):
     def _show_airdrop_window(self):
         """显示隔空投送窗口（内部方法）"""
         from windows.airdrop_view import AirDropView
-        import sys
         
         # 如果窗口正在执行显示动画，等待完成或强制重置
         if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
-            print(f"[主窗口] 窗口正在执行显示动画，等待完成...", file=sys.stderr)
+            self._log_with_timestamp(f"[主窗口] 窗口正在执行显示动画，等待完成...")
             # 等待一下，如果还是在进行，强制重置
             def check_and_reset():
                 if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
-                    print(f"[主窗口] 动画仍在进行，强制重置标志", file=sys.stderr)
+                    self._log_with_timestamp(f"[主窗口] 动画仍在进行，强制重置标志")
                     self._airdrop_window._is_showing_animation = False
                     # 重新调用显示
                     self._show_airdrop_window()
@@ -914,6 +920,12 @@ class MainWindow(QMainWindow):
                     self._airdrop_window._transfer_manager.stop()
                 # 触发窗口隐藏动画（模拟拖到边缘）
                 if self._airdrop_window:
+                    # 在隐藏动画前，立即保存当前位置（使用pos()的Y坐标，避免系统调整影响）
+                    current_geo = self._airdrop_window.geometry()
+                    current_pos = self._airdrop_window.pos()
+                    # 使用 pos() 的 Y 坐标，因为它是实际窗口位置，geometry() 的 Y 可能包含标题栏等偏移
+                    self._airdrop_window._before_hide_rect = QRect(current_pos.x(), current_pos.y(), current_geo.width(), current_geo.height())
+                    self._log_with_timestamp(f"[主窗口] 关闭按钮：保存位置: geometry=({current_geo.x()}, {current_geo.y()}), pos=({current_pos.x()}, {current_pos.y()}), 使用pos保存: ({current_pos.x()}, {current_pos.y()})")
                     # 重置拖拽状态
                     if hasattr(self._airdrop_window, '_edge_triggered'):
                         self._airdrop_window._edge_triggered = False
@@ -976,8 +988,8 @@ class MainWindow(QMainWindow):
             target_height = before_hide_rect.height()
             
             import sys
-            print(f"[主窗口] 隐藏前位置: ({before_hide_rect.x()}, {before_hide_rect.y()}), 大小={target_width}x{target_height}", file=sys.stderr)
-            print(f"[主窗口] 屏幕范围: left={screen.left()}, right={screen.right()}, width={screen.width()}, height={screen.height()}", file=sys.stderr)
+            self._log_with_timestamp(f"[主窗口] 隐藏前位置: ({before_hide_rect.x()}, {before_hide_rect.y()}), 大小={target_width}x{target_height}")
+            self._log_with_timestamp(f"[主窗口] 屏幕范围: left={screen.left()}, right={screen.right()}, width={screen.width()}, height={screen.height()}")
             
             # 根据隐藏方向决定目标位置
             # 如果从右侧隐藏，窗口右边缘应该接近屏幕右边缘
@@ -985,24 +997,26 @@ class MainWindow(QMainWindow):
             if hasattr(self._airdrop_window, '_hidden_to_left') and self._airdrop_window._hidden_to_left:
                 # 从左侧隐藏的，恢复时窗口左边缘接近屏幕左边缘
                 target_x = screen.left()
-                print(f"[主窗口] 从左侧隐藏，恢复时左边缘对齐屏幕左边缘: {target_x}", file=sys.stderr)
+                self._log_with_timestamp(f"[主窗口] 从左侧隐藏，恢复时左边缘对齐屏幕左边缘: {target_x}")
             else:
                 # 从右侧隐藏的，恢复时窗口右边缘接近屏幕右边缘
                 target_x = screen.right() - target_width
-                print(f"[主窗口] 从右侧隐藏，恢复时右边缘对齐屏幕右边缘: {target_x} (窗口右边缘={target_x + target_width})", file=sys.stderr)
+                self._log_with_timestamp(f"[主窗口] 从右侧隐藏，恢复时右边缘对齐屏幕右边缘: {target_x} (窗口右边缘={target_x + target_width})")
             
-            # Y坐标：使用隐藏前的位置，但确保在屏幕内
+            # Y坐标：使用隐藏前的位置（使用pos()保存的Y坐标），但确保在屏幕内
+            # 注意：before_hide_rect 中保存的是 pos() 的 Y 坐标，这是实际窗口位置
             target_y = before_hide_rect.y()
+            self._log_with_timestamp(f"[主窗口] 使用保存的Y坐标: {target_y} (来自_before_hide_rect)")
             if target_y < screen.top():
                 target_y = screen.top()
-                print(f"[主窗口] 调整Y: 上边缘超出，调整为 {target_y}", file=sys.stderr)
+                self._log_with_timestamp(f"[主窗口] 调整Y: 上边缘超出，调整为 {target_y}")
             elif target_y + target_height > screen.bottom():
                 target_y = screen.bottom() - target_height
-                print(f"[主窗口] 调整Y: 下边缘超出，调整为 {target_y}", file=sys.stderr)
+                self._log_with_timestamp(f"[主窗口] 调整Y: 下边缘超出，调整为 {target_y}")
             
             # 使用动画从隐藏位置滑出显示
             target_rect = QRect(target_x, target_y, target_width, target_height)
-            print(f"[主窗口] 最终目标位置=({target_x}, {target_y}), 大小={target_width}x{target_height}, 窗口左边缘={target_x}, 窗口右边缘={target_x + target_width}, 屏幕左边缘={screen.left()}, 屏幕右边缘={screen.right()}", file=sys.stderr)
+            self._log_with_timestamp(f"[主窗口] 最终目标位置=({target_x}, {target_y}), 大小={target_width}x{target_height}, 窗口左边缘={target_x}, 窗口右边缘={target_x + target_width}, 屏幕左边缘={screen.left()}, 屏幕右边缘={screen.right()}")
             self._airdrop_window._animate_from_icon(target_rect)
             return
         

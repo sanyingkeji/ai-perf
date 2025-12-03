@@ -1,4 +1,5 @@
 import sys
+import encodings  # 确保 PyInstaller 包含 encodings 模块（修复 ModuleNotFoundError）
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon

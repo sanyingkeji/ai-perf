@@ -2,8 +2,12 @@
 # macOS 打包配置
 
 import os
+from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
+
+# 收集所有 encodings 子模块（修复 ModuleNotFoundError）
+encodings_modules = collect_submodules('encodings')
 
 a = Analysis(
     ['main.py'],
@@ -18,11 +22,8 @@ a = Analysis(
     hiddenimports=[
         # Python 标准库核心模块（确保被包含，修复 encodings 缺失问题）
         'encodings',
-        'encodings.utf_8',
-        'encodings.latin_1',
-        'encodings.ascii',
-        'encodings.cp1252',
-        'encodings.idna',
+        # 使用 collect_submodules 收集所有 encodings 子模块
+    ] + encodings_modules + [
         # 其他依赖
         'PySide6.QtCore',
         'PySide6.QtGui',
