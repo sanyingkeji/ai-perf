@@ -428,35 +428,39 @@ class AirDropView(QWidget):
         mouse_pos = QCursor.pos()
         screen = QApplication.primaryScreen().geometry()
         
-        # 边缘检测区域：扩大检测范围，使触发更容易
-        edge_margin = 20  # 边缘检测范围（像素），从5增加到20，更容易触发
-        # Y坐标范围：使用隐藏窗口的Y坐标范围，上下各扩展更多
-        margin_y = 100  # Y坐标上下扩展范围，从10增加到100，更容易触发
+        # 边缘检测区域：
+        # X坐标：只在屏幕最边缘（鼠标无法再移动）时触发，macOS不允许鼠标完全消失
+        # 注意：macOS上鼠标可能位于屏幕边缘之外（如右边缘时可能在1792，而屏幕右边缘是1791）
+        # Y坐标：只检测窗口高度范围内，不扩展
+        edge_margin = 1  # 边缘检测范围（像素），只检测最边缘的1像素
+        margin_y = 0  # Y坐标不扩展，只检测窗口高度范围内
         
         hidden_y = self._hidden_rect.y()
         hidden_height = self._hidden_rect.height()
         
         # 根据隐藏方向决定检测哪一边缘
         # 如果从左侧隐藏，检测屏幕左边缘
-        # 如果从右侧隐藏，检测屏幕右边缘
+        # 如果从右侧隐藏，检测屏幕右边缘（包括屏幕外，因为macOS不允许鼠标完全消失）
         if hasattr(self, '_hidden_to_left') and self._hidden_to_left:
             # 从左侧隐藏，检测屏幕左边缘
+            # 只检测屏幕最左边缘（鼠标无法再左移）
             detect_left = screen.left()
             detect_right = screen.left() + edge_margin
-            self._log_with_timestamp(f"[边缘检测] 左侧边缘检测: X范围=[{detect_left}, {detect_right}], Y范围=[{hidden_y - margin_y}, {hidden_y + hidden_height + margin_y}]")
         else:
             # 从右侧隐藏，检测屏幕右边缘
+            # 检测范围包括屏幕右边缘和屏幕外（因为macOS不允许鼠标完全消失，鼠标可能在屏幕外）
+            # 例如：屏幕右边缘是1791，鼠标可能在1792（屏幕外）
             detect_left = screen.right() - edge_margin
-            detect_right = screen.right()
-            self._log_with_timestamp(f"[边缘检测] 右侧边缘检测: X范围=[{detect_left}, {detect_right}], Y范围=[{hidden_y - margin_y}, {hidden_y + hidden_height + margin_y}], 鼠标位置=({mouse_pos.x()}, {mouse_pos.y()})")
+            detect_right = screen.right() + edge_margin  # 扩大到屏幕外，允许检测屏幕外的鼠标位置
         
-        # Y坐标范围：隐藏窗口的Y坐标上下各扩展margin_y像素
-        detect_top = hidden_y - margin_y
-        detect_bottom = hidden_y + hidden_height + margin_y
+        # Y坐标范围：只检测窗口高度范围内，不扩展
+        detect_top = hidden_y
+        detect_bottom = hidden_y + hidden_height
         
         # 检查鼠标是否在边缘检测区域内
         is_in_x_range = detect_left <= mouse_pos.x() <= detect_right
         is_in_y_range = detect_top <= mouse_pos.y() <= detect_bottom
+        
         if is_in_x_range and is_in_y_range:
             # 鼠标完全在屏幕边缘上，显示窗口
             # 通知主窗口显示
@@ -527,7 +531,6 @@ class AirDropView(QWidget):
                 # 首次检测到位置变化，认为是开始拖拽
                 self._drag_detected = True
                 self._position_unchanged_count = 0
-                self._log_with_timestamp(f"[拖放] 开始拖拽窗口 (通过位置检测, macOS={platform.system()=='Darwin'})")
             
             self._last_window_pos = current_pos
             self._position_unchanged_count = 0  # 重置未变化计数
@@ -552,7 +555,6 @@ class AirDropView(QWidget):
                         is_right_outside = window_rect.right() > screen.right()  # 窗口右边缘超出屏幕右边缘
                         should_hide = is_left_outside or is_right_outside
                         
-                        self._log_with_timestamp(f"[拖放] 释放拖拽窗口 (通过位置检测, 应该隐藏={should_hide})")
                         
                         if should_hide:
                             # 窗口左右超出屏幕，立即保存当前位置（在系统调整之前）
@@ -564,11 +566,7 @@ class AirDropView(QWidget):
                                 # 使用 pos() 的 Y 坐标，因为它是实际窗口位置，geometry() 的 Y 可能包含标题栏等偏移
                                 # 但保持使用 geometry() 的宽度和高度
                                 self._before_hide_rect = QRect(current_pos.x(), current_pos.y(), current_geo.width(), current_geo.height())
-                                import sys
-                                self._log_with_timestamp(f"[拖放] 释放拖拽时立即保存位置: geometry=({current_geo.x()}, {current_geo.y()}), pos=({current_pos.x()}, {current_pos.y()}), 使用pos保存: ({current_pos.x()}, {current_pos.y()})")
-                            else:
-                                # 如果已经保存过位置，使用之前保存的位置，不覆盖
-                                self._log_with_timestamp(f"[拖放] 已存在保存的位置: ({self._before_hide_rect.x()}, {self._before_hide_rect.y()})，不覆盖")
+                            # 如果已经保存过位置，使用之前保存的位置，不覆盖
                             # 触发隐藏动画
                             QTimer.singleShot(50, self._animate_to_icon)
                         
@@ -595,12 +593,7 @@ class AirDropView(QWidget):
                 self._drag_window_pos = self.pos()
                 self._is_dragging = False
                 self._edge_triggered = False
-                # 开始拖拽时打印日志
-                self._log_with_timestamp(f"[拖放] 开始拖拽窗口 (y={y_pos:.1f}, macOS={platform.system()=='Darwin'})")
             else:
-                # 调试：记录非标题栏区域的点击
-                if platform.system() == "Darwin":
-                    self._log_with_timestamp(f"[拖放] 鼠标按下但不在标题栏区域 (y={y_pos:.1f})")
                 super().mousePressEvent(event)
         else:
             super().mousePressEvent(event)
@@ -638,7 +631,6 @@ class AirDropView(QWidget):
             should_hide = is_left_outside or is_right_outside
             
             # 释放拖拽时打印日志（只要按下过标题栏就打印，不管是否真正移动了）
-            self._log_with_timestamp(f"[拖放] 释放拖拽窗口 (is_dragging={self._is_dragging}, 应该隐藏={should_hide})")
             
             if self._is_dragging and should_hide:
                 # 窗口左右超出屏幕，立即保存当前位置（在系统调整之前）
@@ -650,11 +642,7 @@ class AirDropView(QWidget):
                     # 使用 pos() 的 Y 坐标，因为它是实际窗口位置，geometry() 的 Y 可能包含标题栏等偏移
                     # 但保持使用 geometry() 的宽度和高度
                     self._before_hide_rect = QRect(current_pos.x(), current_pos.y(), current_geo.width(), current_geo.height())
-                    import sys
-                    self._log_with_timestamp(f"[拖放] 释放拖拽时立即保存位置: geometry=({current_geo.x()}, {current_geo.y()}), pos=({current_pos.x()}, {current_pos.y()}), 使用pos保存: ({current_pos.x()}, {current_pos.y()})")
-                else:
-                    # 如果已经保存过位置，使用之前保存的位置，不覆盖
-                    self._log_with_timestamp(f"[拖放] 已存在保存的位置: ({self._before_hide_rect.x()}, {self._before_hide_rect.y()})，不覆盖")
+                # 如果已经保存过位置，使用之前保存的位置，不覆盖
                 # 触发隐藏动画
                 QTimer.singleShot(50, self._animate_to_icon)
         
@@ -669,7 +657,6 @@ class AirDropView(QWidget):
         
         # 如果已经在执行显示动画，直接返回，防止重复调用
         if self._is_showing_animation:
-            self._log_with_timestamp(f"[动画] 显示动画已在执行，忽略重复调用")
             return
         
         screen = QApplication.primaryScreen().geometry()
@@ -684,17 +671,14 @@ class AirDropView(QWidget):
             # 从左侧滑出：窗口从屏幕左侧外滑入（保留1像素可见的位置）
             start_x = screen.left() - window_width + visible_pixel
             start_y = target_rect.y()  # 保持Y坐标不变
-            self._log_with_timestamp(f"[动画] 从左侧滑出：起始X={start_x} (保留{visible_pixel}像素可见)")
         else:
             # 从右侧滑出：窗口从屏幕右侧外滑入（保留1像素可见的位置）
             start_x = screen.right() - visible_pixel
             start_y = target_rect.y()  # 保持Y坐标不变
-            self._log_with_timestamp(f"[动画] 从右侧滑出：起始X={start_x} (保留{visible_pixel}像素可见)")
         
         # 先设置窗口在隐藏位置（屏幕外）
         start_rect = QRect(start_x, start_y, window_width, window_height)
         
-        self._log_with_timestamp(f"[动画] 显示动画: 起始位置=({start_x}, {start_y}), 目标位置=({target_rect.x()}, {target_rect.y()}), 大小={window_width}x{window_height}")
         
         # 立即标记正在执行显示动画，防止重复调用和位置检测
         self._is_showing_animation = True
@@ -745,7 +729,6 @@ class AirDropView(QWidget):
             current_geo = self.geometry()
             if abs(current_geo.x() - start_rect.x()) > 5 or abs(current_geo.y() - start_rect.y()) > 5:
                 import sys
-                self._log_with_timestamp(f"[动画] 窗口位置不匹配，再次强制设置: 当前=({current_geo.x()}, {current_geo.y()}), 期望=({start_rect.x()}, {start_rect.y()})")
                 # 使用实际位置作为起始位置，而不是期望位置
                 actual_start_rect = QRect(current_geo.x(), current_geo.y(), start_rect.width(), start_rect.height())
                 really_start_animation(actual_start_rect)
@@ -762,26 +745,20 @@ class AirDropView(QWidget):
             # 在显示动画开始时，检查Y坐标是否已被系统调整
             actual_pos_before_animation = self.pos()
             actual_geo_before_animation = self.geometry()
-            self._log_with_timestamp(f"[动画] 显示动画开始时窗口位置: ({actual_geo_before_animation.x()}, {actual_geo_before_animation.y()}), 保存的位置: ({target_rect.x()}, {target_rect.y()})")
             
             # 如果Y坐标已被系统调整，强制调整回保存的原始Y坐标
             # 因为系统在显示窗口时会自动调整Y坐标，我们需要强制使用保存的原始Y坐标
             if hasattr(self, '_before_hide_rect') and self._before_hide_rect:
                 saved_y = self._before_hide_rect.y()
                 if abs(actual_geo_before_animation.y() - saved_y) > 5:
-                    self._log_with_timestamp(f"[动画] Y坐标已被系统调整: {actual_geo_before_animation.y()} (保存的: {saved_y})，强制调整回保存的Y坐标")
                     # 强制调整窗口Y坐标到保存的原始位置
                     self.move(actual_geo_before_animation.x(), saved_y)
                     # 重新获取位置
                     actual_geo_before_animation = self.geometry()
                     actual_pos_before_animation = self.pos()
-                    self._log_with_timestamp(f"[动画] 强制调整后位置: geometry=({actual_geo_before_animation.x()}, {actual_geo_before_animation.y()}), pos=({actual_pos_before_animation.x()}, {actual_pos_before_animation.y()})")
                     # 使用保存的原始Y坐标作为目标，而不是系统调整后的Y坐标
                     target_rect = QRect(target_rect.x(), saved_y, target_rect.width(), target_rect.height())
-                    self._log_with_timestamp(f"[动画] 更新目标位置为: ({target_rect.x()}, {target_rect.y()})")
             
-            self._log_with_timestamp(f"[动画] 使用实际起始位置开始动画: ({actual_start_rect.x()}, {actual_start_rect.y()}) -> ({target_rect.x()}, {target_rect.y()})")
-            self._log_with_timestamp(f"[动画] 窗口大小: {actual_start_rect.width()}x{actual_start_rect.height()}, 目标窗口右边缘={target_rect.x() + target_rect.width()}")
             
             # 确保窗口在起始位置和大小
             self.setGeometry(actual_start_rect)
@@ -805,7 +782,6 @@ class AirDropView(QWidget):
             # 为了保持一致性，我们使用原始Y坐标作为目标，但在动画完成后更新_before_hide_rect
             if abs(actual_start_y - original_y) > 5:
                 import sys
-                self._log_with_timestamp(f"[动画] Y坐标被系统调整，起始: {actual_start_y}, 原始目标: {original_y}，使用原始Y作为目标")
                 # 仍然使用原始Y坐标作为目标，但在动画完成后更新_before_hide_rect
                 target_y = original_y
             else:
@@ -830,7 +806,6 @@ class AirDropView(QWidget):
                     import time
                     now = time.time()
                     if now - on_value_changed._last_log_time > 0.1:  # 每100ms打印一次
-                        self._log_with_timestamp(f"[动画] 动画进行中: ({current_pos.x()}, {current_pos.y()})")
                         on_value_changed._last_log_time = now
                 else:
                     import time
@@ -847,12 +822,9 @@ class AirDropView(QWidget):
                     final_pos = self.pos()
                     final_rect = self.geometry()
                     import sys
-                    self._log_with_timestamp(f"[动画] 显示动画完成，最终窗口位置=({final_rect.x()}, {final_rect.y()}), 大小={final_rect.width()}x{final_rect.height()}")
-                    self._log_with_timestamp(f"[动画] 最终窗口右边缘={final_rect.x() + final_rect.width()}, 目标右边缘={target_rect.x() + target_rect.width()}")
                     
                     # 只检查X坐标是否匹配（Y坐标可能被系统调整，接受系统调整后的Y坐标，避免累积偏移）
                     if abs(final_rect.x() - target_rect.x()) > 5:
-                        self._log_with_timestamp(f"[动画] X坐标不匹配，调整X坐标")
                         # 只移动X坐标，保持当前Y坐标（避免抖动和累积偏移）
                         self.move(target_rect.x(), final_rect.y())
                     
@@ -860,13 +832,11 @@ class AirDropView(QWidget):
                     # 因为系统在显示窗口时会自动调整Y坐标，我们需要强制使用目标Y坐标
                     if abs(final_rect.y() - target_rect.y()) > 5:
                         import sys
-                        self._log_with_timestamp(f"[动画] Y坐标被系统调整: {final_rect.y()} (目标: {target_rect.y()})，强制调整回目标Y坐标")
                         # 强制调整窗口Y坐标到目标位置
                         self.move(final_rect.x(), target_rect.y())
                         # 重新获取位置确认
                         final_rect = self.geometry()
                         final_pos = self.pos()
-                        self._log_with_timestamp(f"[动画] 强制调整后位置: geometry=({final_rect.x()}, {final_rect.y()}), pos=({final_pos.x()}, {final_pos.y()})")
                     
                     # 清理动画对象
                     if hasattr(self, '_current_pos_animation'):
@@ -882,10 +852,8 @@ class AirDropView(QWidget):
                         self._before_hide_rect = None
                     # 标记显示动画完成，允许位置检测
                     self._is_showing_animation = False
-                    self._log_with_timestamp(f"[动画] 显示动画完成，标志已重置，已清除_before_hide_rect")
                 except Exception as e:
                     import sys
-                    self._log_with_timestamp(f"[ERROR] Error in show animation finished callback: {e}")
                     import traceback
                     traceback.print_exc()
                     # 确保即使出错也重置标志
@@ -894,13 +862,11 @@ class AirDropView(QWidget):
             # 确保连接信号
             pos_animation.finished.connect(on_window_animation_finished)
             pos_animation.start()
-            self._log_with_timestamp(f"[动画] 显示动画已启动，持续时间300ms (使用pos动画)")
             
             # 添加超时保护：如果动画在1200ms后还没完成，强制完成（动画时间1000ms + 200ms缓冲）
             def timeout_handler():
                 if self._is_showing_animation:
                     import sys
-                    self._log_with_timestamp(f"[动画] 动画超时，强制完成")
                     # 停止动画
                     if hasattr(self, '_current_pos_animation') and self._current_pos_animation:
                         self._current_pos_animation.stop()
@@ -915,7 +881,6 @@ class AirDropView(QWidget):
         # 如果正在执行显示动画，不允许隐藏
         if self._is_showing_animation:
             import sys
-            self._log_with_timestamp(f"[动画] 正在执行显示动画，忽略隐藏请求")
             return
         
         if not self.isVisible():
@@ -928,7 +893,6 @@ class AirDropView(QWidget):
         # 在隐藏动画开始前，立即获取窗口位置
         pos_before_animation = self.pos()
         rect_before_animation = self.geometry()
-        self._log_with_timestamp(f"[动画] 隐藏动画执行前，窗口位置: ({rect_before_animation.x()}, {rect_before_animation.y()}), pos: ({pos_before_animation.x()}, {pos_before_animation.y()})")
         
         screen = QApplication.primaryScreen().geometry()
         current_rect = self.geometry()
@@ -944,17 +908,14 @@ class AirDropView(QWidget):
         # 即使系统调整了当前窗口的Y坐标，我们也使用保存的原始Y坐标，确保一致性
         original_y = self._before_hide_rect.y()
         import sys
-        self._log_with_timestamp(f"[动画] 隐藏动画开始，当前窗口位置: ({current_rect.x()}, {current_rect.y()}), 保存的位置: ({self._before_hide_rect.x()}, {original_y})")
         
         # 如果当前Y坐标与保存的Y坐标不一致，说明在保存后又被系统调整了
         # 这种情况下，我们强制使用保存的Y坐标，并立即调整窗口位置
         if abs(current_rect.y() - original_y) > 5:
-            self._log_with_timestamp(f"[动画] Y坐标被系统调整: 当前={current_rect.y()}, 保存的={original_y}，强制使用保存的Y坐标")
             # 立即调整窗口Y坐标到保存的位置，确保动画从正确的位置开始
             self.move(current_rect.x(), original_y)
             # 重新获取位置（可能被系统再次调整，但我们已经尽力了）
             current_rect = self.geometry()
-            self._log_with_timestamp(f"[动画] 强制调整后位置: ({current_rect.x()}, {current_rect.y()})")
         
         # 确定窗口要隐藏到的边缘位置
         # 只允许隐藏到左右边缘，不允许隐藏到上下边缘
@@ -970,14 +931,12 @@ class AirDropView(QWidget):
             target_y = original_y  # 使用保存的原始Y坐标，保持不变
             # 保存隐藏方向，用于恢复时从正确方向滑出
             self._hidden_to_left = True
-            self._log_with_timestamp(f"[动画] 左侧隐藏：目标X={target_x} (保留{visible_pixel}像素可见，窗口右边缘={target_x + window_width})")
         else:
             # 隐藏到右边缘：窗口几乎完全滑出屏幕右侧，但保留1像素可见
             target_x = screen.right() - visible_pixel
             target_y = original_y  # 使用保存的原始Y坐标，保持不变
             # 保存隐藏方向，用于恢复时从正确方向滑出
             self._hidden_to_left = False
-            self._log_with_timestamp(f"[动画] 右侧隐藏：目标X={target_x} (保留{visible_pixel}像素可见，窗口左边缘={target_x})")
         
         # 创建窗口隐藏动画（只改变位置，不改变大小）
         target_rect = QRect(target_x, target_y, window_width, window_height)
@@ -1008,7 +967,6 @@ class AirDropView(QWidget):
                 self.move(target_x, original_y)
                 pos_before_hide = self.pos()
                 rect_before_hide = self.geometry()
-                self._log_with_timestamp(f"[动画] 提前隐藏窗口前，窗口位置: geometry=({rect_before_hide.x()}, {rect_before_hide.y()}), pos=({pos_before_hide.x()}, {pos_before_hide.y()})")
                 
                 # 标记窗口被隐藏（用于后续判断是否从边缘恢复）
                 self._was_hidden_to_icon = True
@@ -1022,9 +980,7 @@ class AirDropView(QWidget):
                 # 在窗口隐藏后，重新启用位置检测（因为窗口已隐藏，不会触发循环）
                 if hasattr(self, '_position_track_timer'):
                     self._position_track_timer.start(50)
-                    self._log_with_timestamp(f"[动画] 窗口已提前隐藏，重新启用位置检测")
             except Exception as e:
-                self._log_with_timestamp(f"[ERROR] Error in early hide callback: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -1038,7 +994,6 @@ class AirDropView(QWidget):
                     # 如果窗口仍然可见，说明提前隐藏没有生效，在这里隐藏
                     pos_after_animation = self.pos()
                     rect_after_animation = self.geometry()
-                    self._log_with_timestamp(f"[动画] 隐藏动画执行后，窗口仍然可见，位置: ({rect_after_animation.x()}, {rect_after_animation.y()}), pos: ({pos_after_animation.x()}, {pos_after_animation.y()})")
                     
                     # 强制设置窗口位置到目标位置
                     self.setGeometry(target_x, original_y, window_width, window_height)
@@ -1055,16 +1010,12 @@ class AirDropView(QWidget):
                     # 重新启用位置检测
                     if hasattr(self, '_position_track_timer'):
                         self._position_track_timer.start(50)
-                        self._log_with_timestamp(f"[动画] 窗口已隐藏，重新启用位置检测")
-                else:
-                    # 窗口已经隐藏，只记录日志
-                    self._log_with_timestamp(f"[动画] 隐藏动画完成，窗口已提前隐藏")
+                # 窗口已经隐藏
                 
                 # 清理动画对象
                 if hasattr(self, '_current_hide_pos_animation'):
                     del self._current_hide_pos_animation
             except Exception as e:
-                self._log_with_timestamp(f"[ERROR] Error in animation finished callback: {e}")
                 import traceback
                 traceback.print_exc()
             # 重置标志
@@ -1113,7 +1064,6 @@ class AirDropView(QWidget):
                         except Exception as e:
                             import sys
                             logger.error(f"创建传输管理器失败: {e}")
-                            self._log_with_timestamp(f"[ERROR] Failed to create TransferManager: {e}")
                             Toast.show_message(self, f"初始化失败: {e}")
                     
                     # 在主线程中执行创建操作
@@ -1125,7 +1075,6 @@ class AirDropView(QWidget):
             except Exception as e:
                 import sys
                 logger.error(f"初始化传输管理器失败: {e}")
-                self._log_with_timestamp(f"[ERROR] Failed to init transfer manager: {e}")
                 def show_error():
                     Toast.show_message(self, f"初始化失败: {e}")
                 QTimer.singleShot(0, show_error)

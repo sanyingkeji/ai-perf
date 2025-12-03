@@ -718,12 +718,13 @@ def main():
             check_cancel()  # 检查是否请求取消
             # 使用实时输出而不是 capture_output，以便能够看到进度并响应取消
             log_info("开始 PyInstaller 打包（实时输出）...")
+            # 注意：--collect-all 选项不能在使用 .spec 文件时使用
+            # encodings 模块的收集已在 spec 文件中通过 collect_submodules 完成
             result = subprocess.run([
                 sys.executable, "-m", "PyInstaller",
                 spec_file,
                 "--clean",
                 "--noconfirm",
-                "--collect-all", "encodings",  # 强制收集所有 encodings 模块（修复 ModuleNotFoundError）
                 f"--log-level={log_level}"
             ], check=True, env=pyinstaller_env, timeout=3600)  # 1小时超时，实时输出
             result = subprocess.CompletedProcess([], 0, "", "")  # 创建成功结果对象
