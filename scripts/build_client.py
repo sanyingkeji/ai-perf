@@ -1551,13 +1551,13 @@ def main():
             
             for timestamp_attempt in range(1, timestamp_max_retries + 1):
                 log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-            timestamp_result = subprocess.run([
-                "codesign", "--force", "--verify", "--verbose",
-                "--sign", codesign_identity,
-                "--timestamp",  # 使用时间戳，这对公证很重要
-                str(dmg_path)
-            ], capture_output=True, text=True, check=False)
-            
+                timestamp_result = subprocess.run([
+                    "codesign", "--force", "--verify", "--verbose",
+                    "--sign", codesign_identity,
+                    "--timestamp",  # 使用时间戳，这对公证很重要
+                    str(dmg_path)
+                ], capture_output=True, text=True, check=False)
+                
                 if timestamp_result.returncode == 0:
                     log_info("✓ DMG 代码签名完成（已使用时间戳）")
                     timestamp_success = True
