@@ -476,7 +476,17 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 except Exception as e:
                     log_warn(f"  删除失败: {e}")
             
-            # 移除其他不应该在 Frameworks 的目录（但保留 PySide6 和 .framework 目录）
+            # 移除其他不应该在 Frameworks 的目录（但保留必需的 Python 包目录）
+            # 本地打包中，大部分 Python 包目录应该在 Frameworks 中（真实目录）
+            # 只有 themes 和 .dist-info 应该在 Resources 中，Frameworks 中有符号链接
+            essential_dirs = {
+                "PySide6", "shiboken6",  # Qt 相关
+                "AppKit", "CoreFoundation", "Foundation", "objc",  # PyObjC 相关
+                "PIL", "bcrypt", "certifi", "charset_normalizer", "cryptography", 
+                "nacl", "uvloop", "yaml",  # Python 包
+                "python3.10", "python3__dot__10",  # Python 标准库
+            }
+            
             for item in items_to_check:
                 # 跳过已处理的 resources
                 if item.name == "resources":
@@ -486,19 +496,27 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                     continue
                     
                 if item.is_dir():
-                    # 跳过 .framework 目录和 PySide6 目录
-                    if item.suffix == ".framework" or item.name == "PySide6":
+                    # 跳过 .framework 目录
+                    if item.suffix == ".framework":
                         continue
-                    # 跳过符号链接（如 resources 符号链接）
+                    # 跳过必需的 Python 包目录
+                    if item.name in essential_dirs:
+                        continue
+                    # 跳过符号链接（如 resources 符号链接、themes 符号链接、.dist-info 符号链接）
                     if item.is_symlink():
                         continue
-                    # 移除其他目录（如 .dist-info, .egg-info 等）
-                    log_warn(f"  移除非框架目录: {item.relative_to(target_app)}")
-                    try:
-                        shutil.rmtree(item)
-                        log_info(f"    ✓ 已移除: {item.name}")
-                    except Exception as e:
-                        log_warn(f"    移除失败: {e}")
+                    # 移除其他目录（如不应该在 Frameworks 的 .dist-info 真实目录等）
+                    # 注意：.dist-info 应该在 Resources 中，Frameworks 中应该是符号链接
+                    if ".dist-info" in item.name or ".egg-info" in item.name:
+                        log_warn(f"  移除 .dist-info/.egg-info 目录（应该在 Resources 中）: {item.relative_to(target_app)}")
+                        try:
+                            shutil.rmtree(item)
+                            log_info(f"    ✓ 已移除: {item.name}")
+                        except Exception as e:
+                            log_warn(f"    移除失败: {e}")
+                    else:
+                        # 其他未知目录，暂时保留（可能是新的 Python 包）
+                        log_warn(f"  保留未知目录（可能是必需的 Python 包）: {item.relative_to(target_app)}")
         
         # 修复 Frameworks 目录结构：将真实文件转换为符号链接（与本地打包一致）
         log_warn("  修复 Frameworks 目录结构（转换为符号链接）...")
@@ -683,17 +701,46 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 
                 # 修复 python3.10 目录位置（关键修复：解决 _struct 等模块缺失问题）
                 # Python 运行时需要在 Frameworks/python3.10/lib-dynload 中找到 C 扩展模块
+                # 但为了避免 codesign 将其当作 bundle 处理，应该在 Frameworks 中创建符号链接指向 Resources
                 python310_in_resources = resources_dir / "python3.10"
                 python310_in_frameworks = frameworks_dir / "python3.10"
                 
-                if python310_in_resources.exists() and not python310_in_frameworks.exists():
-                    log_warn(f"  发现 python3.10 目录在 Resources 中，需要移动到 Frameworks（修复 _struct 等模块缺失问题）")
-                    try:
-                        # 移动整个 python3.10 目录到 Frameworks
-                        shutil.move(str(python310_in_resources), str(python310_in_frameworks))
-                        log_info(f"    ✓ 已移动: python3.10 目录从 Resources 移动到 Frameworks")
-                        
-                        # 验证 lib-dynload 目录是否存在
+                if python310_in_resources.exists():
+                    if python310_in_frameworks.exists():
+                        # Frameworks 中已存在
+                        if python310_in_frameworks.is_symlink():
+                            # 已经是符号链接，检查指向是否正确
+                            target = python310_in_frameworks.readlink()
+                            if str(target) != "../Resources/python3.10":
+                                log_warn(f"  修复 python3.10 符号链接指向: {python310_in_frameworks.relative_to(target_app)}")
+                                try:
+                                    python310_in_frameworks.unlink()
+                                    python310_in_frameworks.symlink_to("../Resources/python3.10")
+                                    log_info(f"    ✓ 已修复: python3.10 -> ../Resources/python3.10")
+                                except Exception as e:
+                                    log_warn(f"    修复失败: {e}")
+                            else:
+                                log_info(f"  python3.10 符号链接已正确: {python310_in_frameworks.relative_to(target_app)}")
+                        else:
+                            # Frameworks 中是真实目录，需要删除并创建符号链接
+                            log_warn(f"  Frameworks 中的 python3.10 是真实目录，需要转换为符号链接（避免 codesign 将其当作 bundle）")
+                            try:
+                                shutil.rmtree(python310_in_frameworks)
+                                python310_in_frameworks.symlink_to("../Resources/python3.10")
+                                log_info(f"    ✓ 已转换: python3.10 -> ../Resources/python3.10")
+                            except Exception as e:
+                                log_error(f"    转换失败: {e}")
+                    else:
+                        # Frameworks 中不存在，创建符号链接
+                        log_warn(f"  在 Frameworks 中创建 python3.10 符号链接（修复 _struct 等模块缺失问题）")
+                        try:
+                            python310_in_frameworks.symlink_to("../Resources/python3.10")
+                            log_info(f"    ✓ 已创建: python3.10 -> ../Resources/python3.10")
+                        except Exception as e:
+                            log_error(f"    创建失败: {e}")
+                    
+                    # 验证 lib-dynload 目录是否存在（通过符号链接）
+                    if python310_in_frameworks.exists():
                         lib_dynload = python310_in_frameworks / "lib-dynload"
                         if lib_dynload.exists():
                             so_files = list(lib_dynload.glob("*.so"))
@@ -708,25 +755,214 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                     log_warn(f"    ⚠ 未找到关键模块: {module}")
                         else:
                             log_warn(f"    ⚠ lib-dynload 目录不存在")
-                    except Exception as e:
-                        log_error(f"    移动失败: {e}")
-                        # 如果移动失败，尝试创建符号链接作为回退
-                        try:
-                            log_warn(f"    尝试创建符号链接作为回退...")
-                            python310_in_frameworks.symlink_to("../Resources/python3.10")
-                            log_info(f"    ✓ 已创建符号链接: python3.10 -> ../Resources/python3.10")
-                        except Exception as e2:
-                            log_error(f"    创建符号链接也失败: {e2}")
-                elif python310_in_resources.exists() and python310_in_frameworks.exists():
-                    # 两个位置都存在，检查是否是符号链接
-                    if python310_in_frameworks.is_symlink():
-                        log_info(f"  python3.10 在 Frameworks 中已是符号链接: {python310_in_frameworks.relative_to(target_app)}")
-                    else:
-                        log_warn(f"  python3.10 在两个位置都存在，但 Frameworks 中不是符号链接，可能需要清理 Resources 中的版本")
-                elif python310_in_frameworks.exists():
-                    log_info(f"  python3.10 已在 Frameworks 中: {python310_in_frameworks.relative_to(target_app)}")
                 else:
                     log_warn(f"  ⚠ 未找到 python3.10 目录（可能导致 C 扩展模块缺失）")
+                
+                # 修复 themes 目录（应该在 Resources 中，Frameworks 中有符号链接）
+                themes_in_resources = resources_dir / "themes"
+                themes_in_frameworks = frameworks_dir / "themes"
+                
+                if themes_in_resources.exists():
+                    if themes_in_frameworks.exists():
+                        if not themes_in_frameworks.is_symlink():
+                            # Frameworks 中是真实目录，需要删除并创建符号链接
+                            log_warn(f"  Frameworks 中的 themes 是真实目录，需要转换为符号链接")
+                            try:
+                                shutil.rmtree(themes_in_frameworks)
+                                themes_in_frameworks.symlink_to("../Resources/themes")
+                                log_info(f"    ✓ 已转换: themes -> ../Resources/themes")
+                            except Exception as e:
+                                log_warn(f"    转换失败: {e}")
+                        else:
+                            # 检查符号链接指向是否正确
+                            target = themes_in_frameworks.readlink()
+                            if str(target) != "../Resources/themes":
+                                log_warn(f"  修复 themes 符号链接指向")
+                                try:
+                                    themes_in_frameworks.unlink()
+                                    themes_in_frameworks.symlink_to("../Resources/themes")
+                                    log_info(f"    ✓ 已修复: themes -> ../Resources/themes")
+                                except Exception as e:
+                                    log_warn(f"    修复失败: {e}")
+                    else:
+                        # Frameworks 中不存在，创建符号链接
+                        log_warn(f"  在 Frameworks 中创建 themes 符号链接")
+                        try:
+                            themes_in_frameworks.symlink_to("../Resources/themes")
+                            log_info(f"    ✓ 已创建: themes -> ../Resources/themes")
+                        except Exception as e:
+                            log_warn(f"    创建失败: {e}")
+                else:
+                    log_warn(f"  ⚠ 未找到 themes 目录")
+                
+                # 修复 .dist-info 目录（应该在 Resources 中，Frameworks 中有符号链接）
+                # 查找所有 .dist-info 目录
+                dist_info_dirs = []
+                if resources_dir.exists():
+                    for item in resources_dir.iterdir():
+                        if item.is_dir() and ".dist-info" in item.name:
+                            dist_info_dirs.append(item.name)
+                
+                for dist_info_name in dist_info_dirs:
+                    dist_info_in_resources = resources_dir / dist_info_name
+                    dist_info_in_frameworks = frameworks_dir / dist_info_name
+                    
+                    if dist_info_in_resources.exists():
+                        if dist_info_in_frameworks.exists():
+                            if not dist_info_in_frameworks.is_symlink():
+                                # Frameworks 中是真实目录，需要删除并创建符号链接
+                                log_warn(f"  Frameworks 中的 {dist_info_name} 是真实目录，需要转换为符号链接")
+                                try:
+                                    shutil.rmtree(dist_info_in_frameworks)
+                                    dist_info_in_frameworks.symlink_to(f"../Resources/{dist_info_name}")
+                                    log_info(f"    ✓ 已转换: {dist_info_name} -> ../Resources/{dist_info_name}")
+                                except Exception as e:
+                                    log_warn(f"    转换失败: {e}")
+                        else:
+                            # Frameworks 中不存在，创建符号链接
+                            log_warn(f"  在 Frameworks 中创建 {dist_info_name} 符号链接")
+                            try:
+                                dist_info_in_frameworks.symlink_to(f"../Resources/{dist_info_name}")
+                                log_info(f"    ✓ 已创建: {dist_info_name} -> ../Resources/{dist_info_name}")
+                            except Exception as e:
+                                log_warn(f"    创建失败: {e}")
+                
+                # 确保必需的 Python 包目录在正确的位置
+                # 根据本地打包结构：
+                # - 大部分 Python 包应该在 Frameworks 中（真实目录）：AppKit, CoreFoundation, Foundation, PIL, bcrypt, charset_normalizer, cryptography, objc, uvloop, yaml
+                # - nacl 应该在 Frameworks 中（真实目录），但其中的 py.typed 应该是符号链接指向 Resources
+                # - certifi 应该在 Resources 中（真实目录），Frameworks 中有符号链接
+                essential_python_packages_frameworks = ["AppKit", "CoreFoundation", "Foundation", "PIL", "bcrypt", 
+                                                      "charset_normalizer", "cryptography", "nacl", "objc", "uvloop", "yaml"]
+                essential_python_packages_resources = ["certifi"]  # certifi 应该在 Resources 中
+                
+                # 修复 nacl 目录中的 py.typed 文件（应该是符号链接）
+                nacl_dir = frameworks_dir / "nacl"
+                if nacl_dir.exists() and nacl_dir.is_dir() and not nacl_dir.is_symlink():
+                    py_typed_in_frameworks = nacl_dir / "py.typed"
+                    py_typed_in_resources = resources_dir / "nacl" / "py.typed"
+                    
+                    if py_typed_in_resources.exists():
+                        if py_typed_in_frameworks.exists():
+                            if not py_typed_in_frameworks.is_symlink():
+                                # Frameworks 中是真实文件，需要删除并创建符号链接
+                                log_warn(f"  Frameworks/nacl/py.typed 是真实文件，需要转换为符号链接")
+                                try:
+                                    py_typed_in_frameworks.unlink()
+                                    py_typed_in_frameworks.symlink_to("../../Resources/nacl/py.typed")
+                                    log_info(f"    ✓ 已转换: nacl/py.typed -> ../../Resources/nacl/py.typed")
+                                except Exception as e:
+                                    log_warn(f"    转换失败: {e}")
+                            else:
+                                # 检查符号链接指向是否正确
+                                target = py_typed_in_frameworks.readlink()
+                                if str(target) != "../../Resources/nacl/py.typed":
+                                    log_warn(f"  修复 nacl/py.typed 符号链接指向")
+                                    try:
+                                        py_typed_in_frameworks.unlink()
+                                        py_typed_in_frameworks.symlink_to("../../Resources/nacl/py.typed")
+                                        log_info(f"    ✓ 已修复: nacl/py.typed -> ../../Resources/nacl/py.typed")
+                                    except Exception as e:
+                                        log_warn(f"    修复失败: {e}")
+                        else:
+                            # Frameworks 中不存在，创建符号链接
+                            log_warn(f"  在 Frameworks/nacl 中创建 py.typed 符号链接")
+                            try:
+                                py_typed_in_frameworks.symlink_to("../../Resources/nacl/py.typed")
+                                log_info(f"    ✓ 已创建: nacl/py.typed -> ../../Resources/nacl/py.typed")
+                            except Exception as e:
+                                log_warn(f"    创建失败: {e}")
+                    elif py_typed_in_frameworks.exists() and not py_typed_in_frameworks.is_symlink():
+                        # Frameworks 中有真实文件，但 Resources 中没有，需要移动
+                        log_warn(f"  移动 nacl/py.typed 从 Frameworks 到 Resources")
+                        try:
+                            # 确保 Resources/nacl 目录存在
+                            resources_nacl = resources_dir / "nacl"
+                            resources_nacl.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(py_typed_in_frameworks), str(py_typed_in_resources))
+                            py_typed_in_frameworks.symlink_to("../../Resources/nacl/py.typed")
+                            log_info(f"    ✓ 已移动并创建符号链接: nacl/py.typed")
+                        except Exception as e:
+                            log_warn(f"    移动失败: {e}")
+                
+                # 处理应该在 Frameworks 中的包
+                for package_name in essential_python_packages_frameworks:
+                    package_in_frameworks = frameworks_dir / package_name
+                    package_in_resources = resources_dir / package_name
+                    
+                    if package_in_resources.exists() and not package_in_frameworks.exists():
+                        # Resources 中有，Frameworks 中没有，需要移动
+                        log_warn(f"  移动 {package_name} 从 Resources 到 Frameworks")
+                        try:
+                            shutil.move(str(package_in_resources), str(package_in_frameworks))
+                            log_info(f"    ✓ 已移动: {package_name}")
+                        except Exception as e:
+                            log_warn(f"    移动失败: {e}")
+                    elif package_in_resources.exists() and package_in_frameworks.exists():
+                        # 两个位置都存在
+                        if package_in_frameworks.is_symlink():
+                            # Frameworks 中是符号链接，但应该是真实目录
+                            log_warn(f"  Frameworks 中的 {package_name} 是符号链接，需要转换为真实目录")
+                            try:
+                                package_in_frameworks.unlink()
+                                if package_in_resources.is_dir():
+                                    shutil.move(str(package_in_resources), str(package_in_frameworks))
+                                    log_info(f"    ✓ 已转换: {package_name}")
+                                else:
+                                    # Resources 中也是符号链接，需要找到真实目录
+                                    real_path = package_in_resources.readlink()
+                                    if real_path.is_absolute():
+                                        shutil.copytree(real_path, package_in_frameworks)
+                                    else:
+                                        shutil.copytree(resources_dir / real_path, package_in_frameworks)
+                                    log_info(f"    ✓ 已复制: {package_name}")
+                            except Exception as e:
+                                log_warn(f"    转换失败: {e}")
+                
+                # 处理应该在 Resources 中的包（certifi）
+                for package_name in essential_python_packages_resources:
+                    package_in_frameworks = frameworks_dir / package_name
+                    package_in_resources = resources_dir / package_name
+                    
+                    if package_in_resources.exists():
+                        if package_in_frameworks.exists():
+                            if not package_in_frameworks.is_symlink():
+                                # Frameworks 中是真实目录，需要删除并创建符号链接
+                                log_warn(f"  Frameworks 中的 {package_name} 是真实目录，需要转换为符号链接")
+                                try:
+                                    shutil.rmtree(package_in_frameworks)
+                                    package_in_frameworks.symlink_to(f"../Resources/{package_name}")
+                                    log_info(f"    ✓ 已转换: {package_name} -> ../Resources/{package_name}")
+                                except Exception as e:
+                                    log_warn(f"    转换失败: {e}")
+                            else:
+                                # 检查符号链接指向是否正确
+                                target = package_in_frameworks.readlink()
+                                if str(target) != f"../Resources/{package_name}":
+                                    log_warn(f"  修复 {package_name} 符号链接指向")
+                                    try:
+                                        package_in_frameworks.unlink()
+                                        package_in_frameworks.symlink_to(f"../Resources/{package_name}")
+                                        log_info(f"    ✓ 已修复: {package_name} -> ../Resources/{package_name}")
+                                    except Exception as e:
+                                        log_warn(f"    修复失败: {e}")
+                        else:
+                            # Frameworks 中不存在，创建符号链接
+                            log_warn(f"  在 Frameworks 中创建 {package_name} 符号链接")
+                            try:
+                                package_in_frameworks.symlink_to(f"../Resources/{package_name}")
+                                log_info(f"    ✓ 已创建: {package_name} -> ../Resources/{package_name}")
+                            except Exception as e:
+                                log_warn(f"    创建失败: {e}")
+                    elif package_in_frameworks.exists() and not package_in_frameworks.is_symlink():
+                        # Frameworks 中有真实目录，但 Resources 中没有，需要移动
+                        log_warn(f"  移动 {package_name} 从 Frameworks 到 Resources")
+                        try:
+                            shutil.move(str(package_in_frameworks), str(package_in_resources))
+                            package_in_frameworks.symlink_to(f"../Resources/{package_name}")
+                            log_info(f"    ✓ 已移动并创建符号链接: {package_name}")
+                        except Exception as e:
+                            log_warn(f"    移动失败: {e}")
                 
                 # 检查 resources 目录
                 resources_in_frameworks = frameworks_dir / "resources"
@@ -1088,7 +1324,59 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 log_info(f"[跳过] 签名 Frameworks 目录（从步骤 {start_from_step.value} 开始）")
                 frameworks_dir = target_app / "Contents" / "Frameworks"
             
-            # 第三步：验证并修复关键文件签名（在签名主可执行文件之前，与 build_client.py 保持一致）
+            # 第三步：签名 Python 包目录（在签名主可执行文件之前）
+            # 这些目录在 Frameworks 中，需要确保整个目录被签名
+            # 注意：即使目录中包含文本文件（如 py.typed），也需要签名整个目录
+            log_info("  签名 Python 包目录...")
+            python_package_dirs = ["AppKit", "CoreFoundation", "Foundation", "PIL", "bcrypt", 
+                                  "charset_normalizer", "cryptography", "nacl", "objc", "uvloop", "yaml"]
+            for package_name in python_package_dirs:
+                package_dir = frameworks_dir / package_name
+                if package_dir.exists() and package_dir.is_dir() and not package_dir.is_symlink():
+                    # 先签名目录中的所有二进制文件
+                    for item in package_dir.rglob("*"):
+                        if item.is_file():
+                            # 跳过文本文件和资源文件（这些不需要签名）
+                            if item.suffix in [".py", ".pyc", ".pyo", ".txt", ".md", ".pem", ".crt", ".key", ".typed"]:
+                                continue
+                            # 检查是否是 Mach-O 二进制文件或 .so 文件
+                            try:
+                                result = subprocess.run(
+                                    ["file", "-b", "--mime-type", str(item)],
+                                    capture_output=True,
+                                    text=True,
+                                    check=True,
+                                    timeout=30
+                                )
+                                if "application/x-mach-binary" in result.stdout or "application/x-executable" in result.stdout:
+                                    log_info(f"    签名: {item.relative_to(target_app)}")
+                                    subprocess.run([
+                                        "codesign", "--force", "--sign", codesign_identity,
+                                        "--options", "runtime",
+                                        "--timestamp",
+                                        str(item)
+                                    ], check=False, capture_output=True)
+                                elif item.suffix == ".so":
+                                    log_info(f"    签名: {item.relative_to(target_app)}")
+                                    subprocess.run([
+                                        "codesign", "--force", "--sign", codesign_identity,
+                                        "--options", "runtime",
+                                        "--timestamp",
+                                        str(item)
+                                    ], check=False, capture_output=True)
+                            except Exception:
+                                pass
+                    
+                    # 然后签名整个目录（这样 codesign 就不会检查其中的文本文件）
+                    log_info(f"    签名目录: {package_dir.relative_to(target_app)}")
+                    subprocess.run([
+                        "codesign", "--force", "--sign", codesign_identity,
+                        "--options", "runtime",
+                        "--timestamp",
+                        str(package_dir)
+                    ], check=False, capture_output=True)
+            
+            # 第四步：验证并修复关键文件签名（在签名主可执行文件之前，与 build_client.py 保持一致）
             # 注意：与 build_client.py 保持一致，这里不检查 frameworks_dir.exists()，直接使用
             log_warn("验证并修复关键文件签名...")
             # 查找所有无扩展名的 Qt 文件（与 build_client.py 保持一致）
@@ -1110,7 +1398,7 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                         str(qt_file)
                     ], check=False, capture_output=True)
             
-            # 第四步：先签名主可执行文件（与 build_client.py 保持一致）
+            # 第五步：先签名主可执行文件（与 build_client.py 保持一致）
             if not should_skip_step(Step.SIGN_MAIN, start_from_step):
                 log_step(Step.SIGN_MAIN, "签名应用包主可执行文件...")
                 main_executable = target_app / "Contents" / "MacOS" / app_name

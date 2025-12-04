@@ -266,10 +266,19 @@ class AirDropView(QWidget):
         self._current_target: Optional[DeviceInfo] = None
         self._pending_requests: Dict[str, dict] = {}  # 待处理的传输请求
         self._was_hidden_to_icon = False  # 标记窗口是否被隐藏到图标
-        self._setup_ui()
-        self._setup_drag_detection()
-        # 延迟初始化传输管理器，避免阻塞UI创建
-        QTimer.singleShot(0, self._init_transfer_manager)
+        
+        try:
+            self._setup_ui()
+            self._setup_drag_detection()
+            # 延迟初始化传输管理器，避免阻塞UI创建
+            QTimer.singleShot(0, self._init_transfer_manager)
+        except Exception as e:
+            import traceback
+            error_msg = f"AirDropView 初始化失败: {e}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            print(f"[ERROR] {error_msg}", file=sys.stderr)
+            # 即使初始化失败，也创建一个基本的窗口，避免完全无法显示
+            raise
     
     def changeEvent(self, event):
         """处理窗口状态改变事件，禁止最大化和最小化"""

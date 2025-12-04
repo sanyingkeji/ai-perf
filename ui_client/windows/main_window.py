@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QStackedWidget, QLabel, QDialog, QPushButton, QSizePolicy,
-    QSystemTrayIcon, QMenu, QApplication, QMessageBox
+    QSystemTrayIcon, QMenu, QApplication, QMessageBox, QTextEdit
 )
 from PySide6.QtCore import Qt, QSize, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
@@ -765,13 +765,148 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
     
+    def _show_error_dialog(self, title: str, message: str, detailed_text: str = ""):
+        """显示可复制错误信息的对话框（仅 Windows/Linux）"""
+        if platform.system() == "Darwin":
+            # macOS 使用 Toast
+            from widgets.toast import Toast
+            Toast.show_message(self, message)
+            return
+        
+        # Windows/Linux: 使用可复制的错误对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(300)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 错误消息
+        msg_label = QLabel(message)
+        msg_label.setWordWrap(True)
+        layout.addWidget(msg_label)
+        
+        # 详细错误信息（可复制）
+        if detailed_text:
+            detail_label = QLabel("详细错误信息（可复制）：")
+            layout.addWidget(detail_label)
+            
+            text_edit = QTextEdit()
+            text_edit.setPlainText(detailed_text)
+            text_edit.setReadOnly(True)
+            text_edit.setMinimumHeight(150)
+            layout.addWidget(text_edit)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        copy_button = QPushButton("复制错误信息")
+        copy_button.clicked.connect(lambda: self._copy_to_clipboard(detailed_text or message))
+        button_layout.addWidget(copy_button)
+        
+        ok_button = QPushButton("确定")
+        ok_button.clicked.connect(dialog.accept)
+        button_layout.addWidget(ok_button)
+        
+        layout.addLayout(button_layout)
+        dialog.exec()
+    
+    def _copy_to_clipboard(self, text: str):
+        """复制文本到剪贴板"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        from widgets.toast import Toast
+        Toast.show_message(self, "已复制到剪贴板")
+    
     def _show_airdrop(self):
         """显示隔空投送窗口（从系统托盘菜单调用）"""
-        self._show_airdrop_window()
+        system = platform.system()
+        
+        # Windows/Linux 调试信息
+        if system != "Darwin":
+            print(f"[DEBUG] _show_airdrop 被调用 (系统: {system})", file=sys.stderr)
+        
+        try:
+            if system != "Darwin":
+                print("[DEBUG] 准备调用 _show_airdrop_window", file=sys.stderr)
+            self._show_airdrop_window()
+            if system != "Darwin":
+                print("[DEBUG] _show_airdrop_window 调用完成", file=sys.stderr)
+        except Exception as e:
+            import traceback
+            error_msg = f"显示隔空投送窗口失败: {e}"
+            detailed_text = traceback.format_exc()
+            
+            if system == "Darwin":
+                # macOS: 使用 Toast
+                print(error_msg, file=sys.stderr)
+                from widgets.toast import Toast
+                Toast.show_message(self, f"无法打开隔空投送窗口: {str(e)}")
+            else:
+                # Windows/Linux: 显示可复制的错误对话框
+                print(f"[ERROR] {error_msg}\n{detailed_text}", file=sys.stderr)
+                self._show_error_dialog(
+                    "无法打开隔空投送窗口",
+                    f"无法打开隔空投送窗口：{str(e)}",
+                    detailed_text
+                )
     
     def _show_airdrop_window(self):
         """显示隔空投送窗口（内部方法）"""
-        from windows.airdrop_view import AirDropView
+        import platform
+        system = platform.system()
+        
+        # 检查依赖
+        if system == "Windows":
+            try:
+                import zeroconf
+            except ImportError:
+                error_msg = "缺少依赖: zeroconf。请运行: pip install zeroconf"
+                print(f"[ERROR] {error_msg}", file=sys.stderr)
+                if system == "Darwin":
+                    from widgets.toast import Toast
+                    Toast.show_message(self, "缺少依赖: zeroconf\n请安装: pip install zeroconf")
+                else:
+                    self._show_error_dialog(
+                        "缺少依赖",
+                        "缺少依赖: zeroconf",
+                        f"请运行以下命令安装：\n\npip install zeroconf\n\n错误信息：{error_msg}"
+                    )
+                return
+        
+        try:
+            from windows.airdrop_view import AirDropView
+        except ImportError as e:
+            import traceback
+            error_msg = f"导入 AirDropView 失败: {e}"
+            detailed_text = traceback.format_exc()
+            print(f"[ERROR] {error_msg}\n{detailed_text}", file=sys.stderr)
+            if system == "Darwin":
+                from widgets.toast import Toast
+                Toast.show_message(self, f"无法加载隔空投送模块: {str(e)}")
+            else:
+                self._show_error_dialog(
+                    "无法加载隔空投送模块",
+                    f"导入 AirDropView 失败：{str(e)}",
+                    detailed_text
+                )
+            return
+        except Exception as e:
+            import traceback
+            error_msg = f"导入 AirDropView 时发生错误: {e}"
+            detailed_text = traceback.format_exc()
+            print(f"[ERROR] {error_msg}\n{detailed_text}", file=sys.stderr)
+            if system == "Darwin":
+                from widgets.toast import Toast
+                Toast.show_message(self, f"无法加载隔空投送模块: {str(e)}")
+            else:
+                self._show_error_dialog(
+                    "无法加载隔空投送模块",
+                    f"导入时发生错误：{str(e)}",
+                    detailed_text
+                )
+            return
         
         # 如果窗口正在执行显示动画，等待完成或强制重置
         if self._airdrop_window and hasattr(self._airdrop_window, '_is_showing_animation') and self._airdrop_window._is_showing_animation:
@@ -785,16 +920,45 @@ class MainWindow(QMainWindow):
             return
         
         if self._airdrop_window is None:
-            self._airdrop_window = AirDropView()
-            self._airdrop_window.setWindowTitle("隔空投送")
+            try:
+                if system != "Darwin":
+                    print("[DEBUG] 开始创建 AirDropView 窗口...", file=sys.stderr)
+                self._airdrop_window = AirDropView()
+                self._airdrop_window.setWindowTitle("隔空投送")
+                if system != "Darwin":
+                    print("[DEBUG] AirDropView 窗口创建成功", file=sys.stderr)
+            except Exception as e:
+                import traceback
+                error_msg = f"创建 AirDropView 窗口失败: {e}"
+                detailed_text = traceback.format_exc()
+                print(f"[ERROR] {error_msg}\n{detailed_text}", file=sys.stderr)
+                if system == "Darwin":
+                    from widgets.toast import Toast
+                    Toast.show_message(self, f"无法创建隔空投送窗口: {str(e)}")
+                else:
+                    self._show_error_dialog(
+                        "无法创建隔空投送窗口",
+                        f"创建窗口失败：{str(e)}",
+                        detailed_text
+                    )
+                return
             # 只保留关闭按钮，禁用最小化和最大化
             # 注意：在macOS上，需要设置窗口属性来禁用最小化和最大化按钮
             # 不包含 WindowMinimizeButtonHint 和 WindowMaximizeButtonHint
-            self._airdrop_window.setWindowFlags(
-                Qt.Window |
-                Qt.WindowStaysOnTopHint |
-                Qt.WindowCloseButtonHint
-            )
+            import platform
+            if platform.system() == "Windows":
+                # Windows: 不使用 WindowStaysOnTopHint，可能导致窗口无法显示
+                self._airdrop_window.setWindowFlags(
+                    Qt.Window |
+                    Qt.WindowCloseButtonHint
+                )
+            else:
+                # macOS: 使用 WindowStaysOnTopHint
+                self._airdrop_window.setWindowFlags(
+                    Qt.Window |
+                    Qt.WindowStaysOnTopHint |
+                    Qt.WindowCloseButtonHint
+                )
             # macOS: 设置窗口样式，隐藏最小化和最大化按钮
             if platform.system() == "Darwin":
                 try:
@@ -1010,6 +1174,10 @@ class MainWindow(QMainWindow):
                        hasattr(self._airdrop_window, '_was_hidden_to_icon') and 
                        self._airdrop_window._was_hidden_to_icon)
         
+        system = platform.system()
+        if system != "Darwin":
+            print(f"[DEBUG] 准备显示窗口: is_restoring={is_restoring}, window_exists={self._airdrop_window is not None}", file=sys.stderr)
+        
         if is_restoring:
             # 从边缘恢复：执行恢复动画
             QTimer.singleShot(50, lambda: self._show_window_after_hidden())
@@ -1032,11 +1200,47 @@ class MainWindow(QMainWindow):
         y = (screen.height() - window_height) // 2
         
         # 直接设置窗口大小和位置
-        self._airdrop_window.setGeometry(QRect(x, y, window_width, window_height))
-        self._airdrop_window.show()
-        self._airdrop_window.setVisible(True)
-        self._airdrop_window.raise_()
-        self._airdrop_window.activateWindow()
+        try:
+            self._airdrop_window.setGeometry(QRect(x, y, window_width, window_height))
+            self._airdrop_window.show()
+            self._airdrop_window.setVisible(True)
+            self._airdrop_window.raise_()
+            self._airdrop_window.activateWindow()
+            
+            # Windows/Linux 上确保窗口可见（调试信息）
+            system = platform.system()
+            if system != "Darwin":
+                if not self._airdrop_window.isVisible():
+                    error_msg = f"窗口显示失败: isVisible()={self._airdrop_window.isVisible()}, geometry={self._airdrop_window.geometry()}, pos={self._airdrop_window.pos()}"
+                    print(f"[ERROR] {error_msg}", file=sys.stderr)
+                    self._show_error_dialog(
+                        "窗口显示失败",
+                        "隔空投送窗口无法显示",
+                        f"窗口状态信息：\n\nisVisible: {self._airdrop_window.isVisible()}\ngeometry: {self._airdrop_window.geometry()}\npos: {self._airdrop_window.pos()}\nwindowFlags: {self._airdrop_window.windowFlags()}"
+                    )
+                else:
+                    debug_msg = f"[DEBUG] 窗口已显示: geometry={self._airdrop_window.geometry()}, pos={self._airdrop_window.pos()}, isVisible={self._airdrop_window.isVisible()}"
+                    print(debug_msg, file=sys.stderr)
+                    
+                    # Windows 特定：再次确保窗口在最前面
+                    if system == "Windows":
+                        QTimer.singleShot(100, lambda: self._airdrop_window.raise_())
+                        QTimer.singleShot(100, lambda: self._airdrop_window.activateWindow())
+        except Exception as e:
+            import traceback
+            system = platform.system()
+            error_msg = f"显示窗口失败: {e}"
+            detailed_text = traceback.format_exc()
+            print(f"[ERROR] {error_msg}\n{detailed_text}", file=sys.stderr)
+            if system == "Darwin":
+                from widgets.toast import Toast
+                Toast.show_message(self, f"无法显示隔空投送窗口: {str(e)}")
+            else:
+                self._show_error_dialog(
+                    "无法显示隔空投送窗口",
+                    f"显示窗口失败：{str(e)}",
+                    detailed_text
+                )
     
     def _show_window_after_hidden(self):
         """从隐藏位置恢复显示窗口（从隐藏位置显示）"""
@@ -1541,6 +1745,7 @@ class MainWindow(QMainWindow):
     def _setup_background_notification_service(self):
         """设置后台通知服务（应用未运行时也能接收通知）"""
         try:
+            import platform
             from utils.system_notification_service import SystemNotificationService
             from utils.config_manager import ConfigManager
             
@@ -1550,21 +1755,111 @@ class MainWindow(QMainWindow):
                 return
             
             service = SystemNotificationService()
+            system = platform.system()
+            
+            # macOS 保持静默安装（不影响原有逻辑）
+            is_macos = system == "Darwin"
             
             # 检查服务状态
             if not service.is_installed():
                 # 如果未安装，尝试安装
-                success, msg = service.install()
+                success, msg = service.install(force_reinstall=False)
                 if success:
                     # 安装成功后启用
-                    service.enable()
-                # 静默失败，不显示错误（避免干扰用户体验）
-            elif not service.is_enabled():
-                # 如果已安装但未启用，启用它
-                service.enable()
-        except Exception:
-            # 静默失败，不干扰主程序
-            pass
+                    enable_success, enable_msg = service.enable()
+                    # 只在 Windows 和 Linux 显示提示，macOS 保持静默
+                    if not is_macos:
+                        from PySide6.QtWidgets import QMessageBox
+                        if enable_success:
+                            # 显示成功提示（仅在首次安装时）
+                            QMessageBox.information(
+                                self,
+                                "服务安装成功",
+                                "后台通知服务已成功安装并启用。\n\n"
+                                "即使应用未运行，您也能收到系统通知。",
+                                QMessageBox.Ok
+                            )
+                        else:
+                            # 安装成功但启用失败
+                            QMessageBox.warning(
+                                self,
+                                "服务启用失败",
+                                f"服务已安装，但启用失败：{enable_msg}\n\n"
+                                "您可以在设置中手动启用服务。",
+                                QMessageBox.Ok
+                            )
+                else:
+                    # 安装失败，只在 Windows 和 Linux 显示错误提示
+                    if not is_macos:
+                        from PySide6.QtWidgets import QMessageBox
+                        error_msg = msg or "未知错误"
+                        # 检查是否是权限问题
+                        if "权限" in error_msg or "access denied" in error_msg.lower() or "拒绝访问" in error_msg:
+                            QMessageBox.warning(
+                                self,
+                                "服务安装失败 - 需要管理员权限",
+                                f"安装后台通知服务需要管理员权限。\n\n"
+                                f"错误信息：{error_msg}\n\n"
+                                "请以管理员身份运行应用，或手动在任务计划程序中创建任务。",
+                                QMessageBox.Ok
+                            )
+                        else:
+                            QMessageBox.warning(
+                                self,
+                                "服务安装失败",
+                                f"安装后台通知服务失败：{error_msg}\n\n"
+                                "您仍可以在应用运行时接收通知。",
+                                QMessageBox.Ok
+                            )
+                    # macOS 静默失败，不显示错误（保持原有逻辑）
+            else:
+                # 服务已安装，检查配置是否正确（覆盖安装的情况）
+                # 只在 Windows 和 Linux 进行配置检查和重新安装
+                if not is_macos and not service.is_configuration_valid():
+                    # 配置不正确，重新安装
+                    from PySide6.QtWidgets import QMessageBox
+                    success, msg = service.install(force_reinstall=True)
+                    if success:
+                        enable_success, enable_msg = service.enable()
+                        if enable_success:
+                            QMessageBox.information(
+                                self,
+                                "服务更新成功",
+                                "检测到旧版本服务配置，已自动更新为新版本配置。",
+                                QMessageBox.Ok
+                            )
+                        else:
+                            QMessageBox.warning(
+                                self,
+                                "服务更新失败",
+                                f"服务配置已更新，但启用失败：{enable_msg}",
+                                QMessageBox.Ok
+                            )
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "服务更新失败",
+                            f"更新服务配置失败：{msg}\n\n"
+                            "建议手动卸载旧服务后重新安装。",
+                            QMessageBox.Ok
+                        )
+                elif not service.is_enabled():
+                    # 如果已安装但未启用，启用它
+                    enable_success, enable_msg = service.enable()
+                    # 只在 Windows 和 Linux 显示失败提示
+                    if not is_macos and not enable_success:
+                        from PySide6.QtWidgets import QMessageBox
+                        QMessageBox.warning(
+                            self,
+                            "服务启用失败",
+                            f"启用后台通知服务失败：{enable_msg}",
+                            QMessageBox.Ok
+                        )
+        except Exception as e:
+            # 记录错误但不显示给用户（避免干扰）
+            import traceback
+            print(f"[ERROR] 设置后台通知服务失败: {e}")
+            traceback.print_exc()
     
     def _start_polling_service(self):
         """启动统一轮询服务（检查版本和通知）"""

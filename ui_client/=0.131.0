@@ -1,2 +1,0 @@
-Requirement already satisfied: zeroconf in /Users/liuwei/.pyenv/versions/3.10.4/lib/python3.10/site-packages (0.148.0)
-Requirement already satisfied: ifaddr>=0.1.7 in /Users/liuwei/.pyenv/versions/3.10.4/lib/python3.10/site-packages (from zeroconf) (0.2.0)

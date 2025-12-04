@@ -117,6 +117,62 @@ class SystemNotificationService:
         else:
             return False
     
+    def is_configuration_valid(self) -> bool:
+        """检查已安装的服务配置是否正确（用于覆盖安装时验证）"""
+        if not self.is_installed():
+            return False
+        
+        script_path = self._get_service_script_path()
+        if not script_path:
+            return False
+        
+        if self.system == "Windows":
+            try:
+                # 查询任务详情，检查脚本路径是否匹配
+                result = subprocess.run(
+                    ["schtasks", "/query", "/tn", self.windows_task_name, "/xml"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    # 检查 XML 中是否包含当前脚本路径
+                    xml_content = result.stdout
+                    # 规范化路径进行比较（处理不同的路径格式）
+                    script_path_normalized = str(script_path).replace("\\", "/").lower()
+                    script_path_backslash = str(script_path).lower()
+                    script_path_escaped = str(script_path).replace("\\", "\\\\").lower()
+                    
+                    xml_lower = xml_content.lower()
+                    # 检查脚本路径是否在任务配置中（多种格式）
+                    return (script_path_normalized in xml_lower or 
+                            script_path_backslash in xml_lower or 
+                            script_path_escaped in xml_lower)
+                return False
+            except Exception:
+                return False
+        elif self.system == "Darwin":
+            try:
+                # 读取 plist 文件，检查脚本路径
+                # plistlib 是 Python 标准库，所有平台都可用
+                import plistlib
+                with open(self.macos_plist_path, 'rb') as f:
+                    plist_data = plistlib.load(f)
+                program_args = plist_data.get("ProgramArguments", [])
+                if len(program_args) >= 2:
+                    # 检查第二个参数（脚本路径）是否匹配
+                    installed_script = program_args[1]
+                    try:
+                        return str(script_path) == installed_script or Path(installed_script).resolve() == script_path.resolve()
+                    except Exception:
+                        # 如果路径解析失败，只做字符串比较
+                        return str(script_path) == installed_script
+                return False
+            except Exception:
+                return False
+        else:
+            return False
+    
     def is_enabled(self) -> bool:
         """检查服务是否已启用"""
         if not self.is_installed():
@@ -150,9 +206,12 @@ class SystemNotificationService:
         else:
             return False
     
-    def install(self) -> Tuple[bool, str]:
+    def install(self, force_reinstall: bool = False) -> Tuple[bool, str]:
         """
         安装后台服务
+        
+        Args:
+            force_reinstall: 如果为 True，即使服务已安装也会重新安装（用于覆盖安装）
         
         Returns:
             (成功标志, 错误消息)
@@ -160,6 +219,23 @@ class SystemNotificationService:
         script_path = self._get_service_script_path()
         if not script_path:
             return False, "找不到后台服务脚本文件"
+        
+        # 如果服务已安装，检查配置是否正确
+        if self.is_installed():
+            if not force_reinstall:
+                # 检查配置是否正确
+                if self.is_configuration_valid():
+                    # 配置正确，不需要重新安装
+                    return True, "服务已安装且配置正确"
+                else:
+                    # 配置不正确，需要重新安装
+                    force_reinstall = True
+        
+        # 如果需要强制重新安装，先卸载旧服务
+        if force_reinstall and self.is_installed():
+            uninstall_success, uninstall_msg = self.uninstall()
+            if not uninstall_success:
+                return False, f"卸载旧服务失败: {uninstall_msg}"
         
         if self.system == "Darwin":
             return self._install_macos(script_path)

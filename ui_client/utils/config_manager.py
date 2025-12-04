@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
@@ -18,6 +19,8 @@ DEFAULT_CONFIG = {
     "client_version": "1.0.0",  # 客户端版本号（格式：x.x.x）
     "update_dialog_dismissed_date": "",  # 非强制升级弹窗关闭的日期（格式：YYYY-MM-DD），用于当天不再弹出
 }
+
+
 class ConfigManager:
     @staticmethod
     def load() -> dict:
@@ -49,5 +52,33 @@ class ConfigManager:
     @staticmethod
     def save(data: dict):
         """保存配置"""
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # 确保目录存在
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 使用临时文件 + 原子替换，确保写入安全
+        temp_path = CONFIG_PATH.with_suffix('.json.tmp')
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()  # 确保数据写入缓冲区
+                os.fsync(f.fileno())  # 强制同步到磁盘
+            # 原子替换
+            temp_path.replace(CONFIG_PATH)
+        except Exception:
+            # 如果临时文件方式失败，尝试直接写入（向后兼容）
+            try:
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()  # 确保数据写入缓冲区
+                    os.fsync(f.fileno())  # 强制同步到磁盘
+            except Exception:
+                # 如果还是失败，至少尝试写入（不强制同步）
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+            finally:
+                # 清理临时文件
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        pass
