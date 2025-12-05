@@ -95,10 +95,35 @@ class SystemNotificationService:
                 # 开发环境或普通 Python
                 return sys.executable
         elif self.system == "Windows":
-            # Windows: 使用当前 Python 解释器
-            return sys.executable
+            # Windows: 使用 pythonw.exe（无窗口版本）避免弹出命令行窗口
+            return self._get_pythonw_executable()
         else:
             return sys.executable
+    
+    def _get_pythonw_executable(self) -> str:
+        """获取 Windows 无窗口版本的 Python 可执行文件路径（pythonw.exe）"""
+        python_exe = sys.executable
+        python_path = Path(python_exe)
+        
+        # 如果已经是 pythonw.exe，直接返回
+        if python_path.name.lower() == "pythonw.exe":
+            return python_exe
+        
+        # 尝试找到 pythonw.exe
+        # 通常 pythonw.exe 和 python.exe 在同一目录
+        pythonw_path = python_path.parent / "pythonw.exe"
+        if pythonw_path.exists():
+            return str(pythonw_path)
+        
+        # 如果在 Scripts 目录（虚拟环境），向上一级查找
+        if python_path.parent.name.lower() == "scripts":
+            pythonw_path = python_path.parent.parent / "pythonw.exe"
+            if pythonw_path.exists():
+                return str(pythonw_path)
+        
+        # 如果找不到 pythonw.exe，回退到 python.exe
+        # 但添加一个警告标记
+        return python_exe
     
     def is_installed(self) -> bool:
         """检查服务是否已安装"""
@@ -363,7 +388,7 @@ class SystemNotificationService:
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>

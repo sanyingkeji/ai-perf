@@ -6,6 +6,7 @@
 
 import logging
 import platform
+import sys
 from typing import Optional, Callable, Dict
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal
@@ -17,15 +18,22 @@ from .client import TransferClient
 logger = logging.getLogger(__name__)
 
 
+def _debug_log(message: str):
+    """统一的隔空投送调试输出（已禁用）"""
+    pass
+    pass
+
+
 class TransferManager(QObject):
     """文件传输管理器"""
     
     # 信号
     device_added = Signal(DeviceInfo)  # 设备添加
     device_removed = Signal(str)  # 设备移除（设备名称）
-    transfer_request_received = Signal(str, str, str, str, int)  # 收到传输请求 (request_id, sender_name, sender_id, filename, file_size)
+    transfer_request_received = Signal(str, str, str, str, int, str, int)  # 收到传输请求 (request_id, sender_name, sender_id, filename, file_size, sender_ip, sender_port)
     file_received = Signal(Path, int, str)  # 文件接收 (save_path, file_size, original_filename)
     transfer_progress = Signal(str, int, int)  # 传输进度 (target_name, uploaded, total)
+    receive_progress = Signal(str, int, int)  # 接收进度 (request_id, received, total)
     transfer_completed = Signal(str, bool, str)  # 传输完成 (target_name, success, message)
     
     def __init__(self, user_id: str, user_name: str, avatar_url: Optional[str] = None,
@@ -53,7 +61,7 @@ class TransferManager(QObject):
         # 组件
         self._discovery: Optional[DeviceDiscovery] = None
         self._server: Optional[TransferServer] = None
-        self._client = TransferClient()
+        self._client = TransferClient(port=self._port)
         self._zeroconf = None
         self._service_info = None
         
@@ -64,18 +72,23 @@ class TransferManager(QObject):
         if self._running:
             return
         
+        _debug_log("TransferManager.start() called")
         try:
             # 启动HTTP服务器
+            _debug_log(f"Starting TransferServer on port {self._port}, save_dir={self._save_dir}")
             self._server = TransferServer(
                 port=self._port,
                 save_dir=self._save_dir,
                 on_transfer_request=self._on_transfer_request,
-                on_file_received=self._on_file_received
+                on_file_received=self._on_file_received,
+                on_receive_progress=self._on_receive_progress
             )
             self._server.start()
             
             # 注册mDNS服务
             service_name = f"aiperf-{self._user_id}-{platform.node()}"
+            local_ip = get_local_ip()
+            _debug_log(f"Registering mDNS service {service_name} (user={self._user_name}, ip={local_ip})")
             self._zeroconf, self._service_info = register_service(
                 name=service_name,
                 port=self._port,
@@ -86,6 +99,7 @@ class TransferManager(QObject):
             )
             
             # 启动设备发现
+            _debug_log("Starting DeviceDiscovery...")
             self._discovery = DeviceDiscovery(
                 on_device_added=self._on_device_added,
                 on_device_removed=self._on_device_removed
@@ -94,8 +108,10 @@ class TransferManager(QObject):
             
             self._running = True
             logger.info("文件传输管理器已启动")
+            _debug_log("TransferManager started successfully")
         except Exception as e:
             logger.error(f"启动文件传输管理器失败: {e}")
+            _debug_log(f"TransferManager.start() failed: {e}")
             raise
     
     def stop(self):
@@ -103,6 +119,7 @@ class TransferManager(QObject):
         if not self._running:
             return
         
+        _debug_log("TransferManager.stop() called")
         try:
             if self._discovery:
                 self._discovery.stop()
@@ -120,8 +137,10 @@ class TransferManager(QObject):
             
             self._running = False
             logger.info("文件传输管理器已停止")
+            _debug_log("TransferManager stopped")
         except Exception as e:
             logger.error(f"停止文件传输管理器失败: {e}")
+            _debug_log(f"TransferManager.stop() failed: {e}")
     
     def get_devices(self) -> list[DeviceInfo]:
         """获取发现的设备列表"""
@@ -241,24 +260,32 @@ class TransferManager(QObject):
             request_id: 请求ID
             on_progress: 进度回调
         """
+        import sys
         def progress_callback(uploaded: int, total: int):
             if on_progress:
                 on_progress(uploaded, total)
             self.transfer_progress.emit(target_device.name, uploaded, total)
         
         def send_in_thread():
-            result = self._client.send_file(
-                file_path=file_path,
-                target_ip=target_device.ip,
-                target_port=target_device.port,
-                request_id=request_id,
-                on_progress=progress_callback
-            )
-            self.transfer_completed.emit(
-                target_device.name,
-                result["success"],
-                result["message"]
-            )
+            try:
+                result = self._client.send_file(
+                    file_path=file_path,
+                    target_ip=target_device.ip,
+                    target_port=target_device.port,
+                    request_id=request_id,
+                    on_progress=progress_callback
+                )
+                self.transfer_completed.emit(
+                    target_device.name,
+                    result["success"],
+                    result["message"]
+                )
+            except Exception as e:
+                self.transfer_completed.emit(
+                    target_device.name,
+                    False,
+                    f"发送失败: {str(e)}"
+                )
         
         import threading
         thread = threading.Thread(target=send_in_thread, daemon=True)
@@ -268,17 +295,24 @@ class TransferManager(QObject):
         """设备添加回调"""
         # 过滤掉自己
         if device.user_id == self._user_id:
+            _debug_log(f"Ignoring self device discovery: {device}")
             return
+        _debug_log(f"Discovered device: {device.name} ({device.ip}:{device.port}) user_id={device.user_id}")
         self.device_added.emit(device)
     
     def _on_device_removed(self, device_name: str):
         """设备移除回调"""
+        _debug_log(f"Device removed: {device_name}")
         self.device_removed.emit(device_name)
     
     def _on_transfer_request(self, request_id: str, sender_name: str, sender_id: str,
-                             filename: str, file_size: int):
+                             filename: str, file_size: int, sender_ip: str = None, sender_port: int = None):
         """传输请求回调"""
-        self.transfer_request_received.emit(request_id, sender_name, sender_id, filename, file_size)
+        self.transfer_request_received.emit(request_id, sender_name, sender_id, filename, file_size, sender_ip or "", sender_port or 8765)
+    
+    def _on_receive_progress(self, request_id: str, received: int, total: int):
+        """接收进度回调"""
+        self.receive_progress.emit(request_id, received, total)
     
     def _on_file_received(self, save_path: Path, file_size: int, original_filename: str):
         """文件接收回调"""

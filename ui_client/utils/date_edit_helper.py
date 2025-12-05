@@ -159,17 +159,57 @@ def _apply_theme_to_calendar(date_edit: QDateEdit):
             QCalendarWidget {
                 background-color: #ffffff;
                 color: #000000;
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+            }
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background-color: #ffffff;
+                border-bottom: 1px solid #e0e0e0;
+            }
+            QCalendarWidget QToolButton {
+                background-color: transparent;
+                color: #333333;
+                font-weight: bold;
+                border: none;
+                padding: 4px 8px;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #f5f5f5;
+            }
+            QCalendarWidget QToolButton::menu-indicator {
+                image: none;
+            }
+            QCalendarWidget QSpinBox {
+                color: #333333;
+                selection-background-color: #4a90e2;
+                selection-color: #ffffff;
+                background-color: #ffffff;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+            }
+            QCalendarWidget QSpinBox::up-button {
+                width: 18px;
+                background-color: transparent;
+            }
+            QCalendarWidget QSpinBox::down-button {
+                width: 18px;
+                background-color: transparent;
             }
             QCalendarWidget QTableView {
                 background-color: #ffffff;
                 color: #000000;
                 selection-background-color: #4a90e2;
                 selection-color: #ffffff;
+                alternate-background-color: #fafafa;
+            }
+            QCalendarWidget QTableView::item:hover {
+                background-color: rgba(74, 144, 226, 0.15);
             }
             QCalendarWidget QHeaderView::section {
-                background-color: #f1f3f5;
-                color: #000000;
+                background-color: #ffffff;
+                color: #666666;
                 border: none;
+                font-weight: bold;
             }
         """)
     

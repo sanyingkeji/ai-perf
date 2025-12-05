@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class TransferClient:
     """文件传输客户端"""
     
-    def __init__(self, timeout: int = 300):
+    def __init__(self, timeout: int = 300, port: int = 8765):
         """
         初始化传输客户端
         
@@ -27,6 +27,7 @@ class TransferClient:
             timeout: 请求超时时间（秒）
         """
         self._timeout = timeout
+        self._port = port
     
     def send_transfer_request(self, file_path: Path, target_ip: str, target_port: int,
                              sender_name: str, sender_id: str) -> dict:
@@ -69,7 +70,7 @@ class TransferClient:
                 "file_size": file_size,
                 "sender_name": sender_name,
                 "sender_id": sender_id,
-                "sender_port": 8765  # 默认端口，实际应该从manager获取
+                "sender_port": self._port
             }
             
             with httpx.Client(timeout=10) as client:
@@ -146,6 +147,7 @@ class TransferClient:
                     if response.status_code == 200:
                         result = response.json()
                         status = result.get("status")
+                        
                         if status == "accepted":
                             return {
                                 "success": True,
@@ -158,13 +160,10 @@ class TransferClient:
                                 "accepted": False,
                                 "message": "已拒绝"
                             }
-                        # 如果还是pending，继续等待
-            except Exception:
+            except Exception as e:
                 pass
             
             time.sleep(1)  # 每秒检查一次
-        
-        # 超时
         return {
             "success": False,
             "accepted": False,

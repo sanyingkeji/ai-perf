@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
         # 左侧：导航栏
         nav_container = QWidget()
         nav_layout = QVBoxLayout(nav_container)
-        nav_layout.setContentsMargins(12, 12, 12, 12)
+        nav_layout.setContentsMargins(12, 1, 12, 12)
         nav_layout.setSpacing(12)
 
         logo = QLabel("Ai Perf")
@@ -127,6 +127,19 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(logo)
 
         self.nav = QListWidget()
+        self.nav.setStyleSheet("""
+            QListWidget {
+                border-top: 1px solid rgba(0, 0, 0, 0.12);
+                border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+                outline: none;
+            }
+            QListWidget::item:focus,
+            QListWidget::item:selected:focus,
+            QListWidget::item {
+                outline: none;
+            }
+        """)
+        self.nav.setFocusPolicy(Qt.NoFocus)
         self.nav.addItem("今日评分")
         self.nav.addItem("历史评分")
         self.nav.addItem("复评中心")
@@ -275,8 +288,18 @@ class MainWindow(QMainWindow):
         # 隔空投送窗口
         self._airdrop_window = None
         
+        self._global_hotkey = None
+        if platform.system() == "Windows":
+            from utils.win_hotkey import WindowsGlobalHotkey
+            try:
+                self._global_hotkey = WindowsGlobalHotkey(self, self._show_airdrop)
+            except Exception as e:
+                print(f"[AirDrop] Failed to register global hotkey: {e}", file=sys.stderr)
+
+        # 启动应用时自动打开隔空投送窗口，便于调试
+        QTimer.singleShot(500, self._show_airdrop)
+        
         # macOS: 确保应用在窗口关闭后仍然运行
-        import platform
         if platform.system() == "Darwin":
             # 将托盘图标保存为类变量，确保窗口关闭后仍然存在
             if not hasattr(MainWindow, '_app_tray_icon'):
@@ -819,20 +842,15 @@ class MainWindow(QMainWindow):
         from widgets.toast import Toast
         Toast.show_message(self, "已复制到剪贴板")
     
+    # eventFilter no longer needed
+    
     def _show_airdrop(self):
         """显示隔空投送窗口（从系统托盘菜单调用）"""
         system = platform.system()
         
         # Windows/Linux 调试信息
-        if system != "Darwin":
-            print(f"[DEBUG] _show_airdrop 被调用 (系统: {system})", file=sys.stderr)
-        
         try:
-            if system != "Darwin":
-                print("[DEBUG] 准备调用 _show_airdrop_window", file=sys.stderr)
             self._show_airdrop_window()
-            if system != "Darwin":
-                print("[DEBUG] _show_airdrop_window 调用完成", file=sys.stderr)
         except Exception as e:
             import traceback
             error_msg = f"显示隔空投送窗口失败: {e}"
@@ -854,6 +872,7 @@ class MainWindow(QMainWindow):
     
     def _show_airdrop_window(self):
         """显示隔空投送窗口（内部方法）"""
+        import sys
         import platform
         system = platform.system()
         
@@ -921,12 +940,8 @@ class MainWindow(QMainWindow):
         
         if self._airdrop_window is None:
             try:
-                if system != "Darwin":
-                    print("[DEBUG] 开始创建 AirDropView 窗口...", file=sys.stderr)
                 self._airdrop_window = AirDropView()
                 self._airdrop_window.setWindowTitle("隔空投送")
-                if system != "Darwin":
-                    print("[DEBUG] AirDropView 窗口创建成功", file=sys.stderr)
             except Exception as e:
                 import traceback
                 error_msg = f"创建 AirDropView 窗口失败: {e}"
@@ -947,9 +962,10 @@ class MainWindow(QMainWindow):
             # 不包含 WindowMinimizeButtonHint 和 WindowMaximizeButtonHint
             import platform
             if platform.system() == "Windows":
-                # Windows: 不使用 WindowStaysOnTopHint，可能导致窗口无法显示
+                # Windows: 强制置顶，确保隔空投送窗口始终显示在最上层
                 self._airdrop_window.setWindowFlags(
                     Qt.Window |
+                    Qt.WindowStaysOnTopHint |
                     Qt.WindowCloseButtonHint
                 )
             else:
@@ -1122,7 +1138,8 @@ class MainWindow(QMainWindow):
             # 计算合适的窗口大小：能显示22个设备不滚屏
             # 每个设备项高度约100px，加上padding和背景文字区域，总高度约2400px
             # 但考虑到屏幕高度，我们设置一个合理的大小
-            screen = QApplication.primaryScreen().geometry()
+            # 使用 availableGeometry() 获取可用区域（排除任务栏）
+            screen = QApplication.primaryScreen().availableGeometry()
             # 窗口宽度：足够显示设备信息
             window_width = 480
             # 窗口高度：能显示约22个设备（每个设备约100px高度）+ 顶部padding + 底部背景区域
@@ -1131,18 +1148,18 @@ class MainWindow(QMainWindow):
             max_height = min(int(screen.height() * 0.85), 2400)
             window_height = max(300, max_height // 2)  # 高度减半，至少300px
             
-            # 在 macOS 上，设置窗口为固定大小，防止用户调整大小
-            if platform.system() == "Darwin":
-                from PySide6.QtCore import QSize
+            # 在 macOS / Windows 上，设置窗口为固定大小，防止用户调整大小
+            from PySide6.QtCore import QSize
+            system_platform = platform.system()
+            if system_platform in ("Darwin", "Windows"):
                 self._airdrop_window.setFixedSize(window_width, window_height)
-                # 保存固定大小，用于 resizeEvent 中恢复
                 self._airdrop_window._fixed_size = QSize(window_width, window_height)
             else:
                 self._airdrop_window.resize(window_width, window_height)
             
-            # 默认位置：右侧屏幕边缘垂直居中
+            # 默认位置：右侧屏幕边缘垂直居中（基于可用区域）
             x = screen.right() - window_width
-            y = (screen.height() - window_height) // 2
+            y = screen.top() + (screen.height() - window_height) // 2
             self._airdrop_window.move(x, y)
             
             # 窗口关闭时直接隐藏（不再需要悬浮图标）
@@ -1175,8 +1192,6 @@ class MainWindow(QMainWindow):
                        self._airdrop_window._was_hidden_to_icon)
         
         system = platform.system()
-        if system != "Darwin":
-            print(f"[DEBUG] 准备显示窗口: is_restoring={is_restoring}, window_exists={self._airdrop_window is not None}", file=sys.stderr)
         
         if is_restoring:
             # 从边缘恢复：执行恢复动画
@@ -1192,12 +1207,13 @@ class MainWindow(QMainWindow):
         
         import sys
         # 计算窗口尺寸和位置
-        screen = QApplication.primaryScreen().geometry()
+        # 使用 availableGeometry() 获取可用区域（排除任务栏）
+        screen = QApplication.primaryScreen().availableGeometry()
         window_width = 480
         max_height = min(int(screen.height() * 0.85), 2400)
         window_height = max(300, max_height // 2)  # 高度减半，至少300px
         x = screen.right() - window_width
-        y = (screen.height() - window_height) // 2
+        y = screen.top() + (screen.height() - window_height) // 2
         
         # 直接设置窗口大小和位置
         try:
@@ -1219,9 +1235,6 @@ class MainWindow(QMainWindow):
                         f"窗口状态信息：\n\nisVisible: {self._airdrop_window.isVisible()}\ngeometry: {self._airdrop_window.geometry()}\npos: {self._airdrop_window.pos()}\nwindowFlags: {self._airdrop_window.windowFlags()}"
                     )
                 else:
-                    debug_msg = f"[DEBUG] 窗口已显示: geometry={self._airdrop_window.geometry()}, pos={self._airdrop_window.pos()}, isVisible={self._airdrop_window.isVisible()}"
-                    print(debug_msg, file=sys.stderr)
-                    
                     # Windows 特定：再次确保窗口在最前面
                     if system == "Windows":
                         QTimer.singleShot(100, lambda: self._airdrop_window.raise_())
@@ -1250,7 +1263,8 @@ class MainWindow(QMainWindow):
         import sys
         from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRect
         
-        screen = QApplication.primaryScreen().geometry()
+        # 使用 availableGeometry() 获取可用区域（排除任务栏）
+        screen = QApplication.primaryScreen().availableGeometry()
         window_width = 480
         max_height = min(int(screen.height() * 0.85), 2400)
         target_width = window_width
@@ -1275,11 +1289,11 @@ class MainWindow(QMainWindow):
                 # 从右侧隐藏的，恢复时窗口右边缘接近屏幕右边缘
                 target_x = screen.right() - target_width
             
-            # Y坐标：使用隐藏前的位置（使用pos()保存的Y坐标），但确保在屏幕内
+            # Y坐标：使用隐藏前的位置（使用pos()保存的Y坐标），但确保在可用区域内
             # 注意：before_hide_rect 中保存的是 pos() 的 Y 坐标，这是实际窗口位置
-            # 计算Y坐标的最大值：屏幕高度 - 窗口高度 - macOS Y偏移量
+            # 计算Y坐标的最大值：可用区域底部 - 窗口高度 - macOS Y偏移量
             y_offset = self._get_macos_y_offset(self._airdrop_window)  # 动态检测 macOS Y 坐标偏移量
-            max_y = screen.height() - target_height - y_offset
+            max_y = screen.bottom() - target_height - y_offset
             
             target_y = before_hide_rect.y()
             if target_y < screen.top():
@@ -1294,9 +1308,9 @@ class MainWindow(QMainWindow):
             return
         
         # 如果没有隐藏位置（不应该发生，但作为备用）
-        # 从右侧屏幕边缘垂直居中显示
+        # 从右侧屏幕边缘垂直居中显示（基于可用区域）
         target_x = screen.right() - target_width
-        target_y = (screen.height() - target_height) // 2
+        target_y = screen.top() + (screen.height() - target_height) // 2
         
         self._airdrop_window.setGeometry(QRect(target_x, target_y, target_width, target_height))
         self._airdrop_window.show()
@@ -1346,6 +1360,12 @@ class MainWindow(QMainWindow):
     
     def _cleanup_resources(self):
         """清理所有资源"""
+        if self._global_hotkey:
+            try:
+                self._global_hotkey.unregister()
+            except Exception:
+                pass
+            self._global_hotkey = None
         # 停止所有正在运行的登录 worker
         if hasattr(self, '_login_worker') and self._login_worker:
             for worker in self._login_worker[:]:
@@ -1526,55 +1546,26 @@ class MainWindow(QMainWindow):
             cfg["close_behavior"] = close_behavior
             ConfigManager.save(cfg)
         
-        # 根据用户选择执行相应操作（Windows/Linux）
-        if close_behavior == "tray":
-            # 退出到托盘
-            if not QSystemTrayIcon.isSystemTrayAvailable() or not self._tray_icon:
-                # 系统托盘不可用，提示用户
-                reply = QMessageBox.warning(
-                    self,
-                    "系统托盘不可用",
-                    "当前系统不支持系统托盘功能，将直接退出应用程序。",
-                    QMessageBox.Ok
-                )
-                # 直接退出
-                self._cleanup_resources()
-                super().closeEvent(event)
-                # 确保应用完全退出
-                from PySide6.QtWidgets import QApplication
-                QApplication.quit()
-                import os
-                import sys
-                # 强制退出，确保进程完全终止
-                os._exit(0)
-            else:
-                # 退出到托盘
-                event.ignore()  # 阻止窗口关闭
-                self.hide()  # 隐藏窗口
-                
-                # 确保托盘图标仍然显示
-                if self._tray_icon:
-                    if not self._tray_icon.isVisible():
-                        self._tray_icon.show()
-                
-                # Windows/Linux: 显示托盘通知
-                self._tray_icon.showMessage(
-                    "Ai 绩效客户端",
-                    "应用已最小化到系统托盘",
-                    QSystemTrayIcon.Information,
-                    2000
-                )
-        else:
-            # 直接退出
+        # Windows/Linux 默认隐藏到托盘（静默与 macOS 行为一致）
+        if not QSystemTrayIcon.isSystemTrayAvailable() or not self._tray_icon:
+            # 托盘不可用则直接退出
             self._cleanup_resources()
             super().closeEvent(event)
-            # 确保应用完全退出
             from PySide6.QtWidgets import QApplication
             QApplication.quit()
             import os
-            import sys
-            # 强制退出，确保进程完全终止
             os._exit(0)
+        else:
+            event.ignore()
+            self.hide()
+            if not self._tray_icon.isVisible():
+                self._tray_icon.show()
+            self._tray_icon.showMessage(
+                "Ai 绩效客户端",
+                "应用已最小化到系统托盘",
+                QSystemTrayIcon.Information,
+                2000
+            )
     
     # -------- 启动时登录检查 --------
     def _check_login_on_startup(self):

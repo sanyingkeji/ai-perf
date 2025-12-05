@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from pathlib import Path
+import sys
 
 
 class TransferConfirmDialog(QDialog):
@@ -86,9 +87,11 @@ class TransferConfirmDialog(QDialog):
                 background-color: #f0f0f0;
                 border: 1px solid #ddd;
                 border-radius: 6px;
+                color: #000000;
             }
             QPushButton:hover {
                 background-color: #e0e0e0;
+                color: #000000;
             }
         """)
         reject_btn.clicked.connect(self._on_reject)
@@ -114,8 +117,8 @@ class TransferConfirmDialog(QDialog):
     
     def _on_accept(self):
         """接受"""
-        self.accepted.emit()
-        self.accept()
+        self.accepted.emit()  # 先发出自定义信号
+        self.accept()  # 关闭对话框
     
     def _on_reject(self):
         """拒绝"""

@@ -6,6 +6,7 @@
 
 import socket
 import platform
+import sys
 from typing import Dict, Optional, Callable
 from dataclasses import dataclass
 from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
@@ -13,6 +14,11 @@ import threading
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _debug_log(message: str):
+    """统一的调试输出（已禁用）"""
+    pass
 
 
 @dataclass
@@ -54,6 +60,7 @@ class DeviceDiscovery:
         if self._running:
             return
         
+        _debug_log("DeviceDiscovery.start() called")
         try:
             self._zeroconf = Zeroconf()
             self._listener = _DeviceListener(
@@ -65,10 +72,12 @@ class DeviceDiscovery:
                 self.SERVICE_TYPE,
                 self._listener
             )
+            _debug_log("ServiceBrowser started for _aiperf-transfer._tcp.local.")
             self._running = True
             logger.info("设备发现服务已启动")
         except Exception as e:
             logger.error(f"启动设备发现服务失败: {e}")
+            _debug_log(f"DeviceDiscovery.start() failed: {e}")
             raise
     
     def stop(self):
@@ -76,6 +85,7 @@ class DeviceDiscovery:
         if not self._running:
             return
         
+        _debug_log("DeviceDiscovery.stop() called")
         try:
             if self._browser:
                 self._browser.cancel()
@@ -148,6 +158,7 @@ class DeviceDiscovery:
             logger.info(f"发现设备: {name} ({ip}:{port})")
         except Exception as e:
             logger.error(f"处理设备发现事件失败: {e}")
+            _debug_log(f"_on_device_found error: {e}")
     
     def _on_device_lost(self, service_name: str):
         """设备丢失时的处理"""
@@ -161,6 +172,7 @@ class DeviceDiscovery:
             logger.info(f"设备已离线: {service_name}")
         except Exception as e:
             logger.error(f"处理设备丢失事件失败: {e}")
+            _debug_log(f"_on_device_lost error: {e}")
     
     def get_devices(self) -> list[DeviceInfo]:
         """获取当前发现的设备列表"""
@@ -244,6 +256,7 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
     )
     
     # 注册服务
+    _debug_log(f"Registering AirDrop service: name={name}, ip={local_ip}, port={port}")
     zeroconf = Zeroconf()
     zeroconf.register_service(service_info)
     
@@ -259,6 +272,7 @@ def get_local_ip() -> Optional[str]:
             # 不需要真正连接，只是获取路由
             s.connect(('8.8.8.8', 80))
             ip = s.getsockname()[0]
+            _debug_log(f"get_local_ip(): method1 got {ip}")
             return ip
         finally:
             s.close()
@@ -271,10 +285,13 @@ def get_local_ip() -> Optional[str]:
         ip = socket.gethostbyname(hostname)
         # 检查是否为本地回环地址
         if ip.startswith('127.'):
+            _debug_log("get_local_ip(): method2 returned loopback address, ignoring")
             return None
+        _debug_log(f"get_local_ip(): method2 got {ip}")
         return ip
     except Exception:
         pass
     
+    _debug_log("get_local_ip(): failed to determine LAN IP")
     return None
 
