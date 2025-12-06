@@ -675,29 +675,123 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 
                 # 检查 config.json
                 config_file = frameworks_dir / "config.json"
-                if config_file.exists() and not config_file.is_symlink():
-                    resources_config = resources_dir / "config.json"
-                    if resources_config.exists():
-                        log_warn(f"  将 config.json 转换为符号链接: {config_file.relative_to(target_app)}")
+                resources_config = resources_dir / "config.json"
+                
+                if resources_config.exists():
+                    # Resources 中存在，确保 Frameworks 中有符号链接
+                    if config_file.exists():
+                        if config_file.is_symlink():
+                            # 已经是符号链接，检查指向是否正确
+                            target = config_file.readlink()
+                            if str(target) != "../Resources/config.json":
+                                log_warn(f"  修复 config.json 符号链接指向: {config_file.relative_to(target_app)}")
+                                try:
+                                    config_file.unlink()
+                                    config_file.symlink_to("../Resources/config.json")
+                                    log_info(f"    ✓ 已修复: config.json -> ../Resources/config.json")
+                                except Exception as e:
+                                    log_warn(f"    修复失败: {e}")
+                            else:
+                                log_info(f"  config.json 符号链接已正确: {config_file.relative_to(target_app)}")
+                        else:
+                            # Frameworks 中是真实文件，需要转换为符号链接
+                            log_warn(f"  将 config.json 转换为符号链接: {config_file.relative_to(target_app)}")
+                            try:
+                                config_file.unlink()
+                                config_file.symlink_to("../Resources/config.json")
+                                log_info(f"    ✓ 已转换: config.json -> ../Resources/config.json")
+                            except Exception as e:
+                                log_warn(f"    转换失败: {e}")
+                    else:
+                        # Frameworks 中不存在，创建符号链接
+                        log_warn(f"  在 Frameworks 中创建 config.json 符号链接（修复文件查找问题）")
+                        try:
+                            config_file.symlink_to("../Resources/config.json")
+                            log_info(f"    ✓ 已创建: config.json -> ../Resources/config.json")
+                        except Exception as e:
+                            log_error(f"    创建失败: {e}")
+                else:
+                    # Resources 中不存在，检查 Frameworks 中是否有
+                    if config_file.exists() and not config_file.is_symlink():
+                        # Frameworks 中有真实文件，移动到 Resources
+                        log_warn(f"  将 config.json 移动到 Resources 目录: {config_file.relative_to(target_app)}")
+                        try:
+                            shutil.move(str(config_file), str(resources_config))
+                            # 然后在 Frameworks 中创建符号链接
+                            config_file.symlink_to("../Resources/config.json")
+                            log_info(f"    ✓ 已移动并创建符号链接: config.json -> ../Resources/config.json")
+                        except Exception as e:
+                            log_warn(f"    移动失败: {e}")
+                    elif config_file.exists() and config_file.is_symlink():
+                        # Frameworks 中有符号链接，但 Resources 中不存在，删除符号链接
+                        log_warn(f"  Resources 中不存在 config.json，删除 Frameworks 中的符号链接: {config_file.relative_to(target_app)}")
                         try:
                             config_file.unlink()
-                            config_file.symlink_to("../Resources/config.json")
-                            log_info(f"    ✓ 已转换: config.json -> ../Resources/config.json")
+                            log_info(f"    ✓ 已删除无效符号链接")
                         except Exception as e:
-                            log_warn(f"    转换失败: {e}")
+                            log_warn(f"    删除失败: {e}")
+                    else:
+                        log_warn(f"  ⚠ config.json 不存在于 Resources 或 Frameworks（可能导致配置加载失败）")
                 
                 # 检查 google_client_secret.json
                 secret_file = frameworks_dir / "google_client_secret.json"
-                if secret_file.exists() and not secret_file.is_symlink():
-                    resources_secret = resources_dir / "google_client_secret.json"
-                    if resources_secret.exists():
-                        log_warn(f"  将 google_client_secret.json 转换为符号链接: {secret_file.relative_to(target_app)}")
+                resources_secret = resources_dir / "google_client_secret.json"
+                
+                if resources_secret.exists():
+                    # Resources 中存在，确保 Frameworks 中有符号链接
+                    if secret_file.exists():
+                        if secret_file.is_symlink():
+                            # 已经是符号链接，检查指向是否正确
+                            target = secret_file.readlink()
+                            if str(target) != "../Resources/google_client_secret.json":
+                                log_warn(f"  修复 google_client_secret.json 符号链接指向: {secret_file.relative_to(target_app)}")
+                                try:
+                                    secret_file.unlink()
+                                    secret_file.symlink_to("../Resources/google_client_secret.json")
+                                    log_info(f"    ✓ 已修复: google_client_secret.json -> ../Resources/google_client_secret.json")
+                                except Exception as e:
+                                    log_warn(f"    修复失败: {e}")
+                            else:
+                                log_info(f"  google_client_secret.json 符号链接已正确: {secret_file.relative_to(target_app)}")
+                        else:
+                            # Frameworks 中是真实文件，需要转换为符号链接
+                            log_warn(f"  将 google_client_secret.json 转换为符号链接: {secret_file.relative_to(target_app)}")
+                            try:
+                                secret_file.unlink()
+                                secret_file.symlink_to("../Resources/google_client_secret.json")
+                                log_info(f"    ✓ 已转换: google_client_secret.json -> ../Resources/google_client_secret.json")
+                            except Exception as e:
+                                log_warn(f"    转换失败: {e}")
+                    else:
+                        # Frameworks 中不存在，创建符号链接
+                        log_warn(f"  在 Frameworks 中创建 google_client_secret.json 符号链接（修复文件查找问题）")
+                        try:
+                            secret_file.symlink_to("../Resources/google_client_secret.json")
+                            log_info(f"    ✓ 已创建: google_client_secret.json -> ../Resources/google_client_secret.json")
+                        except Exception as e:
+                            log_error(f"    创建失败: {e}")
+                else:
+                    # Resources 中不存在，检查 Frameworks 中是否有
+                    if secret_file.exists() and not secret_file.is_symlink():
+                        # Frameworks 中有真实文件，移动到 Resources
+                        log_warn(f"  将 google_client_secret.json 移动到 Resources 目录: {secret_file.relative_to(target_app)}")
+                        try:
+                            shutil.move(str(secret_file), str(resources_secret))
+                            # 然后在 Frameworks 中创建符号链接
+                            secret_file.symlink_to("../Resources/google_client_secret.json")
+                            log_info(f"    ✓ 已移动并创建符号链接: google_client_secret.json -> ../Resources/google_client_secret.json")
+                        except Exception as e:
+                            log_warn(f"    移动失败: {e}")
+                    elif secret_file.exists() and secret_file.is_symlink():
+                        # Frameworks 中有符号链接，但 Resources 中不存在，删除符号链接
+                        log_warn(f"  Resources 中不存在 google_client_secret.json，删除 Frameworks 中的符号链接: {secret_file.relative_to(target_app)}")
                         try:
                             secret_file.unlink()
-                            secret_file.symlink_to("../Resources/google_client_secret.json")
-                            log_info(f"    ✓ 已转换: google_client_secret.json -> ../Resources/google_client_secret.json")
+                            log_info(f"    ✓ 已删除无效符号链接")
                         except Exception as e:
-                            log_warn(f"    转换失败: {e}")
+                            log_warn(f"    删除失败: {e}")
+                    else:
+                        log_warn(f"  ⚠ google_client_secret.json 不存在于 Resources 或 Frameworks（可能导致 Google 登录功能不可用）")
                 
                 # 修复 python3.10 目录位置（关键修复：解决 _struct 等模块缺失问题）
                 # Python 运行时需要在 Frameworks/python3.10/lib-dynload 中找到 C 扩展模块

@@ -30,6 +30,7 @@ class DeviceInfo:
     port: int  # 端口
     avatar_url: Optional[str] = None  # 头像URL
     device_name: Optional[str] = None  # 设备名称（如：MacBook Pro）
+    group_id: Optional[str] = None  # 组ID（由客户端广播）
 
 
 class DeviceDiscovery:
@@ -139,6 +140,7 @@ class DeviceDiscovery:
             user_id = props.get('user_id', '')
             avatar_url = props.get('avatar_url')
             device_name = props.get('device_name')
+            group_id = props.get('group_id')
             
             device_info = DeviceInfo(
                 name=name,
@@ -146,14 +148,49 @@ class DeviceDiscovery:
                 ip=ip,
                 port=port,
                 avatar_url=avatar_url,
-                device_name=device_name
+                device_name=device_name,
+                group_id=group_id
             )
             
-            with self._lock:
-                self._devices[service_name] = device_info
+            # 使用 user_id + ip 作为唯一标识，支持同一账号多个设备
+            # 因为 service_name 可能相同（如果主机名相同），导致设备被覆盖
+            device_unique_key = f"{user_id}::{ip}"
             
-            if self._on_device_added:
+            logger.info(f"[Discovery] Device found: service_name={service_name}, user_id={user_id}, ip={ip}, name={name}")
+            
+            should_add = False
+            with self._lock:
+                # 检查是否已存在相同的设备（user_id + ip）
+                existing_device = None
+                existing_service_name = None
+                for existing_sn, existing_di in self._devices.items():
+                    if existing_di.user_id == user_id and existing_di.ip == ip:
+                        existing_device = existing_di
+                        existing_service_name = existing_sn
+                        logger.info(f"[Discovery] Device already exists: user_id={user_id}, ip={ip}, existing_service_name={existing_service_name}, new_service_name={service_name}")
+                        break
+                
+                if existing_device is None:
+                    # 新设备，添加
+                    self._devices[service_name] = device_info
+                    should_add = True
+                    logger.info(f"[Discovery] Adding new device: service_name={service_name}, user_id={user_id}, ip={ip}")
+                else:
+                    # 设备已存在，更新 service_name 映射（可能 service_name 变了）
+                    if existing_service_name != service_name:
+                        # 移除旧的映射
+                        self._devices.pop(existing_service_name, None)
+                        # 添加新的映射
+                        self._devices[service_name] = device_info
+                        logger.info(f"[Discovery] Updating device service_name: {existing_service_name} -> {service_name}")
+                    # 不触发添加回调，因为设备已存在
+                    should_add = False
+            
+            if should_add and self._on_device_added:
+                logger.info(f"[Discovery] Calling _on_device_added callback for: user_id={user_id}, ip={ip}")
                 self._on_device_added(device_info)
+            elif not should_add:
+                logger.info(f"[Discovery] Skipping _on_device_added callback (device already exists): user_id={user_id}, ip={ip}")
             
             logger.info(f"发现设备: {name} ({ip}:{port})")
         except Exception as e:
@@ -167,6 +204,17 @@ class DeviceDiscovery:
                 device_info = self._devices.pop(service_name, None)
             
             if device_info and self._on_device_removed:
+                # 使用 user_id + ip 作为唯一标识来移除设备
+                # 需要移除所有相同 user_id + ip 的设备（可能有多个 service_name 映射）
+                device_unique_key = f"{device_info.user_id}::{device_info.ip}"
+                # 移除所有匹配的设备
+                service_names_to_remove = []
+                for sn, di in list(self._devices.items()):
+                    if f"{di.user_id}::{di.ip}" == device_unique_key:
+                        service_names_to_remove.append(sn)
+                for sn in service_names_to_remove:
+                    self._devices.pop(sn, None)
+                
                 self._on_device_removed(device_info.name)
             
             logger.info(f"设备已离线: {service_name}")
@@ -177,7 +225,11 @@ class DeviceDiscovery:
     def get_devices(self) -> list[DeviceInfo]:
         """获取当前发现的设备列表"""
         with self._lock:
-            return list(self._devices.values())
+            devices = list(self._devices.values())
+            logger.info(f"[Discovery] get_devices: returning {len(devices)} devices")
+            for device in devices:
+                logger.info(f"[Discovery]   - {device.name} (user_id={device.user_id}, ip={device.ip})")
+            return devices
     
     @staticmethod
     def _is_ipv4(ip: str) -> bool:
@@ -216,7 +268,8 @@ class _DeviceListener(ServiceListener):
 
 def register_service(name: str, port: int, user_id: str, user_name: str,
                      avatar_url: Optional[str] = None,
-                     device_name: Optional[str] = None) -> tuple[Zeroconf, ServiceInfo]:
+                     device_name: Optional[str] = None,
+                     group_id: Optional[str] = None) -> tuple[Zeroconf, ServiceInfo]:
     """
     注册mDNS服务
     
@@ -227,6 +280,7 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
         user_name: 用户名
         avatar_url: 头像URL（可选）
         device_name: 设备名称（可选）
+        group_id: 组ID（可选，由客户端在登录后提供）
     
     Returns:
         (zeroconf实例, service_info实例)
@@ -245,6 +299,8 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
         properties['avatar_url'] = avatar_url.encode('utf-8')
     if device_name:
         properties['device_name'] = device_name.encode('utf-8')
+    if group_id:
+        properties['group_id'] = str(group_id).encode('utf-8')
     
     # 创建服务信息
     service_info = ServiceInfo(

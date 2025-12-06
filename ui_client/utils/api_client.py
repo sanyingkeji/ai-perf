@@ -71,27 +71,55 @@ class ApiClient:
         }
 
     # ---------- GET ----------
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    def _get(self, path: str, params: Optional[Dict[str, Any]] = None, max_retries: int = 3) -> Any:
         url = f"{self.base_url}{path}"
-
-        try:
-            r = httpx.get(url, headers=self._headers(), params=params, timeout=15)
-        except Exception as e:
-            raise ApiError(f"网络异常：{type(e).__name__}: {e}")
-
-        return self._handle_response(r)
+        import time
+        
+        last_exception = None
+        retry_delay = 1  # 初始延迟1秒
+        
+        for attempt in range(max_retries):
+            try:
+                r = httpx.get(url, headers=self._headers(), params=params, timeout=15)
+                return self._handle_response(r)
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    # 还有重试机会，等待后重试
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+                else:
+                    # 所有重试都失败了
+                    raise ApiError(f"网络异常：{type(e).__name__}: {e}（已重试 {max_retries} 次）")
+        
+        # 理论上不会到达这里，但为了类型检查
+        raise ApiError(f"网络异常：{type(last_exception).__name__}: {last_exception}")
 
     # ---------- POST ----------
-    def _post(self, path: str, payload: Dict[str, Any]) -> Any:
+    def _post(self, path: str, payload: Dict[str, Any], max_retries: int = 3) -> Any:
         url = f"{self.base_url}{path}"
-
-        try:
-            r = httpx.post(url, headers=self._headers(),
-                           content=json.dumps(payload), timeout=15)
-        except Exception as e:
-            raise ApiError(f"网络异常：{type(e).__name__}: {e}")
-
-        return self._handle_response(r)
+        import time
+        
+        last_exception = None
+        retry_delay = 1  # 初始延迟1秒
+        
+        for attempt in range(max_retries):
+            try:
+                r = httpx.post(url, headers=self._headers(),
+                             content=json.dumps(payload), timeout=15)
+                return self._handle_response(r)
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    # 还有重试机会，等待后重试
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+                else:
+                    # 所有重试都失败了
+                    raise ApiError(f"网络异常：{type(e).__name__}: {e}（已重试 {max_retries} 次）")
+        
+        # 理论上不会到达这里，但为了类型检查
+        raise ApiError(f"网络异常：{type(last_exception).__name__}: {last_exception}")
 
     # ---------- 通用响应处理 ----------
     def _handle_response(self, r: httpx.Response) -> Any:

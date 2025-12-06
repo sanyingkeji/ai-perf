@@ -59,6 +59,7 @@ QTableWidget {
     background: #2A2B2D;
     gridline-color: #444;
     color: #E8EAED;
+    alternate-background-color: #333436;  /* 交替行颜色（暗色模式） */
 }
 QHeaderView::section {
     background: #333436;

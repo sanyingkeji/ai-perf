@@ -1,14 +1,121 @@
 import sys
 import encodings  # 确保 PyInstaller 包含 encodings 模块（修复 ModuleNotFoundError）
+import traceback
+import logging
 from pathlib import Path
-from PySide6.QtWidgets import QApplication
+from datetime import datetime
+from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType, QLoggingCategory
 from utils.theme_manager import ThemeManager
 from windows.main_window import MainWindow
 
 
+def setup_crash_logging():
+    """设置崩溃日志记录"""
+    app_dir = Path(__file__).parent
+    log_dir = app_dir / "logs"
+    log_dir.mkdir(exist_ok=True)
+    
+    # 创建日志文件，文件名包含时间戳
+    log_file = log_dir / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    
+    # 配置日志格式
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.StreamHandler(sys.stderr)
+        ]
+    )
+    
+    logger = logging.getLogger('crash_logger')
+    logger.info("=" * 80)
+    logger.info(f"应用启动 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Python 版本: {sys.version}")
+    logger.info(f"日志文件: {log_file}")
+    logger.info("=" * 80)
+    
+    return logger, log_file
+
+
+def qt_message_handler(msg_type, context, message):
+    """Qt 消息处理器，捕获 Qt 的警告和错误"""
+    logger = logging.getLogger('qt_logger')
+    
+    if msg_type == QtMsgType.QtCriticalMsg:
+        logger.critical(f"[Qt Critical] {message}")
+        logger.critical(f"  File: {context.file}:{context.line}")
+        logger.critical(f"  Function: {context.function}")
+    elif msg_type == QtMsgType.QtFatalMsg:
+        logger.fatal(f"[Qt Fatal] {message}")
+        logger.fatal(f"  File: {context.file}:{context.line}")
+        logger.fatal(f"  Function: {context.function}")
+        # 记录堆栈跟踪
+        logger.fatal("Stack trace:")
+        for line in traceback.format_stack():
+            logger.fatal(line.strip())
+    elif msg_type == QtMsgType.QtWarningMsg:
+        logger.warning(f"[Qt Warning] {message}")
+    elif msg_type == QtMsgType.QtInfoMsg:
+        logger.info(f"[Qt Info] {message}")
+    elif msg_type == QtMsgType.QtDebugMsg:
+        logger.debug(f"[Qt Debug] {message}")
+
+
+def exception_handler(exc_type, exc_value, exc_traceback):
+    """全局异常处理器，捕获所有未处理的异常"""
+    if exc_type is KeyboardInterrupt or (isinstance(exc_type, type) and issubclass(exc_type, KeyboardInterrupt)):
+        # 忽略键盘中断
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    
+    logger = logging.getLogger('crash_logger')
+    logger.critical("=" * 80)
+    logger.critical("未捕获的异常！")
+    logger.critical("=" * 80)
+    logger.critical(f"异常类型: {exc_type.__name__}")
+    logger.critical(f"异常信息: {exc_value}")
+    logger.critical("堆栈跟踪:")
+    
+    # 记录完整的堆栈跟踪
+    for line in traceback.format_exception(exc_type, exc_value, exc_traceback):
+        logger.critical(line.strip())
+    
+    logger.critical("=" * 80)
+    
+    # 尝试显示错误对话框（如果 QApplication 已创建）
+    try:
+        app = QApplication.instance()
+        if app is not None:
+            error_msg = f"应用发生错误，详细信息已记录到日志文件。\n\n异常类型: {exc_type.__name__}\n异常信息: {exc_value}"
+            QMessageBox.critical(None, "应用错误", error_msg)
+    except Exception:
+        pass  # 如果无法显示对话框，忽略
+    
+    # 调用默认的异常处理器
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+
 def main():
-    app = QApplication(sys.argv)
+    # 设置崩溃日志
+    logger, log_file = setup_crash_logging()
+    
+    # 设置全局异常处理器
+    sys.excepthook = exception_handler
+    
+    # 设置 Qt 消息处理器
+    qInstallMessageHandler(qt_message_handler)
+    
+    try:
+        logger.info("初始化 QApplication...")
+        app = QApplication(sys.argv)
+        logger.info("QApplication 初始化成功")
+    except Exception as e:
+        logger.critical(f"QApplication 初始化失败: {e}")
+        logger.critical(traceback.format_exc())
+        raise
     
     # macOS: 关闭窗口时不退出应用，保留在状态栏
     # 打开时在 Dock 显示，关闭窗口后隐藏 Dock 图标
@@ -39,10 +146,23 @@ def main():
             break
 
     # 应用主题（根据 config + 系统）
-    ThemeManager.apply_theme()
+    try:
+        logger.info("应用主题...")
+        ThemeManager.apply_theme()
+        logger.info("主题应用成功")
+    except Exception as e:
+        logger.warning(f"应用主题失败: {e}")
+        logger.warning(traceback.format_exc())
 
-    win = MainWindow()
-    win.show()
+    try:
+        logger.info("创建主窗口...")
+        win = MainWindow()
+        win.show()
+        logger.info("主窗口创建并显示成功")
+    except Exception as e:
+        logger.critical(f"主窗口创建失败: {e}")
+        logger.critical(traceback.format_exc())
+        raise
     
     # 检查是否有命令行参数
     notification_id = None
@@ -80,11 +200,40 @@ def main():
     
     # 如果有通知ID，显示通知详情
     if notification_id:
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(500, lambda: win.show_notification_detail(notification_id))
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: win.show_notification_detail(notification_id))
+        except Exception as e:
+            logger.warning(f"显示通知详情失败: {e}")
+            logger.warning(traceback.format_exc())
 
-    sys.exit(app.exec())
+    try:
+        logger.info("启动应用主循环...")
+        exit_code = app.exec()
+        logger.info(f"应用退出，退出码: {exit_code}")
+        return exit_code
+    except Exception as e:
+        logger.critical(f"应用主循环异常: {e}")
+        logger.critical(traceback.format_exc())
+        raise
+    finally:
+        logger.info("=" * 80)
+        logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("=" * 80)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except Exception as e:
+        # 最后的异常捕获，确保所有错误都被记录
+        try:
+            logger = logging.getLogger('crash_logger')
+        except:
+            # 如果日志系统也失败了，至少输出到 stderr
+            print(f"致命错误: {e}", file=sys.stderr)
+            traceback.print_exc()
+        else:
+            logger.critical(f"致命错误: {e}")
+            logger.critical(traceback.format_exc())
+        sys.exit(1)

@@ -293,8 +293,24 @@ class MainWindow(QMainWindow):
             from utils.win_hotkey import WindowsGlobalHotkey
             try:
                 self._global_hotkey = WindowsGlobalHotkey(self, self._show_airdrop)
-            except Exception as e:
-                print(f"[AirDrop] Failed to register global hotkey: {e}", file=sys.stderr)
+            except Exception:
+                pass
+        elif platform.system() == "Darwin":
+            # macOS: 不在启动时自动注册快捷键，让用户在设置页面手动启用
+            # 检查用户配置，如果已启用则尝试注册
+            try:
+                cfg = ConfigManager.load()
+                hotkey_enabled = cfg.get("global_hotkey_enabled", False)
+                if hotkey_enabled:
+                    from utils.mac_hotkey import MacGlobalHotkey, check_accessibility_permission
+                    permission = check_accessibility_permission()
+                    if permission is True:
+                        try:
+                            self._global_hotkey = MacGlobalHotkey(self._show_airdrop)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # 启动应用时自动打开隔空投送窗口，便于调试
         QTimer.singleShot(500, self._show_airdrop)
@@ -1169,9 +1185,6 @@ class MainWindow(QMainWindow):
             def custom_close_event(event):
                 # 不真正关闭，而是隐藏到图标（关闭时也触发边缘隐藏动画）
                 event.ignore()
-                # 停止传输管理器
-                if hasattr(self._airdrop_window, '_transfer_manager') and self._airdrop_window._transfer_manager:
-                    self._airdrop_window._transfer_manager.stop()
                 # 触发窗口隐藏动画（模拟拖到边缘）
                 if self._airdrop_window:
                     # 在隐藏动画前，立即保存当前位置（使用pos()的Y坐标，避免系统调整影响）
@@ -1350,13 +1363,13 @@ class MainWindow(QMainWindow):
         # 清理资源
         self._cleanup_resources()
         
-        # 退出应用
+        # 退出应用：先优雅退出事件循环，稍作延迟再强制退出，确保 mDNS goodbye 包发送
         from PySide6.QtWidgets import QApplication
-        QApplication.quit()
         import os
         import sys
-        # 强制退出，确保进程完全终止
-        os._exit(0)
+        QApplication.quit()
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(500, lambda: os._exit(0))
     
     def _cleanup_resources(self):
         """清理所有资源"""
@@ -1381,8 +1394,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         
-        # 关闭隔空投送窗口
+        # 停止隔空投送服务（注销 mDNS 服务，让其他端知道设备已离线）
         if self._airdrop_window:
+            if hasattr(self._airdrop_window, '_transfer_manager') and self._airdrop_window._transfer_manager:
+                try:
+                    self._airdrop_window._transfer_manager.stop()
+                except Exception:
+                    pass
             self._airdrop_window.close()
             self._airdrop_window = None
         

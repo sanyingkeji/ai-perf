@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QTextEdit, QDialog, QStackedWidget
 )
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor
 from datetime import datetime
 from utils.api_client import ApiClient, ApiError
+from utils.theme_manager import ThemeManager
 from widgets.toast import Toast
 
 
@@ -71,7 +72,10 @@ class NotificationDetailDialog(QDialog):
         if subtitle:
             subtitle_label = QLabel(subtitle)
             subtitle_label.setWordWrap(True)
-            subtitle_label.setStyleSheet("color: #666;")
+            # 根据主题设置颜色
+            is_dark = self._detect_theme()
+            subtitle_color = "#9AA0A6" if is_dark else "#666"
+            subtitle_label.setStyleSheet(f"color: {subtitle_color};")
             layout.addWidget(subtitle_label)
         
         # 分隔线
@@ -128,6 +132,22 @@ class NotificationDetailDialog(QDialog):
         button_layout.addWidget(close_btn)
         
         layout.addLayout(button_layout)
+    
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            from utils.config_manager import ConfigManager
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference  # "light" or "dark"
+            
+            return theme == "dark"
+        except:
+            return False
 
 
 class NotificationView(QWidget):
@@ -193,7 +213,8 @@ class NotificationView(QWidget):
         empty_layout.setContentsMargins(0, 0, 0, 0)
         self._empty_label = QLabel("当前没有任何消息")
         self._empty_label.setAlignment(Qt.AlignCenter)
-        self._empty_label.setStyleSheet("color: #888; font-size: 14pt; padding: 40px;")
+        # 根据主题设置颜色
+        self._update_empty_label_color()
         empty_layout.addWidget(self._empty_label)
         
         # 添加到堆叠布局
@@ -215,7 +236,8 @@ class NotificationView(QWidget):
         # 底部统计信息
         self._stats_label = QLabel("")
         self._stats_label.setAlignment(Qt.AlignRight)
-        self._stats_label.setStyleSheet("color: #666; font-size: 11pt; padding: 8px;")
+        # 根据主题设置颜色
+        self._update_stats_label_color()
         layout.addWidget(self._stats_label)
     
     def _on_notification_double_clicked(self, row, col):
@@ -326,7 +348,13 @@ class NotificationView(QWidget):
             status = "已读" if is_read else "未读"
             status_item = QTableWidgetItem(status)
             if not is_read:
-                status_item.setForeground(Qt.GlobalColor.blue)
+                # 根据主题设置未读状态颜色
+                is_dark = self._detect_theme()
+                unread_color = QColor("#5C8CFF") if is_dark else QColor("#3A7AFE")
+                status_item.setForeground(unread_color)
+            else:
+                # 已读状态使用默认文本颜色（由主题控制）
+                pass
             self.notification_table.setItem(row, 3, status_item)
             
             # 操作按钮
@@ -378,7 +406,11 @@ class NotificationView(QWidget):
                         status_item = self.notification_table.item(row, 3)
                         if status_item:
                             status_item.setText("已读")
-                            status_item.setForeground(Qt.GlobalColor.black)
+                            # 已读状态使用默认文本颜色（由主题控制）
+                            # 使用主题的默认文本颜色
+                            is_dark = self._detect_theme()
+                            default_color = QColor("#E8EAED") if is_dark else QColor("#222")
+                            status_item.setForeground(default_color)
                         break
         except Exception as e:
             Toast.show_message(self, f"标记已读失败：{str(e)}")
@@ -524,4 +556,40 @@ class NotificationView(QWidget):
                     # 自动打开详情
                     self._view_notification(row)
                     break
+    
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            from utils.config_manager import ConfigManager
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference  # "light" or "dark"
+            
+            return theme == "dark"
+        except:
+            return False
+    
+    def _update_empty_label_color(self):
+        """更新空状态标签颜色"""
+        if hasattr(self, '_empty_label'):
+            is_dark = self._detect_theme()
+            color = "#9AA0A6" if is_dark else "#888"
+            current_style = self._empty_label.styleSheet()
+            # 保留其他样式，只更新颜色
+            new_style = f"color: {color}; font-size: 14pt; padding: 40px;"
+            self._empty_label.setStyleSheet(new_style)
+    
+    def _update_stats_label_color(self):
+        """更新统计信息标签颜色"""
+        if hasattr(self, '_stats_label'):
+            is_dark = self._detect_theme()
+            color = "#9AA0A6" if is_dark else "#666"
+            current_style = self._stats_label.styleSheet()
+            # 保留其他样式，只更新颜色
+            new_style = f"color: {color}; font-size: 11pt; padding: 8px;"
+            self._stats_label.setStyleSheet(new_style)
 

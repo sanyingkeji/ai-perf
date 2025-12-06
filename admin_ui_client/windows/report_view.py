@@ -9,7 +9,7 @@
 """
 
 from datetime import date, datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -297,9 +297,10 @@ class _DownloadReportWorkerSignals(QObject):
 
 class _DownloadReportWorker(QRunnable):
     """后台下载报表文件"""
-    def __init__(self, log_id: int):
+    def __init__(self, log_id: int, filename_hint: Optional[str] = None):
         super().__init__()
         self._log_id = log_id
+        self._filename_hint = filename_hint
         self.signals = _DownloadReportWorkerSignals()
 
     @Slot()
@@ -317,26 +318,12 @@ class _DownloadReportWorker(QRunnable):
             self.signals.error.emit(f"初始化客户端失败：{e}")
             return
 
+        filename = self._filename_hint or f"report_{self._log_id}.zip"
+
         try:
-            # 先获取记录信息以确定文件名
-            logs_resp = client.get_report_generation_logs(limit=1)
-            items = logs_resp.get("items", [])
-            filename = f"report_{self._log_id}.zip"
-            
-            # 查找对应的记录
-            for item in items:
-                if item.get("id") == self._log_id:
-                    report_type = item.get("report_type")
-                    period_start = item.get("period_start")
-                    period_end = item.get("period_end")
-                    if report_type == "weekly":
-                        filename = f"weekly_{period_start}_{period_end}.zip"
-                    else:
-                        month_str = period_start[:7] if isinstance(period_start, str) else period_start.strftime("%Y-%m")
-                        filename = f"monthly_{month_str}.zip"
-                    break
-            
-            file_content = client.download_report(self._log_id)
+            file_content, server_filename = client.download_report_with_name(self._log_id)
+            if server_filename:
+                filename = server_filename
             self.signals.finished.emit(file_content, filename)
         except (ApiError, AuthError) as e:
             self.signals.error.emit(str(e))
@@ -478,6 +465,7 @@ class ReportView(QWidget):
         self._is_loading = False
         self._current_report_type = None
         self._thread_pool = QThreadPool.globalInstance()  # 必须在_setup_ui之前初始化
+        self._active_workers: Set[QRunnable] = set()
         
         self._setup_ui()
     
@@ -787,11 +775,33 @@ class ReportView(QWidget):
             
             # 操作列：下载按钮
             if status == "success":
+                download_filename = self._build_default_filename(log_id, report_type, period_start, period_end)
                 btn_download = QPushButton("下载")
-                btn_download.clicked.connect(lambda checked, lid=log_id: self._on_download_clicked(lid))
+                btn_download.clicked.connect(lambda _checked=False, lid=log_id, fname=download_filename: self._on_download_clicked(lid, fname))
                 self._table.setCellWidget(row, 10, btn_download)
             else:
                 self._table.setItem(row, 10, QTableWidgetItem("无法下载"))
+    
+    def _build_default_filename(self, log_id: int, report_type: str, period_start: Any, period_end: Any) -> str:
+        """根据记录信息构造兜底文件名"""
+        try:
+            if report_type == "weekly":
+                start_str = period_start.isoformat() if hasattr(period_start, "isoformat") else str(period_start)
+                end_str = period_end.isoformat() if hasattr(period_end, "isoformat") else str(period_end)
+                if start_str and end_str:
+                    return f"weekly_{start_str}_{end_str}.zip"
+            else:
+                if isinstance(period_start, str):
+                    month_str = period_start[:7]
+                elif hasattr(period_start, "strftime"):
+                    month_str = period_start.strftime("%Y-%m")
+                else:
+                    month_str = None
+                if month_str:
+                    return f"monthly_{month_str}.zip"
+        except Exception:
+            pass
+        return f"report_{log_id}.zip"
     
     def _on_generate_clicked(self):
         """生成报表按钮点击"""
@@ -873,7 +883,7 @@ class ReportView(QWidget):
             main_window.hide_loading()
         handle_api_error(self, Exception(error), "生成报表失败")
     
-    def _on_download_clicked(self, log_id: int):
+    def _on_download_clicked(self, log_id: int, filename_hint: Optional[str] = None):
         """下载报表按钮点击"""
         # 显示加载中
         main_window = self.window()
@@ -881,9 +891,12 @@ class ReportView(QWidget):
             main_window.show_loading("正在下载报表...")
         
         # 后台下载
-        worker = _DownloadReportWorker(log_id)
+        worker = _DownloadReportWorker(log_id, filename_hint)
         worker.signals.finished.connect(self._on_download_success)
         worker.signals.error.connect(self._on_download_error)
+        worker.signals.finished.connect(lambda *args, w=worker: self._active_workers.discard(w))
+        worker.signals.error.connect(lambda *args, w=worker: self._active_workers.discard(w))
+        self._active_workers.add(worker)
         self._thread_pool.start(worker)
     
     def _on_download_success(self, file_content: bytes, filename: str):

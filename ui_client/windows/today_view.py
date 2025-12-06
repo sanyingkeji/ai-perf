@@ -26,6 +26,7 @@ from PySide6.QtGui import QFont, QPainter, QColor, QClipboard, QAction
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QRectF, QTimer, QEvent
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QStyle, QStylePainter
+import platform
 
 from utils.api_client import ApiClient, ApiError, AuthError
 from utils.theme_manager import ThemeManager
@@ -180,7 +181,30 @@ class TodayView(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # 根据平台设置滚动条策略：macOS 隐藏滚动条，其他平台显示
+        system = platform.system()
+        if system == "Darwin":
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            # macOS 上通过样式表隐藏滚动条
+            scroll_area.setStyleSheet("""
+                QScrollArea {
+                    border: none;
+                }
+                QScrollBar:vertical {
+                    width: 0px;
+                    background: transparent;
+                }
+                QScrollBar::handle:vertical {
+                    width: 0px;
+                }
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {
+                    width: 0px;
+                }
+            """)
+        else:
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         # 创建内容widget
         self._content_widget = QWidget()

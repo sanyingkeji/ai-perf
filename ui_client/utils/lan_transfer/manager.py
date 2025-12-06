@@ -37,7 +37,7 @@ class TransferManager(QObject):
     transfer_completed = Signal(str, bool, str)  # 传输完成 (target_name, success, message)
     
     def __init__(self, user_id: str, user_name: str, avatar_url: Optional[str] = None,
-                 save_dir: Optional[Path] = None, port: int = 8765):
+                 group_id: Optional[str] = None, save_dir: Optional[Path] = None, port: int = 8765):
         """
         初始化传输管理器
         
@@ -52,6 +52,7 @@ class TransferManager(QObject):
         self._user_id = user_id
         self._user_name = user_name
         self._avatar_url = avatar_url
+        self._group_id = group_id
         self._save_dir = save_dir or (Path.home() / "Downloads")
         self._port = port
         
@@ -64,6 +65,7 @@ class TransferManager(QObject):
         self._client = TransferClient(port=self._port)
         self._zeroconf = None
         self._service_info = None
+        self._local_ip = None  # 当前设备的 IP 地址，用于过滤自己
         
         self._running = False
     
@@ -86,16 +88,20 @@ class TransferManager(QObject):
             self._server.start()
             
             # 注册mDNS服务
-            service_name = f"aiperf-{self._user_id}-{platform.node()}"
+            # 使用 user_id + platform.node() + ip 确保唯一性，支持同一账号多个设备
             local_ip = get_local_ip()
+            self._local_ip = local_ip  # 保存当前设备的 IP，用于过滤自己
+            service_name = f"aiperf-{self._user_id}-{platform.node()}-{local_ip.replace('.', '-')}"
             _debug_log(f"Registering mDNS service {service_name} (user={self._user_name}, ip={local_ip})")
+            logger.info(f"[TransferManager] Registering service: service_name={service_name}, user_id={self._user_id}, ip={local_ip}")
             self._zeroconf, self._service_info = register_service(
                 name=service_name,
                 port=self._port,
                 user_id=self._user_id,
                 user_name=self._user_name,
                 avatar_url=self._avatar_url,
-                device_name=self._device_name
+                device_name=self._device_name,
+                group_id=self._group_id
             )
             
             # 启动设备发现
@@ -293,10 +299,13 @@ class TransferManager(QObject):
     
     def _on_device_added(self, device: DeviceInfo):
         """设备添加回调"""
-        # 过滤掉自己
-        if device.user_id == self._user_id:
+        # 过滤掉自己（相同 user_id 且相同 IP），但保留同一账号的其他设备（相同 user_id 但不同 IP）
+        if device.user_id == self._user_id and device.ip == self._local_ip:
+            logger.info(f"[TransferManager] Ignoring self device: {device.name} ({device.ip}) user_id={device.user_id}")
             _debug_log(f"Ignoring self device discovery: {device}")
             return
+        
+        logger.info(f"[TransferManager] Device discovered: {device.name} ({device.ip}:{device.port}) user_id={device.user_id}, current_user_id={self._user_id}, local_ip={self._local_ip}")
         _debug_log(f"Discovered device: {device.name} ({device.ip}:{device.port}) user_id={device.user_id}")
         self.device_added.emit(device)
     

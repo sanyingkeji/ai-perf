@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 from typing import Dict, Any
+import sys
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit,
-    QCheckBox, QRadioButton, QHBoxLayout, QPushButton, QFrame, QDialog, QTextEdit
+    QCheckBox, QRadioButton, QHBoxLayout, QPushButton, QFrame, QDialog, QTextEdit,
+    QScrollArea, QApplication
 )
 from PySide6.QtGui import QFont
 from PySide6.QtCore import QTimer, QRunnable, QThreadPool, QObject, Signal, Slot, Qt
+import platform
 
 from utils.config_manager import ConfigManager
 from utils.theme_manager import ThemeManager
@@ -27,9 +30,60 @@ class SettingsView(QWidget):
         # 标记：是否已经显示过升级弹窗（防止重复弹窗）
         self._update_dialog_shown = False
 
-        layout = QVBoxLayout(self)
+        # 主布局
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 创建滚动区域
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # 根据平台设置滚动条策略：macOS 隐藏滚动条，其他平台显示
+        import platform
+        system = platform.system()
+        if system == "Darwin":
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            # macOS 上通过样式表隐藏滚动条
+            self.scroll_area.setStyleSheet("""
+                QScrollArea {
+                    border: none;
+                }
+                QScrollBar:vertical {
+                    width: 0px;
+                    background: transparent;
+                }
+                QScrollBar::handle:vertical {
+                    width: 0px;
+                }
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {
+                    width: 0px;
+                }
+            """)
+        else:
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # 创建内容widget
+        self.content_widget = QWidget()
+        layout = QVBoxLayout(self.content_widget)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
+        
+        # 设置滚动区域的内容widget
+        self.scroll_area.setWidget(self.content_widget)
+        
+        # 设置最大高度，与今日评分对齐（使用屏幕可用高度）
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_height = screen.availableGeometry().height()
+            max_height = int(screen_height * 1.0)  # 100%
+            self.scroll_area.setMaximumHeight(max_height)
+        
+        # 将滚动区域添加到主布局
+        main_layout.addWidget(self.scroll_area)
 
         title = QLabel("系统设置")
         title_font = QFont()
@@ -181,22 +235,105 @@ class SettingsView(QWidget):
         self.chk_notifications.stateChanged.connect(self._auto_save_notifications)
         behavior_layout.addWidget(self.chk_notifications)
         
+        # 全局快捷键启用开关（仅 macOS）
+        import platform
+        system = platform.system()
+        if system == "Darwin":
+            self.chk_global_hotkey = QCheckBox("启用全局快捷键")
+            self.chk_global_hotkey.setChecked(self.cfg.get("global_hotkey_enabled", False))
+            self.chk_global_hotkey.stateChanged.connect(self._auto_save_global_hotkey)
+            behavior_layout.addWidget(self.chk_global_hotkey)
+        
         # 通知权限检查和引导
         notification_permission_row = QHBoxLayout()
         self.notification_permission_label = QLabel("通知权限：")
         self.notification_permission_status = QLabel("检查中...")
         self.notification_permission_btn = QPushButton("打开系统设置")
-        self.notification_permission_btn.setFixedWidth(120)
+        self.notification_permission_btn.setFixedWidth(100)
+        self.notification_permission_btn.setFixedHeight(28)
+        self.notification_permission_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
         self.notification_permission_btn.clicked.connect(self._open_notification_settings)
+        
+        # 添加刷新按钮，让用户可以手动刷新权限状态
+        self.notification_permission_refresh_btn = QPushButton("刷新权限")
+        self.notification_permission_refresh_btn.setFixedWidth(80)
+        self.notification_permission_refresh_btn.setFixedHeight(28)
+        self.notification_permission_refresh_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.notification_permission_refresh_btn.clicked.connect(self._refresh_notification_permission)
+        
         notification_permission_row.addWidget(self.notification_permission_label)
         notification_permission_row.addWidget(self.notification_permission_status)
         notification_permission_row.addStretch()
+        notification_permission_row.addWidget(self.notification_permission_refresh_btn)
         notification_permission_row.addWidget(self.notification_permission_btn)
         behavior_layout.addLayout(notification_permission_row)
         
+        # 添加权限说明提示（当权限未授权时显示）
+        self.notification_permission_hint = QLabel("")
+        self.notification_permission_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self.notification_permission_hint.setWordWrap(True)
+        self.notification_permission_hint.setVisible(False)  # 默认隐藏，有内容时再显示
+        from PySide6.QtWidgets import QSizePolicy
+        self.notification_permission_hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.notification_permission_hint.setFixedHeight(0)  # 隐藏时不占用空间
+        behavior_layout.addWidget(self.notification_permission_hint)
+        
+        # 全局快捷键权限检查和引导（仅 macOS）
+        if system == "Darwin":
+            hotkey_permission_row = QHBoxLayout()
+            self.hotkey_permission_label = QLabel("全局快捷键权限：")
+            self.hotkey_permission_status = QLabel("检查中...")
+            self.hotkey_permission_btn = QPushButton("打开系统设置")
+            self.hotkey_permission_btn.setFixedWidth(100)
+            self.hotkey_permission_btn.setFixedHeight(28)
+            self.hotkey_permission_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+            self.hotkey_permission_btn.clicked.connect(self._open_accessibility_settings)
+            
+            # 添加刷新按钮，让用户可以手动刷新权限状态
+            self.hotkey_permission_refresh_btn = QPushButton("刷新权限")
+            self.hotkey_permission_refresh_btn.setFixedWidth(80)
+            self.hotkey_permission_refresh_btn.setFixedHeight(28)
+            self.hotkey_permission_refresh_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+            self.hotkey_permission_refresh_btn.clicked.connect(self._refresh_hotkey_permission)
+            
+            hotkey_permission_row.addWidget(self.hotkey_permission_label)
+            hotkey_permission_row.addWidget(self.hotkey_permission_status)
+            hotkey_permission_row.addStretch()
+            hotkey_permission_row.addWidget(self.hotkey_permission_refresh_btn)
+            hotkey_permission_row.addWidget(self.hotkey_permission_btn)
+            behavior_layout.addLayout(hotkey_permission_row)
+            
+            # 添加权限说明提示（当权限未授权时显示）
+            self.hotkey_permission_hint = QLabel("")
+            self.hotkey_permission_hint.setStyleSheet("color: #888; font-size: 11px;")
+            self.hotkey_permission_hint.setWordWrap(True)
+            self.hotkey_permission_hint.setVisible(False)  # 默认隐藏，有内容时再显示
+            from PySide6.QtWidgets import QSizePolicy
+            self.hotkey_permission_hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            self.hotkey_permission_hint.setFixedHeight(0)  # 隐藏时不占用空间
+            behavior_layout.addWidget(self.hotkey_permission_hint)
+            
+            # 快捷键说明（macOS）
+            hotkey_info_label = QLabel("快捷键：Control + A（打开隔空投送）")
+            hotkey_info_label.setStyleSheet("color: #666; font-size: 11px;")
+            behavior_layout.addWidget(hotkey_info_label)
+        elif system == "Windows":
+            # 快捷键说明（Windows）
+            hotkey_info_label = QLabel("快捷键：Ctrl + Shift + A（打开隔空投送）")
+            hotkey_info_label.setStyleSheet("color: #666; font-size: 11px;")
+            behavior_layout.addWidget(hotkey_info_label)
+        
         # 检查通知权限
         self._check_notification_permission()
-
+        
+        # 检查全局快捷键权限和状态（仅 macOS）
+        if system == "Darwin":
+            self._check_hotkey_permission()
+            self._update_hotkey_status()
+            # 如果快捷键已启用且权限已授权，尝试注册
+            if self.chk_global_hotkey.isChecked():
+                self._register_hotkey_if_enabled()
+        
         layout.addWidget(behavior_frame)
 
         # --- 后端API服务状态 ---
@@ -220,7 +357,9 @@ class SettingsView(QWidget):
         health_layout.addWidget(self.health_time_label)
 
         refresh_health_btn = QPushButton("刷新状态")
-        refresh_health_btn.setFixedWidth(120)
+        refresh_health_btn.setFixedWidth(100)
+        refresh_health_btn.setFixedHeight(28)
+        refresh_health_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
         refresh_health_btn.clicked.connect(self._load_api_health)
         health_layout.addWidget(refresh_health_btn)
 
@@ -250,7 +389,7 @@ class SettingsView(QWidget):
 
         layout.addWidget(version_frame)
 
-        layout.addStretch(1)
+        # 移除 addStretch，让内容自然填充
         
         # 初始化完成，允许自动保存
         self._is_initializing = False
@@ -263,6 +402,37 @@ class SettingsView(QWidget):
         # 立即加载一次，然后启动定时器
         self._load_api_health()
         self._api_health_timer.start()
+    
+    def showEvent(self, event):
+        """页面显示时自动刷新权限状态"""
+        super().showEvent(event)
+        import platform
+        
+        # 检查对象是否仍然有效（防止页面切换时对象已被销毁）
+        if not hasattr(self, 'notification_permission_status') or not self.notification_permission_status:
+            return
+        
+        # 重新检查通知权限状态（用户可能从系统设置返回）
+        try:
+            self._check_notification_permission()
+        except RuntimeError as e:
+            # 对象已被销毁，忽略错误
+            print(f"[Settings] showEvent: notification permission check failed: {e}", file=sys.stderr)
+        
+        if platform.system() == "Darwin":
+            # 检查对象是否仍然有效
+            if not hasattr(self, 'hotkey_permission_status') or not self.hotkey_permission_status:
+                return
+            
+            # 重新检查快捷键权限状态（用户可能从系统设置返回）
+            try:
+                self._check_hotkey_permission()
+                # 如果快捷键已启用，尝试注册
+                if hasattr(self, 'chk_global_hotkey') and self.chk_global_hotkey and self.chk_global_hotkey.isChecked():
+                    self._register_hotkey_if_enabled()
+            except RuntimeError as e:
+                # 对象已被销毁，忽略错误
+                print(f"[Settings] showEvent: hotkey permission check failed: {e}", file=sys.stderr)
 
     # --------- 槽函数 ---------
     def on_google_login_clicked(self):
@@ -444,6 +614,15 @@ class SettingsView(QWidget):
         if hasattr(self, "session_edit"):
             self.session_edit.setText("")
 
+        # 停止隔空投送服务（注销 mDNS 服务，让其他端知道设备已离线）
+        try:
+            main_window = self.window()
+            if main_window and hasattr(main_window, '_airdrop_window') and main_window._airdrop_window:
+                if hasattr(main_window._airdrop_window, '_transfer_manager') and main_window._airdrop_window._transfer_manager:
+                    main_window._airdrop_window._transfer_manager.stop()
+        except Exception:
+            pass
+
         self._refresh_login_buttons()
         Toast.show_message(self, "已退出登录")
 
@@ -539,36 +718,104 @@ class SettingsView(QWidget):
         if state == 2:
             self._check_notification_permission()
     
+    def _auto_save_global_hotkey(self, state: int):
+        """自动保存全局快捷键设置"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        enabled = (state == 2)  # 2 表示选中状态
+        self.cfg["global_hotkey_enabled"] = enabled
+        ConfigManager.save(self.cfg)
+        
+        # 更新快捷键状态
+        self._check_hotkey_permission()
+        self._update_hotkey_status()
+        
+        # 如果启用了快捷键，尝试注册；如果禁用了，取消注册
+        if enabled:
+            self._register_hotkey_if_enabled()
+        else:
+            self._unregister_hotkey_if_disabled()
+    
     def _check_notification_permission(self):
         """检查通知权限并更新UI"""
+        # 检查对象是否仍然有效（防止页面切换时对象已被销毁）
+        if not hasattr(self, 'notification_permission_status') or not self.notification_permission_status:
+            return
+        
         from utils.notification import SystemNotification
         import platform
         
         system = platform.system()
         
-        if system == "Darwin":  # macOS
-            permission = SystemNotification.check_permission()
-            if permission is True:
-                self.notification_permission_status.setText("已授权")
+        try:
+            if system == "Darwin":  # macOS
+                permission = SystemNotification.check_permission()
+                if permission is True:
+                    self.notification_permission_status.setText("已授权")
+                    self.notification_permission_status.setStyleSheet("color: green;")
+                    if hasattr(self, 'notification_permission_btn'):
+                        self.notification_permission_btn.setVisible(False)
+                    if hasattr(self, 'notification_permission_hint'):
+                        self.notification_permission_hint.setText("")  # 清空提示
+                        self.notification_permission_hint.setVisible(False)  # 隐藏提示
+                        self.notification_permission_hint.setFixedHeight(0)  # 不占用空间
+                elif permission is False:
+                    self.notification_permission_status.setText("未授权")
+                    self.notification_permission_status.setStyleSheet("color: red;")
+                    if hasattr(self, 'notification_permission_btn'):
+                        self.notification_permission_btn.setVisible(True)  # 始终显示，让用户可以重新开启
+                    # 显示明确的提示信息
+                    if hasattr(self, 'notification_permission_hint'):
+                        self.notification_permission_hint.setText(
+                            "💡 如果之前拒绝了权限，请点击「打开系统设置」按钮，"
+                            "在系统设置中找到此应用并勾选以允许发送通知。"
+                        )
+                        self.notification_permission_hint.setVisible(True)  # 显示提示
+                        self.notification_permission_hint.setMaximumHeight(16777215)  # 恢复最大高度
+                else:  # None，无法确定
+                    self.notification_permission_status.setText("未知（请尝试发送测试通知）")
+                    self.notification_permission_status.setStyleSheet("color: orange;")
+                    if hasattr(self, 'notification_permission_btn'):
+                        self.notification_permission_btn.setVisible(True)
+                    if hasattr(self, 'notification_permission_hint'):
+                        self.notification_permission_hint.setText(
+                            "💡 无法确定权限状态，请点击「打开系统设置」检查并授权。"
+                        )
+                        self.notification_permission_hint.setVisible(True)  # 显示提示
+                        self.notification_permission_hint.setMaximumHeight(16777215)  # 恢复最大高度
+            elif system == "Windows":
+                # Windows 10+ 不需要显式权限
+                self.notification_permission_status.setText("已启用（Windows 10+ 无需授权）")
                 self.notification_permission_status.setStyleSheet("color: green;")
-                self.notification_permission_btn.setVisible(False)
-            elif permission is False:
-                self.notification_permission_status.setText("未授权")
-                self.notification_permission_status.setStyleSheet("color: red;")
-                self.notification_permission_btn.setVisible(True)
-            else:  # None，无法确定
-                self.notification_permission_status.setText("未知（请尝试发送测试通知）")
-                self.notification_permission_status.setStyleSheet("color: orange;")
-                self.notification_permission_btn.setVisible(True)
-        elif system == "Windows":
-            # Windows 10+ 不需要显式权限
-            self.notification_permission_status.setText("已启用（Windows 10+ 无需授权）")
-            self.notification_permission_status.setStyleSheet("color: green;")
-            self.notification_permission_btn.setVisible(False)
-        else:
-            self.notification_permission_status.setText("不支持的操作系统")
-            self.notification_permission_status.setStyleSheet("color: gray;")
-            self.notification_permission_btn.setVisible(False)
+                if hasattr(self, 'notification_permission_btn'):
+                    self.notification_permission_btn.setVisible(False)
+                if hasattr(self, 'notification_permission_hint'):
+                    self.notification_permission_hint.setText("")  # 清空提示
+                    self.notification_permission_hint.setVisible(False)  # 隐藏提示
+                    self.notification_permission_hint.setFixedHeight(0)  # 不占用空间
+            else:
+                self.notification_permission_status.setText("不支持的操作系统")
+                self.notification_permission_status.setStyleSheet("color: gray;")
+                if hasattr(self, 'notification_permission_btn'):
+                    self.notification_permission_btn.setVisible(False)
+                if hasattr(self, 'notification_permission_hint'):
+                    self.notification_permission_hint.setText("")  # 清空提示
+                    self.notification_permission_hint.setVisible(False)  # 隐藏提示
+                    self.notification_permission_hint.setFixedHeight(0)  # 不占用空间
+        except RuntimeError as e:
+            # 对象已被销毁，忽略错误
+            print(f"[Settings] _check_notification_permission: RuntimeError: {e}", file=sys.stderr)
+    
+    def _refresh_notification_permission(self):
+        """手动刷新通知权限状态"""
+        # 重新检查权限
+        self._check_notification_permission()
+        # 显示提示
+        Toast.show_message(self, "权限状态已刷新")
     
     def _open_notification_settings(self):
         """打开系统通知设置"""
@@ -579,9 +826,23 @@ class SettingsView(QWidget):
         if SystemNotification.open_system_settings():
             system = platform.system()
             if system == "Darwin":
-                msg = "已打开系统通知设置页面。\n\n请在系统设置中找到此应用（Ai Perf Client 或 Python），并允许发送通知。\n\n设置完成后，请返回应用，通知权限状态会自动更新。"
+                msg = (
+                    "已打开系统设置页面。\n\n"
+                    "请在系统设置中找到此应用（Ai Perf Client 或 Python），"
+                    "并允许发送通知。\n\n"
+                    "路径：系统设置 > 通知\n\n"
+                    "💡 如果之前拒绝了权限，现在可以在这里重新开启。\n\n"
+                    "设置完成后，请返回应用并点击「刷新」按钮，"
+                    "或等待自动更新（约2秒后）。"
+                )
             else:
-                msg = "已打开系统通知设置页面。\n\n请在系统设置中允许此应用发送通知。"
+                msg = (
+                    "已打开系统通知设置页面。\n\n"
+                    "请在系统设置中允许此应用发送通知。\n\n"
+                    "💡 如果之前拒绝了权限，现在可以在这里重新开启。\n\n"
+                    "设置完成后，请返回应用并点击「刷新」按钮，"
+                    "或等待自动更新（约2秒后）。"
+                )
             
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("打开系统设置")
@@ -591,7 +852,237 @@ class SettingsView(QWidget):
             msg_box.exec()
             
             # 延迟重新检查权限（给用户时间设置）
-            QTimer.singleShot(2000, self._check_notification_permission)
+            def check_and_notify():
+                """检查权限并显示提示"""
+                self._check_notification_permission()
+                Toast.show_message(self, "权限状态已更新")
+            
+            QTimer.singleShot(2000, check_and_notify)
+    
+    def _check_hotkey_permission(self):
+        """检查全局快捷键权限并更新UI（仅 macOS）"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        
+        # 检查对象是否仍然有效（防止页面切换时对象已被销毁）
+        if not hasattr(self, 'hotkey_permission_status') or not self.hotkey_permission_status:
+            return
+        
+        try:
+            from utils.mac_hotkey import check_accessibility_permission
+            permission = check_accessibility_permission()
+            
+            if permission is True:
+                self.hotkey_permission_status.setText("已授权")
+                self.hotkey_permission_status.setStyleSheet("color: green;")
+                if hasattr(self, 'hotkey_permission_btn'):
+                    self.hotkey_permission_btn.setVisible(False)
+                if hasattr(self, 'hotkey_permission_hint'):
+                    self.hotkey_permission_hint.setText("")  # 清空提示
+                    self.hotkey_permission_hint.setVisible(False)  # 隐藏提示
+                    self.hotkey_permission_hint.setFixedHeight(0)  # 不占用空间
+            elif permission is False:
+                self.hotkey_permission_status.setText("未授权")
+                self.hotkey_permission_status.setStyleSheet("color: red;")
+                if hasattr(self, 'hotkey_permission_btn'):
+                    self.hotkey_permission_btn.setVisible(True)  # 始终显示，让用户可以重新开启
+                # 显示明确的提示信息
+                if hasattr(self, 'hotkey_permission_hint'):
+                    self.hotkey_permission_hint.setText(
+                        "💡 如果之前拒绝了权限，请点击「打开系统设置」按钮，"
+                        "在系统设置中找到此应用并勾选以允许使用辅助功能。"
+                    )
+                    self.hotkey_permission_hint.setVisible(True)  # 显示提示
+                    self.hotkey_permission_hint.setMaximumHeight(16777215)  # 恢复最大高度
+            else:  # None，无法确定
+                self.hotkey_permission_status.setText("未知")
+                self.hotkey_permission_status.setStyleSheet("color: orange;")
+                if hasattr(self, 'hotkey_permission_btn'):
+                    self.hotkey_permission_btn.setVisible(True)
+                if hasattr(self, 'hotkey_permission_hint'):
+                    self.hotkey_permission_hint.setText(
+                        "💡 无法确定权限状态，请点击「打开系统设置」检查并授权。"
+                    )
+                    self.hotkey_permission_hint.setVisible(True)  # 显示提示
+                    self.hotkey_permission_hint.setMaximumHeight(16777215)  # 恢复最大高度
+        except RuntimeError as e:
+            # 对象已被销毁，忽略错误
+            print(f"[Settings] _check_hotkey_permission: RuntimeError: {e}", file=sys.stderr)
+        except Exception as e:
+            if hasattr(self, 'hotkey_permission_status'):
+                self.hotkey_permission_status.setText("检查失败")
+                self.hotkey_permission_status.setStyleSheet("color: red;")
+            if hasattr(self, 'hotkey_permission_btn'):
+                self.hotkey_permission_btn.setVisible(True)
+            if hasattr(self, 'hotkey_permission_hint'):
+                self.hotkey_permission_hint.setText(
+                    "💡 权限检查失败，请点击「打开系统设置」手动检查权限状态。"
+                )
+            print(f"[Settings] Failed to check hotkey permission: {e}", file=sys.stderr)
+    
+    def _refresh_hotkey_permission(self):
+        """手动刷新权限状态（仅 macOS）"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        
+        # 重新检查权限
+        self._check_hotkey_permission()
+        # 如果快捷键已启用，尝试注册
+        self._register_hotkey_if_enabled()
+        # 显示提示
+        Toast.show_message(self, "权限状态已刷新")
+    
+    def _update_hotkey_status(self):
+        """更新快捷键启用状态显示（仅 macOS）"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        
+        if not hasattr(self, 'chk_global_hotkey'):
+            return
+        
+        # 检查是否已启用
+        enabled = self.chk_global_hotkey.isChecked()
+        
+        # 如果启用但权限未授权，显示提示
+        if enabled:
+            try:
+                from utils.mac_hotkey import check_accessibility_permission
+                permission = check_accessibility_permission()
+                if permission is False:
+                    # 启用但未授权，提示用户
+                    self.hotkey_permission_status.setText("未授权（需要授权才能使用）")
+                    self.hotkey_permission_status.setStyleSheet("color: red;")
+                    self.hotkey_permission_btn.setVisible(True)  # 确保按钮可见
+                    self.hotkey_permission_hint.setText(
+                        "💡 快捷键已启用但权限未授权。请点击「打开系统设置」授权后，"
+                        "快捷键将自动生效。如果之前拒绝了权限，现在可以重新开启。"
+                    )
+                    self.hotkey_permission_hint.setVisible(True)  # 显示提示
+                    self.hotkey_permission_hint.setMaximumHeight(16777215)  # 恢复最大高度
+            except:
+                pass
+    
+    def _register_hotkey_if_enabled(self):
+        """如果快捷键已启用，尝试注册（仅 macOS）"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        
+        try:
+            cfg = ConfigManager.load()
+            enabled = cfg.get("global_hotkey_enabled", False)
+            if not enabled:
+                return
+            
+            from utils.mac_hotkey import MacGlobalHotkey, check_accessibility_permission
+            permission = check_accessibility_permission()
+            
+            if permission is True:
+                # 获取主窗口并注册快捷键
+                main_window = self.window()
+                if main_window and hasattr(main_window, '_show_airdrop'):
+                    # 如果已经注册过，先取消注册
+                    if hasattr(main_window, '_global_hotkey') and main_window._global_hotkey:
+                        try:
+                            main_window._global_hotkey.unregister()
+                            main_window._global_hotkey = None
+                        except:
+                            pass
+                    
+                    # 注册新的快捷键
+                    try:
+                        main_window._global_hotkey = MacGlobalHotkey(main_window._show_airdrop)
+                        Toast.show_message(self, "全局快捷键已启用")
+                    except Exception as e:
+                        Toast.show_message(self, f"启用快捷键失败：{e}\n请检查辅助功能权限")
+            else:
+                Toast.show_message(self, "请先授予辅助功能权限")
+        except Exception as e:
+            print(f"[Settings] Error registering hotkey: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+    
+    def _unregister_hotkey_if_disabled(self):
+        """如果快捷键已禁用，取消注册（仅 macOS）"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        
+        try:
+            # 获取主窗口并取消注册快捷键
+            main_window = self.window()
+            if main_window and hasattr(main_window, '_global_hotkey') and main_window._global_hotkey:
+                try:
+                    main_window._global_hotkey.unregister()
+                    main_window._global_hotkey = None
+                    Toast.show_message(self, "全局快捷键已禁用")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+    def _open_accessibility_settings(self):
+        """打开系统辅助功能设置（仅 macOS）"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        
+        try:
+            from utils.mac_hotkey import open_accessibility_settings, get_macos_version
+            from PySide6.QtWidgets import QMessageBox
+            
+            if open_accessibility_settings():
+                # 根据 macOS 版本显示不同的提示信息
+                macos_version = get_macos_version()
+                if macos_version[0] >= 13:  # macOS 13 (Ventura) 及以上
+                    msg = (
+                        "已打开系统设置页面。\n\n"
+                        "请在系统设置中找到此应用（Ai Perf Client 或 Python），"
+                        "并勾选以允许使用辅助功能。\n\n"
+                        "路径：系统设置 > 隐私与安全性 > 辅助功能\n\n"
+                        "💡 如果之前拒绝了权限，现在可以在这里重新开启。\n\n"
+                        "设置完成后，请返回应用并点击「刷新」按钮，"
+                        "或等待自动更新（约2秒后）。"
+                    )
+                else:  # macOS 12 及以下
+                    msg = (
+                        "已打开系统偏好设置页面。\n\n"
+                        "请在系统偏好设置中找到此应用（Ai Perf Client 或 Python），"
+                        "并勾选以允许使用辅助功能。\n\n"
+                        "路径：系统偏好设置 > 安全性与隐私 > 隐私 > 辅助功能\n\n"
+                        "💡 如果之前拒绝了权限，现在可以在这里重新开启。\n\n"
+                        "设置完成后，请返回应用并点击「刷新」按钮，"
+                        "或等待自动更新（约2秒后）。"
+                    )
+                
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("打开系统设置")
+                msg_box.setText(msg)
+                msg_box.setIcon(QMessageBox.Icon.Information)
+                msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                msg_box.exec()
+                
+                # 延迟重新检查权限并注册快捷键（给用户时间设置）
+                def check_and_register():
+                    """检查权限并注册快捷键"""
+                    self._check_hotkey_permission()
+                    # 如果快捷键已启用，尝试注册
+                    self._register_hotkey_if_enabled()
+                    # 显示提示
+                    Toast.show_message(self, "权限状态已更新")
+                
+                # 延迟检查，给用户时间完成设置
+                QTimer.singleShot(2000, check_and_register)
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("错误")
+            msg_box.setText(f"无法打开系统设置：{e}")
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.exec()
 
     def _load_api_health(self):
         """加载后端API服务状态和版本信息"""
@@ -756,10 +1247,18 @@ class _ApiHealthWorker(QRunnable):
             self.signals.error.emit(f"获取后端API服务状态失败：{e}")
 
     def showEvent(self, event):
-        """页面显示时启动定时器"""
+        """页面显示时启动定时器并重新检查权限"""
         super().showEvent(event)
         if hasattr(self, '_api_health_timer'):
             self._api_health_timer.start()
+        
+        # 重新检查权限（用户可能从系统设置返回）
+        self._check_notification_permission()
+        import platform
+        if platform.system() == "Darwin":
+            self._check_hotkey_permission()
+            # 如果快捷键已启用，尝试重新注册
+            self._register_hotkey_if_enabled()
 
     def hideEvent(self, event):
         """页面隐藏时停止定时器"""

@@ -18,8 +18,8 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
     QListWidget, QListWidgetItem, QMessageBox,
-    QApplication, QGraphicsDropShadowEffect,
-    QMenu, QFileDialog, QScrollArea
+    QApplication,
+    QMenu, QFileDialog, QScrollArea, QSizePolicy, QSpacerItem
 )
 from PySide6.QtCore import (
     Qt,
@@ -44,6 +44,7 @@ from PySide6.QtGui import (
     QPainter,
     QColor,
     QBrush,
+    QPen,
     QDragEnterEvent,
     QDropEvent,
     QMouseEvent,
@@ -52,6 +53,7 @@ from PySide6.QtGui import (
     QClipboard,
     QDesktopServices,
     QImage,
+    QGuiApplication,
 )
 import httpx
 import logging
@@ -61,9 +63,9 @@ from utils.lan_transfer.manager import TransferManager
 from utils.lan_transfer.discovery import DeviceInfo
 from utils.api_client import ApiClient
 from widgets.toast import Toast
-from widgets.transfer_confirm_dialog import TransferConfirmDialog
-from widgets.clipboard_receive_dialog import ClipboardReceiveDialog
 from utils.notification import send_notification
+from utils.theme_manager import ThemeManager
+from utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +149,21 @@ class DeviceItemWidget(QWidget):
         super().__init__(parent)
         self._device = device
         self._progress = 0
+        self._parent_airdrop_view = None  # 用于获取主题颜色
+        self._is_dark = False  # 主题状态
+        if parent:
+            # 向上查找 AirDropView
+            widget = parent
+            while widget:
+                if isinstance(widget, AirDropView):
+                    self._parent_airdrop_view = widget
+                    self._is_dark = widget._is_dark
+                    break
+                widget = widget.parent()
         self._setup_ui()
         self.setAcceptDrops(True)
     
-    def sizeHint(self):
+    def sizeHint(self) -> QSize:
         """返回基于内容的推荐大小"""
         if hasattr(self, "name_label"):
             name_width = self.name_label.fontMetrics().horizontalAdvance(self.name_label.text())
@@ -167,10 +180,14 @@ class DeviceItemWidget(QWidget):
             device_height = 15
         
         content_width = max(72, name_width, device_width)
-        width = max(110, content_width + 18)  # 预留左右内边距
-        height = 72 + name_height + device_height + 14  # 紧凑但保留余量
-        height = max(148, height)
-        return QSize(int(width), int(height))
+        # 宽度将由 _update_item_widths() 动态设置，这里只计算最小宽度
+        # 左右内边距各0px（已改为0），所以最小宽度 = 内容宽度
+        w: int = int(max(110, content_width))
+        # 调整高度计算：上内边距6px，下内边距4px，间距2+1=3px，头像72px
+        h: int = int(6 + 72 + 2 + name_height + 1 + device_height + 4)  # 上边距+头像+间距+名字+间距+设备名+下边距
+        h = max(118, h)
+        # 使用与构造函数参数名匹配的变量名，并明确类型
+        return QSize(w, h)
     
     def _setup_ui(self):
         self._avatar_size = 64
@@ -178,11 +195,18 @@ class DeviceItemWidget(QWidget):
         self.setLayoutDirection(Qt.LeftToRight)
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 8)
+        # 调整内边距，特别是减小底部内边距
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(110, 148)
+
+        # 宽度将在窗口大小确定后动态设置（窗口宽度的1/4，考虑滚动条）
+        # PySide6 6.5 兼容：分别设置宽度和高度
+        self.setMinimumHeight(118)
         
+        # 确保 widget 在 item 中水平居中
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
         # 使用带进度条的头像组件
         # 注意：CircularProgressAvatar的容器大小是avatar_size+8，所以传入avatar_size即可
         self.avatar_label = CircularProgressAvatar(self._avatar_size, self)
@@ -210,7 +234,10 @@ class DeviceItemWidget(QWidget):
         # 第二步：添加同事名字（中间，第二行）
         self.name_label = QLabel(self._device.name)
         self.name_label.setAlignment(Qt.AlignCenter)
-        self.name_label.setFont(QFont("SF Pro Display", 12, QFont.Medium))
+        # PySide6 6.5 兼容：使用 QFont.Weight.Medium
+        name_font = QFont("SF Pro Display", 12)
+        name_font.setWeight(QFont.Weight.Medium)
+        self.name_label.setFont(name_font)
         self.name_label.setStyleSheet("background-color: transparent;")
         layout.addWidget(self.name_label, alignment=Qt.AlignCenter)
         layout.addSpacing(1)  # 名字和设备名之间的间距
@@ -223,15 +250,43 @@ class DeviceItemWidget(QWidget):
         self.device_label.setWordWrap(True)
         device_font = QFont("SF Pro Display", 9)
         self.device_label.setFont(device_font)
-        self._default_device_style = "color: #8E8E93; font-size: 9px; padding-top: 0px; background-color: transparent;"
+        # 使用主题颜色
+        colors = self._get_theme_colors()
+        self._default_device_style = f"color: {colors['text_tertiary']}; font-size: 10px; padding-top: 0px; background-color: transparent;"
         self.device_label.setStyleSheet(self._default_device_style)
         layout.addWidget(self.device_label, alignment=Qt.AlignCenter)
-        layout.addStretch()
+        # 移除 addStretch()，减小底部内边距
+    
+    def _get_theme_colors(self) -> dict:
+        """获取主题颜色（从父窗口或使用默认值）"""
+        if self._parent_airdrop_view and hasattr(self._parent_airdrop_view, '_get_theme_colors'):
+            return self._parent_airdrop_view._get_theme_colors()
+        # 默认使用亮色主题
+        return {
+            "text_primary": "#000000",
+            "text_secondary": "#111111",
+            "text_tertiary": "#999999",
+            "avatar_bg": "#E5E5EA",
+        }
+    
+    def _update_theme_colors(self, colors: dict):
+        """更新主题颜色"""
+        self.name_label.setStyleSheet(f"background-color: transparent; color: {colors['text_primary']};")
+        self._default_device_style = f"color: {colors['text_tertiary']}; font-size: 10px; padding-top: 0px; background-color: transparent;"
+        if self.device_label.text() == self._default_device_text:
+            self.device_label.setStyleSheet(self._default_device_style)
+        # 重新绘制默认头像（如果有）
+        if not self.avatar_label.pixmap() or not self.avatar_label.pixmap().isNull():
+            # 检查是否是默认头像（通过检查是否有图片URL）
+            if not hasattr(self._device, 'avatar_url') or not self._device.avatar_url:
+                self._set_default_avatar()
 
     def set_device_status(self, text: Optional[str], color: Optional[str] = None):
         """更新设备名区域的状态文本"""
         if text:
-            color = color or "#8E8E93"
+            if color is None:
+                colors = self._get_theme_colors()
+                color = colors['text_tertiary']
             self.device_label.setText(text)
             self.device_label.setStyleSheet(
                 f"color: {color}; font-size: 9px; padding-top: 0px; background-color: transparent;"
@@ -278,8 +333,8 @@ class DeviceItemWidget(QWidget):
         self.avatar_label.setStyleSheet("""
             QLabel {
                 border: none;
-                border-radius: 40px;
-                background-color: rgba(0, 122, 255, 0.15);
+                border-radius: 0;
+                background-color: rgba(0, 122, 255, 0.2);
             }
         """)
     
@@ -327,17 +382,22 @@ class DeviceItemWidget(QWidget):
             self._set_default_avatar()
     
     def _load_avatar_async(self, url: str):
-        """异步加载头像"""
+        """异步加载头像，带重试机制"""
         def load():
-            try:
-                response = httpx.get(url, timeout=5)
-                if response.status_code == 200:
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(response.content)
-                    if not pixmap.isNull():
-                        # 容器大小是avatar_size+8，确保pixmap大小和容器一致
-                        container_size = self._avatar_size + 8
-                        circular_pixmap = self._make_circular(pixmap, container_size)
+            import time
+            max_retries = 3
+            retry_delay = 1  # 秒
+            
+            for attempt in range(max_retries):
+                try:
+                    response = httpx.get(url, timeout=5)
+                    if response.status_code == 200:
+                        pixmap = QPixmap()
+                        pixmap.loadFromData(response.content)
+                        if not pixmap.isNull():
+                            # 容器大小是avatar_size+8，确保pixmap大小和容器一致
+                            container_size = self._avatar_size + 8
+                            circular_pixmap = self._make_circular(pixmap, container_size)
                         # 确保在主线程更新UI
                         QMetaObject.invokeMethod(
                             self.avatar_label,
@@ -345,9 +405,17 @@ class DeviceItemWidget(QWidget):
                             Qt.QueuedConnection,
                             Q_ARG(QPixmap, circular_pixmap)
                         )
-                        return
-            except Exception as e:
-                logger.error(f"加载头像失败: {e}")
+                        return  # 成功，退出重试循环
+                except Exception as e:
+                    logger.warning(f"加载头像失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        # 还有重试机会，等待后重试
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 指数退避
+                    else:
+                        # 所有重试都失败了
+                        logger.error(f"加载头像失败（已重试 {max_retries} 次）: {e}")
+            # 所有重试都失败，使用默认头像
             self._set_default_avatar()
         
         import threading
@@ -411,6 +479,18 @@ class DeviceItemWidget(QWidget):
     
     def _set_default_avatar(self):
         """设置默认头像"""
+        # 获取主题颜色
+        colors = self._get_theme_colors()
+        # 解析头像背景色
+        bg_color_str = colors.get('avatar_bg', '#E5E5EA')
+        if bg_color_str.startswith('#'):
+            bg_color = QColor(bg_color_str)
+        else:
+            bg_color = QColor(142, 142, 147)  # 默认灰色
+        
+        # 文字颜色：深色主题用白色，亮色主题用深色
+        text_color = QColor(255, 255, 255) if self._is_dark else QColor(0, 0, 0)
+        
         # 容器大小是avatar_size+8，pixmap大小要和容器一致，确保内外层尺寸对齐
         container_size = self._avatar_size + 8
         pixmap = QPixmap(container_size, container_size)
@@ -418,15 +498,18 @@ class DeviceItemWidget(QWidget):
         
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QBrush(QColor(142, 142, 147)))
+        painter.setBrush(QBrush(bg_color))
         painter.setPen(Qt.NoPen)
         # 绘制圆形，在容器中心，半径为avatar_size/2
         center = container_size // 2
         radius = self._avatar_size // 2
         painter.drawEllipse(center - radius, center - radius, self._avatar_size, self._avatar_size)
         
-        painter.setPen(QColor(255, 255, 255))
-        painter.setFont(QFont("SF Pro Display", 32, QFont.Medium))
+        painter.setPen(text_color)
+        # PySide6 6.5 兼容：使用 QFont.Weight.Medium
+        avatar_font = QFont("SF Pro Display", 32)
+        avatar_font.setWeight(QFont.Weight.Medium)
+        painter.setFont(avatar_font)
         first_char = self._device.name[0].upper() if self._device.name else "?"
         # 文字绘制在圆形区域内
         painter.drawText(center - radius, center - radius, self._avatar_size, self._avatar_size, Qt.AlignCenter, first_char)
@@ -463,6 +546,692 @@ class DeviceItemWidget(QWidget):
         return self._device
 
 
+class TrianglePointer(QWidget):
+    """倒三角指向头像"""
+    
+    def __init__(self, color: QColor, parent=None):
+        super().__init__(parent)
+        self._color = color
+        self._border_color = None  # 边框颜色
+        self.setFixedSize(18, 10)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+    
+    def set_border_color(self, color: QColor):
+        """设置边框颜色"""
+        self._border_color = color
+        self.update()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        points = [
+            QPoint(0, 0),
+            QPoint(w, 0),
+            QPoint(w // 2, h),
+        ]
+        
+        # 绘制主体
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(self._color))
+        painter.drawPolygon(points)
+        
+        # 绘制边框，仅两侧（顶部不描边，贴合气泡主体）
+        if self._border_color:
+            pen = QPen(self._border_color)
+            pen.setWidth(1)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawLine(points[0], points[2])
+            painter.drawLine(points[1], points[2])
+        painter.end()
+
+
+class TransferRequestBubble(QWidget):
+    """悬浮在头像附近的传输请求气泡（文件/剪贴板共用）"""
+    
+    accepted = Signal()          # 文件接受 / 剪贴板放入剪贴板
+    accepted_open = Signal()     # 文件“接受并打开”
+    save_as_file = Signal()      # 剪贴板“另存为TXT”
+    rejected = Signal()
+    
+    def __init__(self, sender_name: str, filename: str, file_size: int, parent=None,
+                 is_clipboard: bool = False, is_clipboard_image: bool = False):
+        super().__init__(parent)
+        self._sender_name = sender_name
+        self._filename = filename
+        self._file_size = file_size
+        self._is_clipboard = is_clipboard
+        self._is_clipboard_image = is_clipboard_image
+        self._size_locked = False
+        self._last_screen_name = None
+        self._pointer_visible = True
+        self._is_dark = self._detect_theme()
+        self._setup_ui()
+    
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference  # "light" or "dark"
+            
+            return theme == "dark"
+        except:
+            return False
+    
+    def _get_theme_colors(self) -> dict:
+        """获取主题颜色"""
+        if self._is_dark:
+            return {
+                "bg_primary": "#1C1C1E",
+                "text_primary": "#FFFFFF",
+                "text_secondary": "#EBEBF5",
+                "text_tertiary": "#9a9ab1",
+                "button_primary_bg": "#0A84FF",
+                "button_primary_hover": "#006FE0",
+                "button_primary_pressed": "#005BB8",
+                "button_secondary_bg": "#2C2C2E",
+                "button_secondary_border": "#38383A",
+                "button_secondary_hover": "#3A3A3C",
+                "button_secondary_pressed": "#48484A",
+                "bg_alpha": 0.95,
+                "border_alpha": 1.0,
+                "bg_rgb": "28, 28, 30",
+                "border_rgb": "50, 50, 52",
+            }
+        else:
+            return {
+                "bg_primary": "#FFFFFF",
+                "text_primary": "#000000",
+                "text_secondary": "#111111",
+                "text_tertiary": "#8E8E93",
+                "button_primary_bg": "#0A84FF",
+                "button_primary_hover": "#006FE0",
+                "button_primary_pressed": "#005BB8",
+                "button_secondary_bg": "#F2F2F7",
+                "button_secondary_border": "#D1D1D6",
+                "button_secondary_hover": "#E5E5EA",
+                "button_secondary_pressed": "#D8D8DC",
+                "bg_alpha": 0.96,
+                "border_alpha": 0.1,
+                "bg_rgb": "255, 255, 255",
+                "border_rgb": "0, 0, 0",
+            }
+    
+    def _setup_ui(self, colors: dict = None):
+        if colors is None:
+            colors = self._get_theme_colors()
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+            | Qt.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        
+        container = QFrame()
+        container.setObjectName("bubbleFrame")
+        container.setStyleSheet(f"""
+            QFrame#bubbleFrame {{
+                background: rgba({colors['bg_rgb']}, {colors['bg_alpha']});
+                border-radius: 12px;
+                border: 1px solid rgba({colors['border_rgb']}, {colors['border_alpha']});
+            }}
+            QLabel {{
+                color: {colors['text_primary']};
+            }}
+        """)
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(14, 12, 14, 12)
+        container_layout.setSpacing(10)
+        container.setLayout(container_layout)
+        
+        if self._is_clipboard:
+            title = QLabel(f"“{self._sender_name}”想向你发送剪贴板内容。")
+        else:
+            title = QLabel(f"“{self._sender_name}”想向你发送“{self._filename}”。")
+        title.setWordWrap(True)
+        colors = self._get_theme_colors()
+        title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {colors['text_secondary']}; background-color: transparent;")
+        container_layout.addWidget(title)
+        
+        if self._is_clipboard and self._is_clipboard_image:
+            size_label = QLabel("这是一张图片")
+        else:
+            size_str = self._format_file_size(self._file_size)
+            size_label = QLabel(size_str)
+        size_label.setStyleSheet(f"font-size: 10px; color: {colors['text_tertiary']}; background-color: transparent;")
+        container_layout.addWidget(size_label)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(12)
+        
+        # 获取父窗口的主题颜色
+        colors = self._get_theme_colors()
+        
+        if self._is_clipboard:
+            if self._is_clipboard_image:
+                # 剪贴板图片：接受并打开(主按钮蓝色) + 拒绝
+                accept_open_btn = QPushButton("接受并打开")
+                accept_open_btn.setFixedHeight(30)
+                accept_open_btn.setMinimumWidth(90)
+                accept_open_btn.setStyleSheet(self._primary_button_style(colors))
+                accept_open_btn.clicked.connect(self.accepted_open.emit)
+                btn_layout.addWidget(accept_open_btn, 1)
+                
+                reject_btn = QPushButton("拒绝")
+                reject_btn.setFixedHeight(30)
+                reject_btn.setMinimumWidth(48)
+                reject_btn.setStyleSheet(self._secondary_button_style(colors))
+                reject_btn.clicked.connect(lambda: self.rejected.emit())
+                btn_layout.addWidget(reject_btn, 1)
+            else:
+                # 剪贴板文本：放入剪贴板 / 另存为TXT / 拒绝
+                save_btn = QPushButton("另存为.txt文件")
+                save_btn.setFixedHeight(30)
+                save_btn.setMinimumWidth(110)
+                save_btn.setStyleSheet(self._secondary_button_style(colors))
+                save_btn.clicked.connect(self.save_as_file.emit)
+                btn_layout.addWidget(save_btn, 1)
+                
+                reject_btn = QPushButton("拒绝")
+                reject_btn.setFixedHeight(30)
+                reject_btn.setMinimumWidth(48)
+                reject_btn.setStyleSheet(self._secondary_button_style(colors))
+                reject_btn.clicked.connect(lambda: self.rejected.emit())
+                btn_layout.addWidget(reject_btn, 1)
+                
+                accept_btn = QPushButton("放入剪贴板")
+                accept_btn.setFixedHeight(30)
+                accept_btn.setMinimumWidth(90)
+                accept_btn.setStyleSheet(self._primary_button_style(colors))
+                accept_btn.clicked.connect(self.accepted.emit)
+                btn_layout.addWidget(accept_btn, 1)
+        else:
+            # 只有当文件可以在当前系统打开时才显示"接受并打开"按钮
+            if self._can_open_file():
+                accept_open_btn = QPushButton("接受并打开")
+                accept_open_btn.setFixedHeight(30)
+                accept_open_btn.setMinimumWidth(90)
+                accept_open_btn.setStyleSheet(self._secondary_button_style(colors))
+                accept_open_btn.clicked.connect(self.accepted_open.emit)
+                btn_layout.addWidget(accept_open_btn, 1)
+            
+            reject_btn = QPushButton("拒绝")
+            reject_btn.setFixedHeight(30)
+            reject_btn.setMinimumWidth(48)
+            reject_btn.setStyleSheet(self._secondary_button_style(colors))
+            reject_btn.clicked.connect(lambda: self.rejected.emit())
+            btn_layout.addWidget(reject_btn, 1)
+            
+            accept_btn = QPushButton("接受")
+            accept_btn.setFixedHeight(30)
+            accept_btn.setMinimumWidth(48)
+            accept_btn.setStyleSheet(self._primary_button_style(colors))
+            accept_btn.clicked.connect(self.accepted.emit)
+            btn_layout.addWidget(accept_btn, 1)
+        
+        container_layout.addLayout(btn_layout)
+        outer_layout.addWidget(container, 0, Qt.AlignTop)
+        
+        # 指针（独立定位）
+        self._container = container
+        self._pointer_overlap = 1  # 覆盖气泡边框的像素
+        pointer_color = QColor(255, 255, 255, 245) if not self._is_dark else QColor(28, 28, 30, 245)
+        border_color = QColor(0, 0, 0, 20) if not self._is_dark else QColor(50, 50, 52, 255)
+        self._pointer = TrianglePointer(pointer_color, self)
+        self._pointer.set_border_color(border_color)
+        
+        spacer = QSpacerItem(0, max(0, self._pointer.height() - self._pointer_overlap), QSizePolicy.Minimum, QSizePolicy.Fixed)
+        outer_layout.addSpacerItem(spacer)
+        QTimer.singleShot(0, self._position_pointer)
+    
+    def lock_size_for_screen(self, screen):
+        """根据屏幕锁定尺寸，切换屏幕后重新计算一次"""
+        name = screen.name() if screen else None
+        if self._size_locked and name == self._last_screen_name:
+            return
+        self._last_screen_name = name
+        self._size_locked = False
+        self.adjustSize()
+        self.setFixedSize(self.size())
+        self._size_locked = True
+    
+    def set_pointer_visible(self, visible: bool):
+        self._pointer_visible = visible
+        self._pointer.setVisible(visible)
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_pointer()
+    
+    def _position_pointer(self):
+        """将指针定位到容器底部中央，并覆盖边框"""
+        try:
+            if not hasattr(self, "_container") or not self._container:
+                return
+            cgeom = self._container.geometry()
+            pw, ph = self._pointer.width(), self._pointer.height()
+            overlap = getattr(self, "_pointer_overlap", 1)
+            x = cgeom.x() + (cgeom.width() - pw) // 2
+            y = cgeom.y() + cgeom.height() - overlap
+            self._pointer.move(x, y)
+            self._pointer.raise_()
+        except Exception:
+            pass
+    
+    def _can_open_file(self) -> bool:
+        """判断文件是否可以在当前操作系统上打开（仅考虑系统自带支持）"""
+        if "." not in self._filename:
+            return False
+        
+        ext = self._filename.rsplit(".", 1)[-1].lower()
+        import platform
+        system = platform.system()
+        
+        # macOS 系统自带支持的文件类型
+        if system == "Darwin":
+            # 不支持的类型（其他系统的安装包）
+            unsupported = {"exe", "msi", "deb", "rpm"}
+            if ext in unsupported:
+                return False
+            
+            # 支持的类型
+            supported = {
+                # 图片
+                "jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "bmp", "tiff", "tif",
+                # 视频
+                "mp4", "mov", "m4v", "avi", "mkv", "webm",
+                # 音频
+                "mp3", "aac", "m4a", "wav", "flac", "ogg",
+                # 文档
+                "pdf", "txt", "rtf", "pages", "numbers", "key", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                # 压缩
+                "zip", "tar", "gz", "bz2", "xz",
+                # 安装包
+                "dmg", "pkg", "app"
+            }
+            return ext in supported
+        
+        # Windows 系统自带支持的文件类型
+        elif system == "Windows":
+            # 不支持的类型（其他系统的安装包）
+            unsupported = {"dmg", "pkg", "app", "deb", "rpm"}
+            if ext in unsupported:
+                return False
+            
+            # 支持的类型
+            supported = {
+                # 图片
+                "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
+                # 视频
+                "mp4", "avi", "wmv", "mov", "mkv", "webm",
+                # 音频
+                "mp3", "wav", "aac", "m4a", "flac",
+                # 文档
+                "pdf", "txt", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "rtf",
+                # 压缩
+                "zip",
+                # 安装包
+                "exe", "msi"
+            }
+            return ext in supported
+        
+        # Linux 系统自带支持的文件类型
+        elif system == "Linux":
+            # 不支持的类型（其他系统的安装包）
+            unsupported = {"exe", "msi", "dmg", "pkg", "app"}
+            if ext in unsupported:
+                return False
+            
+            # 支持的类型
+            supported = {
+                # 图片
+                "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
+                # 视频
+                "mp4", "avi", "mkv", "webm", "mov",
+                # 音频
+                "mp3", "ogg", "wav", "flac", "aac",
+                # 文档
+                "pdf", "txt", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                # 压缩
+                "zip", "tar", "gz", "bz2", "xz",
+                # 安装包
+                "deb", "rpm"
+            }
+            return ext in supported
+        
+        # 其他系统，默认不支持
+        return False
+    
+    @staticmethod
+    def _format_file_size(size: int) -> str:
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+    
+    def _primary_button_style(self, colors: dict = None) -> str:
+        """主按钮样式（使用主题颜色）"""
+        if colors is None:
+            colors = self._get_theme_colors()
+        return f"""
+            QPushButton {{
+                background-color: {colors['button_primary_bg']};
+                color: #FFFFFF;
+                border: none;
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['button_primary_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['button_primary_pressed']};
+            }}
+        """
+    
+    def _secondary_button_style(self, colors: dict = None) -> str:
+        """次要按钮样式（使用主题颜色）"""
+        if colors is None:
+            colors = self._get_theme_colors()
+        return f"""
+            QPushButton {{
+                background-color: {colors['button_secondary_bg']};
+                border: 1px solid {colors['button_secondary_border']};
+                color: {colors['text_secondary']};
+                border-radius: 8px;
+                font-weight: 500;
+                font-size: 12px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['button_secondary_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['button_secondary_pressed']};
+            }}
+            QPushButton::text {{
+                background-color: transparent;
+            }}
+        """
+    
+    def reject(self):
+        """兼容对话框的 reject 接口"""
+        self.rejected.emit()
+        self.close()
+    
+    def bring_to_front(self):
+        """确保气泡在最上层显示"""
+        try:
+            self.raise_()
+        except Exception:
+            pass
+
+
+class ClipboardRequestBubble(QWidget):
+    """剪贴板内容请求气泡"""
+    
+    paste_to_clipboard = Signal()
+    save_as_file = Signal()
+    rejected = Signal()
+    
+    def __init__(self, sender_name: str, is_image: bool = False, parent=None):
+        super().__init__(parent)
+        self._sender_name = sender_name
+        self._is_image = is_image
+        self._size_locked = False
+        self._last_screen_name = None
+        self._pointer_visible = True
+        self._is_dark = self._detect_theme()
+        self._setup_ui()
+    
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference
+            return theme == "dark"
+        except Exception:
+            return False
+    
+    def _get_theme_colors(self) -> dict:
+        """获取主题颜色"""
+        if self._is_dark:
+            return {
+                "bg_primary": "#1C1C1E",
+                "text_primary": "#FFFFFF",
+                "text_secondary": "#EBEBF5",
+                "text_tertiary": "#9a9ab1",
+                "button_primary_bg": "#0A84FF",
+                "button_primary_hover": "#006FE0",
+                "button_primary_pressed": "#005BB8",
+                "button_secondary_bg": "#2C2C2E",
+                "button_secondary_border": "#38383A",
+                "button_secondary_hover": "#3A3A3C",
+                "button_secondary_pressed": "#48484A",
+                "bg_alpha": 0.95,
+                "border_alpha": 1.0,
+                "bg_rgb": "28, 28, 30",
+                "border_rgb": "50, 50, 52",
+            }
+        else:
+            return {
+                "bg_primary": "#FFFFFF",
+                "text_primary": "#000000",
+                "text_secondary": "#111111",
+                "text_tertiary": "#8E8E93",
+                "button_primary_bg": "#0A84FF",
+                "button_primary_hover": "#006FE0",
+                "button_primary_pressed": "#005BB8",
+                "button_secondary_bg": "#F2F2F7",
+                "button_secondary_border": "#D1D1D6",
+                "button_secondary_hover": "#E5E5EA",
+                "button_secondary_pressed": "#D8D8DC",
+                "bg_alpha": 0.96,
+                "border_alpha": 0.1,
+                "bg_rgb": "255, 255, 255",
+                "border_rgb": "0, 0, 0",
+            }
+    
+    def _primary_button_style(self, colors: dict = None) -> str:
+        if colors is None:
+            colors = self._get_theme_colors()
+        return f"""
+            QPushButton {{
+                background-color: {colors['button_primary_bg']};
+                border: none;
+                color: {colors['text_primary']};
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['button_primary_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['button_primary_pressed']};
+            }}
+            QPushButton::text {{
+                background-color: transparent;
+            }}
+        """
+    
+    def _secondary_button_style(self, colors: dict = None) -> str:
+        if colors is None:
+            colors = self._get_theme_colors()
+        return f"""
+            QPushButton {{
+                background-color: {colors['button_secondary_bg']};
+                border: 1px solid {colors['button_secondary_border']};
+                color: {colors['text_secondary']};
+                border-radius: 8px;
+                font-weight: 500;
+                font-size: 12px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['button_secondary_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['button_secondary_pressed']};
+            }}
+            QPushButton::text {{
+                background-color: transparent;
+            }}
+        """
+    
+    def _setup_ui(self, colors: dict = None):
+        if colors is None:
+            colors = self._get_theme_colors()
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+            | Qt.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        
+        container = QFrame()
+        container.setObjectName("clipboardBubbleFrame")
+        container.setStyleSheet(f"""
+            QFrame#clipboardBubbleFrame {{
+                background: rgba({colors['bg_rgb']}, {colors['bg_alpha']});
+                border-radius: 12px;
+                border: 1px solid rgba({colors['border_rgb']}, {colors['border_alpha']});
+            }}
+            QLabel {{
+                color: {colors['text_primary']};
+            }}
+        """)
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(14, 12, 14, 12)
+        container_layout.setSpacing(10)
+        container.setLayout(container_layout)
+        
+        content_type = "剪贴板图片" if self._is_image else "剪贴板内容"
+        title = QLabel(f"“{self._sender_name}”想向你发送{content_type}。")
+        title.setWordWrap(True)
+        title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {colors['text_secondary']};")
+        container_layout.addWidget(title)
+        
+        info_text = "是否将图片放入剪贴板？" if self._is_image else "请选择接收方式："
+        info_label = QLabel(info_text)
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet(f"font-size: 10px; color: {colors['text_tertiary']}; background-color: transparent;")
+        container_layout.addWidget(info_label)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(12)
+        
+        if not self._is_image:
+            save_btn = QPushButton("另存为TXT")
+            save_btn.setFixedHeight(30)
+            save_btn.setMinimumWidth(80)
+            save_btn.setStyleSheet(self._secondary_button_style(colors))
+            save_btn.clicked.connect(self.save_as_file.emit)
+            btn_layout.addWidget(save_btn, 1)
+        
+        reject_btn = QPushButton("拒绝")
+        reject_btn.setFixedHeight(30)
+        reject_btn.setMinimumWidth(48)
+        reject_btn.setStyleSheet(self._secondary_button_style(colors))
+        reject_btn.clicked.connect(lambda: self.rejected.emit())
+        btn_layout.addWidget(reject_btn, 1)
+        
+        accept_btn = QPushButton("放入剪贴板")
+        accept_btn.setFixedHeight(30)
+        accept_btn.setMinimumWidth(80)
+        accept_btn.setStyleSheet(self._primary_button_style(colors))
+        accept_btn.clicked.connect(self.paste_to_clipboard.emit)
+        btn_layout.addWidget(accept_btn, 1)
+        
+        container_layout.addLayout(btn_layout)
+        outer_layout.addWidget(container, 0, Qt.AlignTop)
+        
+        self._container = container
+        self._pointer_overlap = 1
+        pointer_color = QColor(255, 255, 255, 245) if not self._is_dark else QColor(28, 28, 30, 245)
+        border_color = QColor(0, 0, 0, 100) if not self._is_dark else QColor(50, 50, 52, 255)
+        self._pointer = TrianglePointer(pointer_color, self)
+        self._pointer.set_border_color(border_color)
+        spacer = QSpacerItem(0, max(0, self._pointer.height() - self._pointer_overlap), QSizePolicy.Minimum, QSizePolicy.Fixed)
+        outer_layout.addSpacerItem(spacer)
+        QTimer.singleShot(0, self._position_pointer)
+    
+    def lock_size_for_screen(self, screen):
+        name = screen.name() if screen else None
+        if self._size_locked and name == self._last_screen_name:
+            return
+        self._last_screen_name = name
+        self._size_locked = False
+        self.adjustSize()
+        self.setFixedSize(self.size())
+        self._size_locked = True
+    
+    def set_pointer_visible(self, visible: bool):
+        self._pointer_visible = visible
+        self._pointer.setVisible(visible)
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_pointer()
+    
+    def _position_pointer(self):
+        try:
+            if not hasattr(self, "_container") or not self._container:
+                return
+            cgeom = self._container.geometry()
+            pw, ph = self._pointer.width(), self._pointer.height()
+            overlap = getattr(self, "_pointer_overlap", 1)
+            x = cgeom.x() + (cgeom.width() - pw) // 2
+            y = cgeom.y() + cgeom.height() - overlap
+            self._pointer.move(x, y)
+            self._pointer.raise_()
+        except Exception:
+            pass
+    
+    def reject(self):
+        """兼容到期处理"""
+        self.rejected.emit()
+        self.close()
+    
+    def bring_to_front(self):
+        try:
+            self.raise_()
+        except Exception:
+            pass
 class AirDropView(QWidget):
     """隔空投送主界面（苹果风格）"""
     
@@ -535,6 +1304,28 @@ class AirDropView(QWidget):
         self._pending_requests: Dict[str, dict] = {}  # 待处理的传输请求
         self._was_hidden_to_icon = False  # 标记窗口是否被隐藏到图标
         
+        # 排序相关数据
+        self._current_user_id: Optional[str] = None  # 当前用户的 user_id
+        self._current_user_group_id: Optional[str] = None  # 当前用户的组ID
+        self._device_discovery_times: Dict[str, float] = {}  # 设备发现时间 {user_id: timestamp}
+        self._device_transfer_times: Dict[str, float] = {}  # 设备传输时间 {user_id: timestamp}
+        self._device_group_ids: Dict[str, Optional[str]] = {}  # 设备组ID {user_id: group_id}
+        # 发送等待倒计时
+        self._wait_countdown_timer: Optional[QTimer] = None
+        self._wait_countdown_remaining: int = 0
+        self._wait_countdown_device: Optional[DeviceInfo] = None
+        # 应用退出时统一清理传输管理器（窗口隐藏/关闭不再主动停服务）
+        try:
+            QApplication.instance().aboutToQuit.connect(self._cleanup_transfer_manager)
+        except Exception:
+            pass
+        
+        # 主题相关
+        self._is_dark = self._detect_theme()
+        self._theme_check_timer = QTimer()
+        self._theme_check_timer.timeout.connect(self._check_and_update_theme)
+        self._theme_check_timer.start(1000)  # 每秒检查一次主题变化
+        
         try:
             self._setup_ui()
             self._setup_drag_detection()
@@ -563,6 +1354,14 @@ class AirDropView(QWidget):
                 self.showNormal()
                 event.ignore()
                 return
+        elif event.type() == QEvent.WindowActivate:
+            # 窗口被激活时，重新提升所有气泡窗口到最上层
+            # 延迟执行，确保窗口状态已更新
+            # 注意：只在 macOS 上需要，因为 macOS 点击任何位置都会激活窗口
+            import platform
+            if platform.system() == "Darwin":
+                # 延迟稍长，确保窗口激活事件已经处理完
+                QTimer.singleShot(200, self._bring_all_bubbles_to_front)
         super().changeEvent(event)
     
     def mouseDoubleClickEvent(self, event):
@@ -579,74 +1378,71 @@ class AirDropView(QWidget):
     
     def _setup_ui(self):
         """设置UI（苹果风格）"""
+        colors = self._get_theme_colors()
+        
         # 设置窗口样式
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #FFFFFF;
-            }
-            QLabel {
-                color: #000000;
-            }
-            DeviceItemWidget {
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors['bg_primary']};
+            }}
+            QLabel {{
+                color: {colors['text_primary']};
+            }}
+            DeviceItemWidget {{
                 /* 确保子组件布局方向正确 */
-            }
+            }}
         """)
         
-        # 使用绝对定位布局，让背景文字在底部
-        from PySide6.QtWidgets import QWidget
-        main_widget = QWidget()
-        main_widget.setStyleSheet("background-color: #FFFFFF;")
-        
-        # 主内容区域（设备列表）
-        content_widget = QWidget(main_widget)
+        # 主内容区域（设备列表 + 提示内容），整体作为滚动内容
+        content_widget = QWidget()
+        content_widget.setStyleSheet(f"background-color: {colors['bg_primary']};")
+        # 设置大小策略，确保能够根据内容自动调整大小
+        content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(20, 20, 20, 20)
+        content_layout.setContentsMargins(0, 10, 0, 0)
         content_layout.setSpacing(0)
-        
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setStyleSheet("""
-            QScrollArea {
-                background-color: transparent;
-                border: none;
-            }
-        """)
-        
+
         self.devices_list = QListWidget()
-        self.devices_list.setSpacing(12)
+        self.devices_list.setSpacing(1)
         self.devices_list.setSelectionMode(QListWidget.NoSelection)
         self.devices_list.setFocusPolicy(Qt.NoFocus)
+        # 禁用QListWidget自己的滚动条，使用外层QScrollArea的滚动条
+        self.devices_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.devices_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 设置大小策略，允许根据内容自动调整高度
+        self.devices_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         # 设置视图模式为IconMode，允许item自由设置大小
         self.devices_list.setViewMode(QListWidget.IconMode)
         # 设置流式布局，横向排列
         self.devices_list.setFlow(QListWidget.LeftToRight)
         # 设置item大小模式为固定
         self.devices_list.setResizeMode(QListWidget.Fixed)
-        self.devices_list.setStyleSheet("""
-            QListWidget {
-                background-color: transparent;
+        # 去掉QListWidget本身的边框，但给item添加边框，并设置内边距和居中对齐
+        self.devices_list.setStyleSheet(f"""
+            QListWidget {{
                 border: none;
-            }
-            QListWidget::item {
+                background-color: {colors['bg_primary']};
+            }}
+            QListWidget::item {{
+                border: 1px solid {colors['item_border']};
+                border-radius: 8px;
                 background-color: transparent;
-                border: none;
-                margin: 6px;
-            }
-            QListWidget::item:hover {
-                background-color: transparent;
-            }
+                padding: 0px;
+                text-align: center;
+            }}
         """)
-        scroll_area.setWidget(self.devices_list)
-        content_layout.addWidget(scroll_area, 1)
+        content_layout.addWidget(self.devices_list, 0)
         
-        # 背景区域（水平居中，垂直靠底部）- 包含图标和文字
-        self._background_frame = QFrame(main_widget)
+        # 提示内容区域（作为正常内容，跟随在同事列表后面）
+        content_layout.addSpacing(12)
+        self._background_frame = QFrame(content_widget)
         self._background_frame.setStyleSheet("background-color: transparent;")
+        self._background_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._background_frame.setMinimumHeight(140)
         background_layout = QVBoxLayout(self._background_frame)
         background_layout.setAlignment(Qt.AlignCenter)
-        background_layout.setSpacing(12)
+        background_layout.setContentsMargins(0, 0, 0, 0)
+        background_layout.setSpacing(6)
         
         # 信号图标
         signal_label = QLabel()
@@ -659,36 +1455,37 @@ class AirDropView(QWidget):
             if not pixmap.isNull():
                 # 缩放图标到合适大小（32x32像素，更小）
                 scaled_pixmap = pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                # 将图标转换为黑色
-                black_pixmap = self._tint_pixmap_black(scaled_pixmap)
-                signal_label.setPixmap(black_pixmap)
-                signal_label.setStyleSheet("color: #0969da;")
+                # 根据主题着色图标
+                if self._is_dark:
+                    tinted_pixmap = self._tint_pixmap(scaled_pixmap, QColor(0, 104, 218))
+                else:
+                    tinted_pixmap = self._tint_pixmap(scaled_pixmap, QColor(0, 104, 218))
+                signal_label.setPixmap(tinted_pixmap)
+                signal_label.setStyleSheet(f"color: {colors['signal_icon']};")
             else:
                 # 如果加载失败，使用默认emoji
                 signal_label.setText("📡")
-                signal_label.setFont(QFont("SF Pro Display", 32))
-                signal_label.setStyleSheet("color: #000000;")
+                signal_label.setStyleSheet(f"color: {colors['signal_icon']}; font-size: 32px;")
         else:
             # 如果文件不存在，使用默认emoji
             signal_label.setText("📡")
-            signal_label.setFont(QFont("SF Pro Display", 32))
-            signal_label.setStyleSheet("color: #000000;")
+            signal_label.setStyleSheet(f"color: {colors['signal_icon']}; font-size: 32px;")
         background_layout.addWidget(signal_label)
         
-        # 背景文字
+        # 提示文字
         self._background_label = QLabel('"隔空投送"可让你与附近的同事立即共享。')
         self._background_label.setAlignment(Qt.AlignCenter)
-        self._background_label.setFont(QFont("SF Pro Display", 13))
-        self._background_label.setStyleSheet("color: #808080;")  # 调整为更深的灰色，更易看清
+        self._background_label.setStyleSheet(f"color: {colors['text_tertiary']}; font-size: 12px;")
         self._background_label.setWordWrap(True)
         background_layout.addWidget(self._background_label)
         
-        self._background_frame.setParent(main_widget)
+        # 将提示内容添加到布局中，单独一行，居中显示
+        content_layout.addWidget(self._background_frame, 0, Qt.AlignHCenter)
         
         # 状态标签
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("color: #8E8E93; font-size: 13px;")
+        self.status_label.setStyleSheet(f"color: {colors['text_tertiary']}; font-size: 12px;")
         self.status_label.setVisible(False)
         content_layout.addWidget(self.status_label)
         
@@ -696,14 +1493,21 @@ class AirDropView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(main_widget)
         
-        # 保存引用以便后续调整背景文字位置
-        self._main_widget = main_widget
+        # 整个内容放入滚动区域，禁用滚动条（更美观，但仍可通过鼠标滚轮滚动）
+        # 注意：setWidgetResizable(True) 会让 content_widget 的大小等于滚动区域的大小
+        # 但内容超出时仍可通过鼠标滚轮、触摸板等滚动
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidgetResizable(True)
+        # 禁用滚动条，但保留滚动功能
+        self._scroll_area.setFrameShape(QFrame.NoFrame)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setWidget(content_widget)
+        layout.addWidget(self._scroll_area)
+        
+        # 保存引用
         self._content_widget = content_widget
-        
-        # 重写resizeEvent来调整背景文字位置
-        self._update_background_label_position()
     
     def resizeEvent(self, event):
         """窗口大小改变时调整背景文字位置，并禁止窗口大小改变"""
@@ -716,10 +1520,22 @@ class AirDropView(QWidget):
                 return
         
         super().resizeEvent(event)
-        self._update_background_label_position()
+        
+        # 窗口大小改变时，更新所有 item 的宽度和 devices_list 的大小
+        if hasattr(self, 'devices_list'):
+            QTimer.singleShot(0, self._update_item_widths)
+            if self.devices_list.count() > 0:
+                QTimer.singleShot(0, self._adjust_devices_list_size)
     
-    def _tint_pixmap_black(self, pixmap: QPixmap) -> QPixmap:
-        """将图标转换为黑色"""
+    def showEvent(self, event):
+        """窗口显示时更新 item 宽度"""
+        super().showEvent(event)
+        # 窗口显示后，延迟更新 item 宽度，确保布局已完成
+        if hasattr(self, 'devices_list'):
+            QTimer.singleShot(50, self._update_item_widths)
+    
+    def _tint_pixmap(self, pixmap: QPixmap, color: QColor) -> QPixmap:
+        """将图标着色为指定颜色"""
         # 创建新的pixmap，使用源pixmap的尺寸
         result = QPixmap(pixmap.size())
         result.fill(Qt.transparent)
@@ -727,13 +1543,13 @@ class AirDropView(QWidget):
         painter = QPainter(result)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # 使用源pixmap作为mask，然后填充黑色
+        # 使用源pixmap作为mask，然后填充指定颜色
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.drawPixmap(0, 0, pixmap)
         
-        # 使用CompositionMode_SourceIn将颜色改为黑色
+        # 使用CompositionMode_SourceIn将颜色改为指定颜色
         painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
-        painter.fillRect(result.rect(), QColor(9, 105, 218))  # 黑色
+        painter.fillRect(result.rect(), color)
         
         painter.end()
         return result
@@ -801,19 +1617,6 @@ class AirDropView(QWidget):
                         widget._show_airdrop_window()
                         break
     
-    def _update_background_label_position(self):
-        """更新背景区域位置（水平居中，垂直靠底部）"""
-        if not hasattr(self, '_background_frame'):
-            return
-        
-        # 背景区域位置：水平居中，距离底部30像素（更靠近底部）
-        frame_width = 300
-        frame_height = 120
-        x = (self.width() - frame_width) // 2
-        y = self.height() - frame_height - 30  # 从80改为30，更靠近底部
-        
-        self._background_frame.setGeometry(x, y, frame_width, frame_height)
-        self._background_frame.lower()  # 置于底层，作为背景
     
     def _setup_drag_detection(self):
         """设置拖拽检测（用于检测窗口拖到边缘）"""
@@ -859,6 +1662,10 @@ class AirDropView(QWidget):
                 # 首次检测到位置变化，认为是开始拖拽
                 self._drag_detected = True
                 self._position_unchanged_count = 0
+                # 设置拖动标志并隐藏所有气泡
+                if not self._is_dragging:
+                    self._is_dragging = True
+                    self._hide_all_bubbles()
             
             self._last_window_pos = current_pos
             self._position_unchanged_count = 0  # 重置未变化计数
@@ -867,13 +1674,21 @@ class AirDropView(QWidget):
             if self._drag_detected:
                 # 如果鼠标左键还在按下，说明还在拖拽中（可能拖到了边缘或暂时停止移动）
                 if is_left_button_pressed:
-                    # 鼠标还在按下，不认为拖拽结束
+                    # 鼠标还在按下，保持拖动状态，确保气泡保持隐藏
+                    if not self._is_dragging:
+                        self._is_dragging = True
+                        self._hide_all_bubbles()
                     self._position_unchanged_count = 0
                 else:
                     # 鼠标已经释放，但需要确认位置确实不再变化（避免误判）
                     self._position_unchanged_count += 1
                     # 只有当位置连续多次（约200ms）没有变化，且鼠标已释放时，才认为拖拽结束
                     if self._position_unchanged_count >= 4:  # 4次 * 50ms = 200ms
+                        # 拖动结束，重置标志并重新定位气泡
+                        if self._is_dragging:
+                            self._is_dragging = False
+                            self._drag_detected = False
+                            QTimer.singleShot(100, self._reposition_all_bubbles)
                         # 检查窗口是否超出屏幕（使用可用区域，排除任务栏）
                         screen = QApplication.primaryScreen().availableGeometry()
                         window_rect = self.geometry()
@@ -908,6 +1723,18 @@ class AirDropView(QWidget):
         import sys
         import platform
         
+        # 点击窗口时，延迟提升所有气泡窗口（防止被窗口激活覆盖）
+        # macOS 上点击任何位置都会激活窗口，Windows 上只有点击标题栏才会激活
+        if platform.system() == "Darwin":
+            # macOS: 点击任何位置都可能激活窗口，延迟提升气泡
+            # 延迟稍长，确保窗口激活事件已经处理完
+            QTimer.singleShot(200, self._bring_all_bubbles_to_front)
+        else:
+            # Windows: 只有点击标题栏才会激活，检查是否在标题栏区域
+            y_pos = event.position().y()
+            if y_pos <= 50:
+                QTimer.singleShot(200, self._bring_all_bubbles_to_front)
+        
         # 添加调试日志
         y_pos = event.position().y()
         is_title_bar = y_pos <= 50  # macOS 标题栏可能更高，扩大到50像素
@@ -933,8 +1760,11 @@ class AirDropView(QWidget):
                 delta = (event.globalPosition().toPoint() - self._drag_start_pos).manhattanLength()
                 if delta > 5:
                     self._is_dragging = True
+                    self._hide_all_bubbles()
             
             if self._is_dragging:
+                # 拖动期间持续隐藏所有气泡（防止被其他逻辑重新显示）
+                self._hide_all_bubbles()
                 # 计算窗口新位置：鼠标移动距离 = 窗口移动距离
                 mouse_delta = event.globalPosition().toPoint() - self._drag_start_pos
                 new_pos = self._drag_window_pos + mouse_delta
@@ -976,8 +1806,13 @@ class AirDropView(QWidget):
         
         self._drag_start_pos = None
         self._drag_window_pos = None
+        was_dragging = self._is_dragging
         self._is_dragging = False
+        self._drag_detected = False  # 重置拖动检测标志
         super().mouseReleaseEvent(event)
+        if was_dragging:
+            # 拖动结束后，延迟一点再重新定位气泡，确保窗口位置已稳定
+            QTimer.singleShot(100, self._reposition_all_bubbles)
     
     def _animate_from_icon(self, target_rect: QRect):
         """动画：窗口从隐藏位置滑出显示（与隐藏动画对应）"""
@@ -1205,6 +2040,8 @@ class AirDropView(QWidget):
                         self._before_hide_rect = None
                     # 标记显示动画完成，允许位置检测
                     self._is_showing_animation = False
+                    # 重新定位气泡到头像位置
+                    self._reposition_all_bubbles()
                 except Exception as e:
                     import sys
                     import traceback
@@ -1338,6 +2175,8 @@ class AirDropView(QWidget):
                 self._was_hidden_to_icon = True
                 # 保存隐藏位置（用于鼠标检测）
                 self._hidden_rect = target_rect
+                # 窗口隐藏后，重定位现有气泡到右上角
+                self._reposition_all_bubbles()
                 
                 # 真正隐藏窗口，这样系统不会调整位置
                 self.hide()
@@ -1368,6 +2207,8 @@ class AirDropView(QWidget):
                 # 标记窗口被隐藏
                 self._was_hidden_to_icon = True
                 self._hidden_rect = target_rect
+                # 窗口隐藏后，重定位现有气泡到右上角
+                self._reposition_all_bubbles()
                 
                 # 隐藏窗口
                 self.hide()
@@ -1396,40 +2237,57 @@ class AirDropView(QWidget):
         """初始化传输管理器（异步执行，避免阻塞UI）"""
         _debug_log("_init_transfer_manager called")
         def init_in_thread():
-            """在后台线程中执行耗时操作"""
-            try:
-                _debug_log("Fetching user info for AirDrop...")
-                api_client = ApiClient.from_config()
-                user_info = api_client._get("/api/user_info")
-                
-                if isinstance(user_info, dict) and user_info.get("status") == "success":
-                    data = user_info.get("data", {})
-                    user_id = str(data.get("user_id", ""))
-                    user_name = data.get("name", "Unknown")
-                    avatar_url = data.get("avatar_url")
-                    _debug_log(f"User info loaded: id={user_id}, name={user_name}")
+            """在后台线程中执行耗时操作，带重试机制"""
+            import time
+            max_retries = 3
+            retry_delay = 2  # 秒
+            
+            for attempt in range(max_retries):
+                try:
+                    _debug_log(f"Fetching user info for AirDrop... (attempt {attempt + 1}/{max_retries})")
+                    api_client = ApiClient.from_config()
+                    user_info = api_client._get("/api/user_info")
                     
-                    _debug_log("Queueing _create_transfer_manager on UI thread")
-                    QMetaObject.invokeMethod(
-                        self,
-                        "_createTransferManagerSlot",
-                        Qt.QueuedConnection,
-                        Q_ARG(str, user_id),
-                        Q_ARG(str, user_name),
-                        Q_ARG(str, avatar_url or "")
-                    )
-                else:
-                    _debug_log("User info response invalid, cannot start AirDrop")
-                    def show_error():
-                        Toast.show_message(self, "无法获取用户信息，请先登录")
-                    QTimer.singleShot(0, show_error)
-            except Exception as e:
-                import sys
-                logger.error(f"初始化传输管理器失败: {e}")
-                _debug_log(f"init_in_thread exception: {e}")
-                def show_error():
-                    Toast.show_message(self, f"初始化失败: {e}")
-                QTimer.singleShot(0, show_error)
+                    if isinstance(user_info, dict) and user_info.get("status") == "success":
+                        data = user_info.get("data", {})
+                        user_id = str(data.get("user_id", ""))
+                        user_name = data.get("name", "Unknown")
+                        avatar_url = data.get("avatar_url")
+                        # 获取当前用户的组ID
+                        self._current_user_group_id = data.get("group_id") or data.get("team_id")
+                        _debug_log(f"User info loaded: id={user_id}, name={user_name}, group_id={self._current_user_group_id}")
+                        
+                        _debug_log("Queueing _create_transfer_manager on UI thread")
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_createTransferManagerSlot",
+                            Qt.QueuedConnection,
+                            Q_ARG(str, user_id),
+                            Q_ARG(str, user_name),
+                            Q_ARG(str, avatar_url or "")
+                        )
+                        return  # 成功，退出重试循环
+                    else:
+                        _debug_log("User info response invalid, cannot start AirDrop")
+                        def show_error():
+                            Toast.show_message(self, "无法获取用户信息，请先登录")
+                        QTimer.singleShot(0, show_error)
+                        return  # 业务错误，不重试
+                except Exception as e:
+                    logger.warning(f"初始化传输管理器失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    _debug_log(f"init_in_thread exception (attempt {attempt + 1}/{max_retries}): {e}")
+                    
+                    if attempt < max_retries - 1:
+                        # 还有重试机会，等待后重试
+                        _debug_log(f"等待 {retry_delay} 秒后重试...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 指数退避
+                    else:
+                        # 所有重试都失败了
+                        logger.error(f"初始化传输管理器失败（已重试 {max_retries} 次）: {e}")
+                        def show_error():
+                            Toast.show_message(self, f"初始化失败: {e}（已重试 {max_retries} 次）")
+                        QTimer.singleShot(0, show_error)
         
         # 在后台线程中执行API调用
         import threading
@@ -1444,10 +2302,12 @@ class AirDropView(QWidget):
         """创建 TransferManager，并在后台启动服务，避免阻塞 UI"""
         try:
             _debug_log(f"Creating TransferManager instance (queued) for {user_id}")
+            self._current_user_id = user_id  # 保存当前用户的 user_id
             self._transfer_manager = TransferManager(
                 user_id=user_id,
                 user_name=user_name,
-                avatar_url=avatar_url
+                avatar_url=avatar_url,
+                group_id=self._current_user_group_id
             )
             
             self._transfer_manager.device_added.connect(self._on_device_added)
@@ -1462,13 +2322,29 @@ class AirDropView(QWidget):
             self.transfer_request_result.connect(self._on_transfer_request_result_signal)
             
             def start_manager():
-                try:
-                    self._transfer_manager.start()
-                    QTimer.singleShot(0, self._on_transfer_manager_started)
-                except Exception as exc:
-                    logger.error(f"启动 TransferManager 失败: {exc}")
-                    _debug_log(f"TransferManager.start() failed: {exc}")
-                    QTimer.singleShot(0, lambda: Toast.show_message(self, f"初始化失败: {exc}"))
+                """启动 TransferManager，带重试机制"""
+                import time
+                max_retries = 3
+                retry_delay = 2  # 秒
+                
+                for attempt in range(max_retries):
+                    try:
+                        self._transfer_manager.start()
+                        QTimer.singleShot(0, self._on_transfer_manager_started)
+                        return  # 成功，退出重试循环
+                    except Exception as exc:
+                        logger.warning(f"启动 TransferManager 失败 (尝试 {attempt + 1}/{max_retries}): {exc}")
+                        _debug_log(f"TransferManager.start() failed (attempt {attempt + 1}/{max_retries}): {exc}")
+                        
+                        if attempt < max_retries - 1:
+                            # 还有重试机会，等待后重试
+                            _debug_log(f"等待 {retry_delay} 秒后重试...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # 指数退避
+                        else:
+                            # 所有重试都失败了
+                            logger.error(f"启动 TransferManager 失败（已重试 {max_retries} 次）: {exc}")
+                            QTimer.singleShot(0, lambda: Toast.show_message(self, f"初始化失败: {exc}（已重试 {max_retries} 次）"))
             
             threading.Thread(target=start_manager, daemon=True).start()
         except Exception as e:
@@ -1484,35 +2360,258 @@ class AirDropView(QWidget):
         self._refresh_timer.start(2000)
         _debug_log("AirDrop device refresh timer started (2s)")
     
+    def _get_device_unique_id(self, device: DeviceInfo) -> str:
+        """获取设备的唯一标识（user_id + ip，支持同一账号多个设备）"""
+        return f"{device.user_id}::{device.ip}"
+    
+    def _update_device_group_cache(self, device: DeviceInfo, reorder_if_changed: bool = False):
+        """根据设备自身携带的组信息更新缓存"""
+        incoming_group_id = getattr(device, "group_id", None)
+        current_group_id = self._device_group_ids.get(device.user_id)
+        
+        if device.user_id not in self._device_group_ids:
+            self._device_group_ids[device.user_id] = incoming_group_id
+            return
+        
+        if incoming_group_id and current_group_id != incoming_group_id:
+            self._device_group_ids[device.user_id] = incoming_group_id
+            if reorder_if_changed:
+                QTimer.singleShot(0, lambda uid=device.user_id: self._reorder_device(uid))
+    
     def _on_device_added(self, device: DeviceInfo):
         """设备添加"""
-        _debug_log(f"[UI] Device discovered in AirDropView: {device.name} ({device.ip}) user_id={device.user_id}")
+        device_unique_id = self._get_device_unique_id(device)
+        _debug_log(f"[UI] Device discovered in AirDropView: {device.name} ({device.ip}) user_id={device.user_id}, unique_id={device_unique_id}")
+        
+        # 使用 user_id + ip 作为唯一标识，支持同一账号多个设备
         for i in range(self.devices_list.count()):
             item = self.devices_list.item(i)
             widget = self.devices_list.itemWidget(item)
-            if isinstance(widget, DeviceItemWidget) and widget.device.user_id == device.user_id:
-                return
+            if isinstance(widget, DeviceItemWidget):
+                existing_unique_id = self._get_device_unique_id(widget.device)
+                if existing_unique_id == device_unique_id:
+                    _debug_log(f"[UI] Device already exists: {device_unique_id}, skipping")
+                    return  # 相同的设备（user_id + ip）已存在
+        
+        _debug_log(f"[UI] Adding new device: {device_unique_id}")
+        
+        # 记录设备发现时间（按 user_id 记录，同一账号的设备共享发现时间）
+        import time
+        if device.user_id not in self._device_discovery_times:
+            self._device_discovery_times[device.user_id] = time.time()
+        
+        # 记录设备携带的组信息（每个客户端自行广播，无需单独请求接口）
+        self._update_device_group_cache(device, reorder_if_changed=True)
+        
+        # 在正确的位置插入设备（根据排序规则）
+        self._add_device_widget_at_sorted_position(device)
+    
+    def _get_device_sort_key(self, user_id: str) -> tuple:
+        """获取设备的排序键"""
+        # 1. 优先级：最近传输过的 > 同组的 > 其他组的
+        has_transfer = user_id in self._device_transfer_times
+        is_same_group = False
+        if self._current_user_group_id and user_id in self._device_group_ids:
+            device_group_id = self._device_group_ids[user_id]
+            is_same_group = (device_group_id == self._current_user_group_id)
+        
+        # 优先级值：0=最近传输过的，1=同组的，2=其他组的
+        if has_transfer:
+            priority = 0
+            # 最近传输过的按传输时间倒序
+            sort_time = self._device_transfer_times[user_id]
+        elif is_same_group:
+            priority = 1
+            # 同组的按发现时间倒序
+            sort_time = self._device_discovery_times.get(user_id, 0)
+        else:
+            priority = 2
+            # 其他组的按发现时间倒序
+            sort_time = self._device_discovery_times.get(user_id, 0)
+        
+        # 返回排序键：(优先级, -时间戳) 时间戳取负号实现倒序
+        return (priority, -sort_time)
+    
+    def _find_insert_position(self, device: DeviceInfo) -> int:
+        """找到设备应该插入的位置（根据排序规则）"""
+        new_key = self._get_device_sort_key(device.user_id)
+        
+        # 遍历现有items，找到第一个应该在新设备后面的位置
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget):
+                existing_key = self._get_device_sort_key(widget.device.user_id)
+                # 如果新设备的排序键小于现有设备，应该插入到这里
+                if new_key < existing_key:
+                    return i
+        
+        # 如果没有找到合适的位置，插入到最后
+        return self.devices_list.count()
+    
+    def _add_device_widget_at_sorted_position(self, device: DeviceInfo):
+        """在排序后的正确位置添加设备卡片"""
+        # 如果是同一账号的其他设备，将名称改为"你自己"
+        display_device = device
+        if self._current_user_id and device.user_id == self._current_user_id:
+            # 创建新的 DeviceInfo 对象，将 name 改为"你自己"
+            display_device = DeviceInfo(
+                name="你自己",
+                user_id=device.user_id,
+                ip=device.ip,
+                port=device.port,
+                avatar_url=device.avatar_url,
+                device_name=device.device_name,
+                group_id=getattr(device, "group_id", None)
+            )
         
         item = QListWidgetItem()
-        widget = DeviceItemWidget(device)
+        widget = DeviceItemWidget(display_device)
         widget.file_dropped.connect(self._on_file_dropped)
-        self.devices_list.addItem(item)
+        
+        # 找到正确的插入位置
+        insert_pos = self._find_insert_position(device)
+        
+        # 在正确位置插入
+        self.devices_list.insertItem(insert_pos, item)
         self.devices_list.setItemWidget(item, widget)
+        # 设置父窗口引用，用于主题适配
+        widget._parent_airdrop_view = self
+        # 应用当前主题颜色
+        colors = self._get_theme_colors()
+        widget._update_theme_colors(colors)
         
         # 根据widget的sizeHint设置item大小，确保头像和文字完全显示
         size_hint = widget.sizeHint()
         if size_hint.isValid():
             item.setSizeHint(size_hint)
+            # 确保 item 中的内容水平居中
+            item.setTextAlignment(Qt.AlignCenter)
+        
+        # 更新所有 item 的宽度
+        self._update_item_widths()
+        # 调整 QListWidget 大小以显示所有内容
+        self._adjust_devices_list_size()
+    
+    def _add_device_widget(self, device: DeviceInfo):
+        """统一添加设备卡片（保留用于兼容性）"""
+        self._add_device_widget_at_sorted_position(device)
+    
+    def _update_item_widths(self):
+        """根据列表数量动态更新所有 item 的宽度"""
+        if not hasattr(self, 'devices_list') or self.devices_list.count() == 0:
+            return
+        
+        # 获取 devices_list 的可用宽度（viewport 宽度，已排除滚动条）
+        available_width = self.devices_list.viewport().width()
+        if available_width <= 0:
+            # 如果宽度还没计算出来，延迟重试
+            QTimer.singleShot(10, self._update_item_widths)
+            return
+
+        # 根据列表数量动态计算每行显示的 item 数量
+        total_count = self.devices_list.count()
+        if total_count >= 5:
+            # 数量 >= 5：每行4个
+            items_per_row = 4
+        elif total_count == 4:
+            # 数量 = 4：每行2个
+            items_per_row = 2
+        elif total_count == 3:
+            # 数量 = 3：每行3个
+            items_per_row = 3
+        elif total_count == 2:
+            # 数量 = 2：每行2个
+            items_per_row = 2
+        else:  # total_count == 1
+            # 数量 = 1：每行1个
+            items_per_row = 1
+        
+        # 计算每个 item 的宽度：可用宽度 / 每行数量 (2*items_per_row 为边框自身所占总宽度)
+        item_width = (available_width - 2*items_per_row) // items_per_row
+        
+        # 更新所有 item 的宽度
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            if item:
+                widget = self.devices_list.itemWidget(item)
+                if widget:
+                    # 获取当前 item 的高度
+                    current_size = item.sizeHint()
+                    current_height = current_size.height() if current_size.isValid() else 118
+                    # 更新 item 的宽度，保持高度不变
+                    item.setSizeHint(QSize(item_width, current_height))
+                    # 更新 widget 的最小宽度
+                    widget.setMinimumWidth(item_width)
+    
+    def _adjust_devices_list_size(self):
+        """调整 devices_list 的大小以显示所有内容"""
+        if self.devices_list.count() == 0:
+            self.devices_list.setMinimumHeight(0)
+            self.devices_list.setMaximumHeight(0)
+            return
+        
+        # 获取第一个 item 的大小作为参考
+        first_item = self.devices_list.item(0)
+        if not first_item:
+            return
+        
+        item_size = first_item.sizeHint()
+        if not item_size.isValid():
+            return
+        
+        item_width = item_size.width()
+        item_height = item_size.height()
+        spacing = self.devices_list.spacing()
+        
+        # 获取 QListWidget 的可用宽度
+        # 需要等待布局完成，所以使用 QTimer 延迟执行
+        QTimer.singleShot(0, lambda: self._do_adjust_devices_list_size(item_width, item_height, spacing))
+    
+    def _do_adjust_devices_list_size(self, item_width: int, item_height: int, spacing: int):
+        """实际执行调整大小"""
+        if self.devices_list.count() == 0:
+            self.devices_list.setMinimumHeight(0)
+            # PySide6 6.5 兼容：使用一个合理的最大值，而不是硬编码的大数字
+            self.devices_list.setMaximumHeight(10000)  # 足够大的值
+            return
+        
+        # 获取 QListWidget 的可用宽度（减去滚动条宽度）
+        available_width = self.devices_list.viewport().width()
+        if available_width <= 0:
+            # 如果宽度还没计算出来，延迟重试
+            QTimer.singleShot(10, lambda: self._do_adjust_devices_list_size(item_width, item_height, spacing))
+            return
+        
+        # 计算每行能放多少个 item
+        items_per_row = max(1, (available_width + spacing) // (item_width + spacing))
+        
+        # 计算需要多少行
+        total_items = self.devices_list.count()
+        rows = (total_items + items_per_row - 1) // items_per_row  # 向上取整
+        
+        # 计算总高度：行数 * (item高度 + 间距) + 一些边距
+        total_height = rows * (item_height + spacing) + spacing
+        
+        # 设置最小和最大高度，确保所有内容都能显示，但不阻止布局系统调整
+        self.devices_list.setMinimumHeight(total_height)
+        self.devices_list.setMaximumHeight(total_height)
     
     def _on_device_removed(self, device_name: str):
-        """设备移除"""
+        """设备移除（通过设备名称，可能移除多个同名设备）"""
         _debug_log(f"[UI] Device removed from AirDropView: {device_name}")
-        for i in range(self.devices_list.count()):
+        # 注意：device_name 可能对应多个设备（同一账号多个设备），需要移除所有匹配的
+        removed = False
+        for i in range(self.devices_list.count() - 1, -1, -1):  # 倒序遍历，避免索引问题
             item = self.devices_list.item(i)
             widget = self.devices_list.itemWidget(item)
             if isinstance(widget, DeviceItemWidget) and widget.device.name == device_name:
                 self.devices_list.takeItem(i)
-                break
+                removed = True
+        
+        if removed:
+            # 调整 QListWidget 大小
+            self._adjust_devices_list_size()
     
     def _on_file_dropped(self, file_path: Path, device: DeviceInfo):
         """文件拖放到设备头像"""
@@ -1533,7 +2632,9 @@ class AirDropView(QWidget):
         
         self._transferring = True
         self._current_target = device
-        self._set_device_status(device, "等待中...", "#8E8E93")
+        colors = self._get_theme_colors()
+        self._set_device_status(device, "等待中...", colors['status_waiting'])
+        self._start_wait_countdown(device, 60)
         
         def send_in_thread():
             result = self._transfer_manager.send_transfer_request(file_path, device)
@@ -1545,6 +2646,7 @@ class AirDropView(QWidget):
                 self._transferring = False
                 self.status_label.setVisible(False)
                 self._set_device_status(device, None)
+                self._stop_wait_countdown()
                 Toast.show_message(self, f"请求失败: {result['message']}")
         
         import threading
@@ -1590,19 +2692,29 @@ class AirDropView(QWidget):
 
     def _handle_transfer_request_result(self, result: dict, file_path: Path, device: DeviceInfo, request_id: str):
         """在主线程处理传输请求结果"""
+        self._stop_wait_countdown()
         if result.get("success") and result.get("accepted"):
             self._set_device_status(device, None)
             self._transfer_file(file_path, device, request_id)
             return
         
+        # 处理拒绝或失败的情况
         self._transferring = False
         self.status_label.setVisible(False)
-        self._set_device_status(device, "已拒绝", "#FF3B30")
-        self._current_target = None
-        if result.get("accepted") is False:
-            Toast.show_message(self, f"{device.name} 拒绝了传输请求")
+        colors = self._get_theme_colors()
+        
+        # 如果明确是拒绝（success=True但accepted=False），显示"已拒绝"
+        if result.get("success") and not result.get("accepted"):
+            self._set_device_status(device, "已拒绝", colors['status_error'])
+            message = result.get("message", "已拒绝")
+            Toast.show_message(self, f"对方: {message}")
         else:
-            Toast.show_message(self, "传输请求超时")
+            # 其他情况（超时、失败等）
+            message = result.get("message", "请求失败")
+            self._set_device_status(device, message, colors['status_error'])
+            Toast.show_message(self, f"传输失败: {message}")
+        
+        self._current_target = None
     
     def _transfer_file(self, file_path: Path, device: DeviceInfo, request_id: str):
         """传输文件"""
@@ -1624,7 +2736,11 @@ class AirDropView(QWidget):
                                      filename: str, file_size: int, sender_ip: str = "", sender_port: int = 8765):
         """收到传输请求"""
         _debug_log(f"收到传输请求: request_id={request_id}, sender_ip={sender_ip}, sender_port={sender_port}")
-        is_clipboard = filename.startswith('clipboard_') or filename.startswith('clipboard_image_')
+        is_clipboard = (
+            filename.startswith('clipboard_')
+            or filename.startswith('clipboard_image_')
+            or filename.startswith('clipboard_img-')
+        )
         is_clipboard_image = self._is_clipboard_image_filename(filename)
         clipboard_image_format = self._extract_clipboard_image_format(filename) if is_clipboard_image else None
         is_clipboard_image_base64 = filename.endswith('.b64img')
@@ -1675,178 +2791,65 @@ class AirDropView(QWidget):
         filename = request_info['filename']
         
         # 检测是否是剪贴板内容（通过文件名判断）
-        is_clipboard = request_info.get('is_clipboard', filename.startswith('clipboard_'))
+        is_clipboard = request_info.get(
+            'is_clipboard',
+            filename.startswith('clipboard_') or filename.startswith('clipboard_image_') or filename.startswith('clipboard_img-')
+        )
         is_clipboard_image = request_info.get('is_clipboard_image', False)
         
-        if is_clipboard:
-            # 使用剪贴板接收对话框
-            dialog = ClipboardReceiveDialog(
-                sender_name=request_info['sender_name'],
-                is_image=is_clipboard_image,
-                parent=self
-            )
-            request_info['dialog'] = dialog
-            dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowStaysOnTopHint)
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            dialog.finished.connect(lambda _=None, rid=request_id: self._on_request_dialog_closed(rid))
-            
-            # 保存request_id和filename到对话框，以便后续使用
-            dialog._request_id = request_id
-            dialog._filename = filename
-            
-            def on_paste_to_clipboard():
-                # 标记为已接受，等待文件接收
-                if request_id in self._pending_requests:
-                    self._pending_requests[request_id]['accepted'] = True
-                    self._pending_requests[request_id]['paste_to_clipboard'] = True  # 标记为需要放入剪贴板
-                
-                # 更新服务器端状态
-                if self._transfer_manager and self._transfer_manager._server:
-                    sender_ip = request_info.get('sender_ip', '')
-                    sender_port = request_info.get('sender_port', 8765)
-                    if sender_ip and self._transfer_manager._server:
-                        with self._transfer_manager._server._lock:
-                            if request_id in self._transfer_manager._server._pending_requests:
-                                self._transfer_manager._server._pending_requests[request_id]['status'] = 'accepted'
-                            else:
-                                self._transfer_manager._server._pending_requests[request_id] = {
-                                    'status': 'accepted',
-                                    'timestamp': time.time(),
-                                    'sender_ip': sender_ip,
-                                    'sender_port': sender_port,
-                                    'filename': filename,
-                                    'file_size': request_info.get('file_size', 0)
-                                }
-            
-            def on_save_as_file():
-                # 标记为已接受，等待文件接收
-                if request_id in self._pending_requests:
-                    self._pending_requests[request_id]['accepted'] = True
-                    self._pending_requests[request_id]['paste_to_clipboard'] = False  # 标记为需要保存为文件
-                
-                # 更新服务器端状态
-                if self._transfer_manager and self._transfer_manager._server:
-                    sender_ip = request_info.get('sender_ip', '')
-                    sender_port = request_info.get('sender_port', 8765)
-                    if sender_ip and self._transfer_manager._server:
-                        with self._transfer_manager._server._lock:
-                            if request_id in self._transfer_manager._server._pending_requests:
-                                self._transfer_manager._server._pending_requests[request_id]['status'] = 'accepted'
-                            else:
-                                self._transfer_manager._server._pending_requests[request_id] = {
-                                    'status': 'accepted',
-                                    'timestamp': time.time(),
-                                    'sender_ip': sender_ip,
-                                    'sender_port': sender_port,
-                                    'filename': filename,
-                                    'file_size': request_info.get('file_size', 0)
-                                }
-            
-            def on_clipboard_rejected():
-                auto_expired = False
-                if request_id in self._pending_requests:
-                    auto_expired = self._pending_requests[request_id].get('auto_expired', False)
-                if self._transfer_manager and self._transfer_manager._server and not auto_expired:
-                    self._transfer_manager._server.confirm_transfer(request_id, False)
-                if request_id in self._pending_requests:
-                    del self._pending_requests[request_id]
-                if not auto_expired:
-                    Toast.show_message(self, "已拒绝传输请求")
-            
-            dialog.paste_to_clipboard.connect(on_paste_to_clipboard)
-            if not is_clipboard_image:
-                dialog.save_as_file.connect(on_save_as_file)
-            dialog.rejected.connect(on_clipboard_rejected)
-            return
-        
-        # 普通文件传输对话框
-        dialog = TransferConfirmDialog(
+        bubble = TransferRequestBubble(
             sender_name=request_info['sender_name'],
             filename=request_info['filename'],
             file_size=request_info['file_size'],
-            parent=self
+            parent=None,
+            is_clipboard=is_clipboard,
+            is_clipboard_image=is_clipboard_image
         )
-        request_info['dialog'] = dialog
+        request_info['dialog'] = bubble
+        bubble.destroyed.connect(lambda _=None, rid=request_id: self._on_request_dialog_closed(rid))
         
-        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowStaysOnTopHint)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-        dialog.finished.connect(lambda _=None, rid=request_id: self._on_request_dialog_closed(rid))
-        
-        def on_accepted():
+        def on_accept_clipboard(paste_to_clipboard: bool, open_after: bool = False):
             try:
                 if not self._transfer_manager:
-                    _debug_log(f"TransferManager 未初始化")
                     Toast.show_message(self, "传输服务未初始化")
                     return
                 
-                # 直接从UI层的_pending_requests获取请求信息（包含sender_ip和sender_port）
                 if request_id not in self._pending_requests:
-                    # 检查是否已经接受过（可能已经被延迟删除）
-                    # 尝试从服务器端获取信息
-                    if self._transfer_manager and self._transfer_manager._server:
-                        with self._transfer_manager._server._lock:
-                            server_request = self._transfer_manager._server._pending_requests.get(request_id)
-                            if server_request and server_request.get('status') == 'accepted':
-                                # 请求已经被接受，正在传输中，不显示提示
-                                return
                     Toast.show_message(self, "请求不存在，请让发送方重新发送")
                     return
                 
-                # 检查是否已经接受过
-                request_info = self._pending_requests[request_id]
-                if request_info.get('accepted', False):
-                    # 已接受，不显示提示
+                req_local = self._pending_requests[request_id]
+                if req_local.get('accepted', False):
                     return
                 
-                request_info = self._pending_requests[request_id]
-                sender_ip = request_info.get('sender_ip', '')
-                sender_port = request_info.get('sender_port', 8765)
-                
+                sender_ip = req_local.get('sender_ip', '')
+                sender_port = req_local.get('sender_port', 8765)
                 if not sender_ip:
                     Toast.show_message(self, "无法获取发送端信息，请让发送方重新发送")
                     return
                 
-                # 先尝试在服务器端确认请求状态（如果服务器端还有这个请求）
-                # 注意：即使服务器端没有请求，我们仍然可以通知发送端接受
                 if self._transfer_manager._server:
-                    # 检查服务器端是否有这个请求
                     with self._transfer_manager._server._lock:
                         if request_id in self._transfer_manager._server._pending_requests:
                             self._transfer_manager._server._pending_requests[request_id]['status'] = 'accepted'
                         else:
-                            # 尝试在服务器端重新创建请求记录（用于后续文件上传）
                             self._transfer_manager._server._pending_requests[request_id] = {
                                 'status': 'accepted',
                                 'timestamp': time.time(),
                                 'sender_ip': sender_ip,
                                 'sender_port': sender_port,
-                                'filename': request_info.get('filename', 'unknown'),
-                                'file_size': request_info.get('file_size', 0)
+                                'filename': filename,
+                                'file_size': req_local.get('file_size', 0)
                             }
                 
-                # 注意：不需要调用 accept_transfer 通知发送端
-                # 因为发送端已经在轮询接收端的 /transfer_status 接口
-                # 接收端只需要更新自己的状态为 accepted，发送端轮询时就能看到 accepted 状态
-                # 不显示"已接受"提示，直接开始传输
-                
-                # 接受后，标记为已接受，但不要删除请求
-                # 请求将在文件接收完成时（_on_file_received）删除
-                # 这样可以确保进度更新时能找到请求信息
-                if request_id in self._pending_requests:
-                    self._pending_requests[request_id]['accepted'] = True
+                req_local['accepted'] = True
+                req_local['paste_to_clipboard'] = paste_to_clipboard
+                req_local['open_after_accept'] = open_after
+                bubble.close()
             except Exception as e:
-                import traceback
-                traceback.print_exc()
-                Toast.show_message(self, f"接受请求失败: {e}")
+                Toast.show_message(self, f"接受失败: {e}")
         
-        def on_rejected():
-            # 更新服务器端的请求状态为 rejected
-            # 发送端会通过轮询 /transfer_status 接口来获取这个状态
-            # 不需要调用 reject_transfer 向发送端发送通知，因为发送端没有服务器来接收
+        def on_clipboard_rejected():
             auto_expired = False
             if request_id in self._pending_requests:
                 auto_expired = self._pending_requests[request_id].get('auto_expired', False)
@@ -1854,13 +2857,93 @@ class AirDropView(QWidget):
                 self._transfer_manager._server.confirm_transfer(request_id, False)
             if request_id in self._pending_requests:
                 del self._pending_requests[request_id]
-            if not auto_expired:
-                Toast.show_message(self, "已拒绝传输请求")
+            bubble.close()
         
-        # 注意：TransferConfirmDialog 定义了自定义的 accepted/rejected 信号
-        # 需要直接连接，而不是使用 QDialog 的 accepted/rejected 信号
-        dialog.accepted.connect(on_accepted)  # 这是自定义信号
-        dialog.rejected.connect(on_rejected)  # 这是自定义信号
+        if is_clipboard:
+            if is_clipboard_image:
+                # 图片：接受并打开（主按钮），或拒绝
+                bubble.accepted_open.connect(lambda: on_accept_clipboard(False, True))
+            else:
+                bubble.accepted.connect(lambda: on_accept_clipboard(True, False))  # 放入剪贴板
+                bubble.save_as_file.connect(lambda: on_accept_clipboard(False, False))
+            bubble.rejected.connect(on_clipboard_rejected)
+            self._position_request_bubble(bubble, request_info)
+            bubble.show()
+            bubble.bring_to_front()
+            return
+        
+        # 普通文件：使用同一气泡（非剪贴板）
+        file_bubble = bubble  # 已创建的 bubble，但 is_clipboard=False
+        
+        def on_accept_common(open_after: bool = False):
+            try:
+                if not self._transfer_manager:
+                    _debug_log("TransferManager 未初始化")
+                    Toast.show_message(self, "传输服务未初始化")
+                    return
+                
+                # 直接从UI层的_pending_requests获取请求信息（包含sender_ip和sender_port）
+                if request_id not in self._pending_requests:
+                    if self._transfer_manager and self._transfer_manager._server:
+                        with self._transfer_manager._server._lock:
+                            server_request = self._transfer_manager._server._pending_requests.get(request_id)
+                            if server_request and server_request.get('status') == 'accepted':
+                                return
+                    Toast.show_message(self, "请求不存在，请让发送方重新发送")
+                    return
+                
+                # 检查是否已经接受过
+                request_info_local = self._pending_requests[request_id]
+                if request_info_local.get('accepted', False):
+                    return
+                
+                sender_ip = request_info_local.get('sender_ip', '')
+                sender_port = request_info_local.get('sender_port', 8765)
+                
+                if not sender_ip:
+                    Toast.show_message(self, "无法获取发送端信息，请让发送方重新发送")
+                    return
+                
+                if self._transfer_manager._server:
+                    with self._transfer_manager._server._lock:
+                        if request_id in self._transfer_manager._server._pending_requests:
+                            self._transfer_manager._server._pending_requests[request_id]['status'] = 'accepted'
+                        else:
+                            self._transfer_manager._server._pending_requests[request_id] = {
+                                'status': 'accepted',
+                                'timestamp': time.time(),
+                                'sender_ip': sender_ip,
+                                'sender_port': sender_port,
+                                'filename': request_info_local.get('filename', 'unknown'),
+                                'file_size': request_info_local.get('file_size', 0)
+                            }
+                
+                if request_id in self._pending_requests:
+                    self._pending_requests[request_id]['accepted'] = True
+                    self._pending_requests[request_id]['open_after_accept'] = open_after
+                file_bubble.close()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                Toast.show_message(self, f"接受请求失败: {e}")
+        
+        def on_rejected():
+            auto_expired = False
+            if request_id in self._pending_requests:
+                auto_expired = self._pending_requests[request_id].get('auto_expired', False)
+            if self._transfer_manager and self._transfer_manager._server and not auto_expired:
+                self._transfer_manager._server.confirm_transfer(request_id, False)
+            if request_id in self._pending_requests:
+                del self._pending_requests[request_id]
+            file_bubble.close()
+        
+        file_bubble.accepted.connect(lambda: on_accept_common(False))
+        file_bubble.accepted_open.connect(lambda: on_accept_common(True))
+        file_bubble.rejected.connect(on_rejected)
+        
+        self._position_request_bubble(file_bubble, request_info)
+        file_bubble.show()
+        file_bubble.bring_to_front()
     
     def _cleanup_accepted_request(self, request_id: str):
         """清理已接受的请求（在文件接收完成时调用）"""
@@ -1887,17 +2970,26 @@ class AirDropView(QWidget):
         
         self.status_label.setVisible(False)
         
-        # 清除设备项的头像进度条
+        # 清除设备项的头像进度条，并记录传输时间
         current_device = self._current_target
+        target_user_id = None
+        target_device = None
         for i in range(self.devices_list.count()):
             item = self.devices_list.item(i)
             widget = self.devices_list.itemWidget(item)
             if isinstance(widget, DeviceItemWidget) and widget.device.name == target_name:
                 widget.set_progress(0)
                 widget.set_device_status(None)
+                target_user_id = widget.device.user_id
+                target_device = widget.device
                 break
         
-        if success:
+        if success and target_user_id and target_device:
+            # 记录传输时间（按 user_id 记录，同一账号的所有设备共享传输时间）
+            import time
+            self._device_transfer_times[target_user_id] = time.time()
+            # 传输成功后重新排序该账号的所有设备（因为排序是基于 user_id 的）
+            self._reorder_devices_by_user_id(target_user_id)
             Toast.show_message(self, f"文件已成功发送到 {target_name}")
         else:
             Toast.show_message(self, f"发送失败: {message}")
@@ -1940,6 +3032,7 @@ class AirDropView(QWidget):
         is_clipboard_request = False
         is_clipboard_image = False
         clipboard_image_format = None
+        open_after_accept = False
         for req_id, req_info in self._pending_requests.items():
             if (req_info.get('filename') == original_filename and 
                 req_info.get('accepted', False) and
@@ -1955,6 +3048,8 @@ class AirDropView(QWidget):
                 if req_info.get('is_clipboard_image', False):
                     is_clipboard_image = True
                     clipboard_image_format = clipboard_image_format or req_info.get('clipboard_image_format')
+                if req_info.get('open_after_accept', False):
+                    open_after_accept = True
         
         message_shown = False
         clipboard_image_base64 = clipboard_image_format is not None and original_filename.endswith('.b64img')
@@ -2031,6 +3126,15 @@ class AirDropView(QWidget):
                 f"收到文件: {original_filename} ({size_str})\n保存位置: {save_path.parent}"
             )
         
+        # 如果用户选择了"接受并打开"，则打开文件（非剪贴板请求）
+        if open_after_accept and not is_clipboard_request:
+            try:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(save_path)))
+                logger.info(f"已打开文件: {save_path}")
+            except Exception as e:
+                logger.error(f"打开文件失败: {e}")
+                Toast.show_message(self, f"无法打开文件: {save_path.name}")
+        
         for req_id in request_ids_to_remove:
             del self._pending_requests[req_id]
         
@@ -2041,14 +3145,109 @@ class AirDropView(QWidget):
         if not self._transfer_manager:
             return
         
-        current_devices = {d.user_id for d in self._transfer_manager.get_devices()}
+        # 使用 user_id + ip 作为唯一标识，支持同一账号多个设备
+        current_devices = {self._get_device_unique_id(d) for d in self._transfer_manager.get_devices()}
+        _debug_log(f"[UI] _refresh_devices: current_devices={current_devices}, list_count={self.devices_list.count()}")
         
+        # 检查是否有新设备需要添加
+        existing_device_ids = set()
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget):
+                device_unique_id = self._get_device_unique_id(widget.device)
+                existing_device_ids.add(device_unique_id)
+        
+        # 添加新发现的设备
+        for device in self._transfer_manager.get_devices():
+            device_unique_id = self._get_device_unique_id(device)
+            if device_unique_id not in existing_device_ids:
+                _debug_log(f"[UI] _refresh_devices: Adding new device {device_unique_id}")
+                # 记录设备发现时间
+                import time
+                if device.user_id not in self._device_discovery_times:
+                    self._device_discovery_times[device.user_id] = time.time()
+                # 记录设备携带的组信息（每个客户端自行广播，无需单独请求接口）
+                self._update_device_group_cache(device, reorder_if_changed=True)
+                # 添加设备
+                self._add_device_widget_at_sorted_position(device)
+        
+        # 移除不存在的设备
         for i in range(self.devices_list.count() - 1, -1, -1):
             item = self.devices_list.item(i)
             widget = self.devices_list.itemWidget(item)
             if isinstance(widget, DeviceItemWidget):
-                if widget.device.user_id not in current_devices:
+                device_unique_id = self._get_device_unique_id(widget.device)
+                if device_unique_id not in current_devices:
+                    _debug_log(f"[UI] _refresh_devices: Removing device {device_unique_id}")
                     self.devices_list.takeItem(i)
+        
+        # 刷新后调整大小
+        QTimer.singleShot(0, self._update_item_widths)
+        QTimer.singleShot(0, self._adjust_devices_list_size)
+    
+    def _reorder_devices_by_user_id(self, user_id: str):
+        """重新排序指定 user_id 的所有设备（传输后需要移动到前面）"""
+        # 找到所有该 user_id 的设备
+        devices_to_reorder = []
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget) and widget.device.user_id == user_id:
+                devices_to_reorder.append((i, item, widget))
+        
+        if not devices_to_reorder:
+            return
+        
+        # 计算新的排序键
+        new_key = self._get_device_sort_key(user_id)
+        
+        # 找到应该插入的位置（第一个设备的位置）
+        first_row = devices_to_reorder[0][0]
+        new_position = 0
+        
+        for i in range(self.devices_list.count()):
+            if i == first_row:
+                continue  # 跳过第一个要移动的设备
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget):
+                existing_key = self._get_device_sort_key(widget.device.user_id)
+                if new_key < existing_key:
+                    new_position = i
+                    break
+                new_position = i + 1
+        
+        # 如果位置没有变化，不需要移动
+        if new_position == first_row or (new_position == first_row + len(devices_to_reorder)):
+            return
+        
+        # 安全地移动所有设备：先移除，再插入到新位置
+        # 按行号倒序移除，避免索引变化
+        devices_to_reorder.sort(key=lambda x: x[0], reverse=True)
+        
+        # 移除所有设备
+        for row, item, widget in devices_to_reorder:
+            self.devices_list.takeItem(row)
+            # 如果新位置在移除位置之后，需要调整
+            if new_position > row:
+                new_position -= 1
+        
+        # 按原顺序插入到新位置（保持同一账号设备的相对顺序）
+        devices_to_reorder.reverse()  # 恢复原顺序
+        for idx, (_, item, widget) in enumerate(devices_to_reorder):
+            insert_pos = new_position + idx
+            self.devices_list.insertItem(insert_pos, item)
+            # 重新设置widget（takeItem后需要重新设置）
+            self.devices_list.setItemWidget(item, widget)
+        
+        # 更新宽度和大小
+        QTimer.singleShot(0, self._update_item_widths)
+        QTimer.singleShot(0, self._adjust_devices_list_size)
+    
+    def _reorder_device(self, user_id: str):
+        """重新排序单个设备（兼容方法，实际调用 _reorder_devices_by_user_id）"""
+        self._reorder_devices_by_user_id(user_id)
     
     @staticmethod
     def _format_file_size(size: int) -> str:
@@ -2092,6 +3291,178 @@ class AirDropView(QWidget):
             if same_device:
                 widget.set_device_status(text, color)
                 break
+
+    def _start_wait_countdown(self, device: DeviceInfo, seconds: int = 60):
+        """启动“等待中”倒计时并更新设备状态文本"""
+        self._stop_wait_countdown()
+        self._wait_countdown_device = device
+        self._wait_countdown_remaining = seconds
+        colors = self._get_theme_colors()
+        self._set_device_status(device, f"等待中({self._wait_countdown_remaining})...", colors['status_waiting'])
+        
+        timer = QTimer(self)
+        timer.setInterval(1000)
+        
+        def tick():
+            self._wait_countdown_remaining -= 1
+            remaining = max(self._wait_countdown_remaining, 0)
+            self._set_device_status(device, f"等待中({remaining})...", colors['status_waiting'])
+            if remaining <= 0:
+                self._stop_wait_countdown()
+        
+        timer.timeout.connect(tick)
+        timer.start()
+        self._wait_countdown_timer = timer
+
+    def _stop_wait_countdown(self):
+        """停止倒计时"""
+        if self._wait_countdown_timer:
+            self._wait_countdown_timer.stop()
+            self._wait_countdown_timer.deleteLater()
+        self._wait_countdown_timer = None
+        self._wait_countdown_device = None
+        self._wait_countdown_remaining = 0
+
+    def _cleanup_transfer_manager(self, stop_manager: bool = True):
+        """统一清理传输管理器资源"""
+        self._stop_wait_countdown()
+        if stop_manager and self._transfer_manager:
+            try:
+                self._transfer_manager.stop()
+            except Exception:
+                pass
+    
+    def moveEvent(self, event):
+        """窗口移动时，重新定位悬浮气泡"""
+        super().moveEvent(event)
+        self._reposition_all_bubbles()
+    
+    def resizeEvent(self, event):
+        """窗口尺寸变更时，重新定位悬浮气泡"""
+        super().resizeEvent(event)
+        self._reposition_all_bubbles()
+    
+    def _find_device_widget_for_request(self, request_info: dict) -> Optional[DeviceItemWidget]:
+        """根据请求信息查找对应头像的设备项"""
+        sender_id = request_info.get('sender_id') or ""
+        sender_name = request_info.get('sender_name') or ""
+        sender_ip = request_info.get('sender_ip') or ""
+        sender_port = request_info.get('sender_port')
+        
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if not isinstance(widget, DeviceItemWidget):
+                continue
+            
+            # 优先匹配 user_id
+            if sender_id and widget.device.user_id == sender_id:
+                return widget
+            
+            # 其次匹配名字
+            if sender_name and widget.device.name == sender_name:
+                return widget
+            
+            # 再匹配 IP 和端口
+            if sender_ip and widget.device.ip == sender_ip:
+                if sender_port is None or widget.device.port == sender_port:
+                    return widget
+        
+        return None
+    
+    def _position_request_bubble(self, bubble: TransferRequestBubble, request_info: dict, retry: bool = True):
+        """将气泡定位在发送者头像附近；若主窗口隐藏到边缘，则固定到屏幕右上角"""
+        margin = 12
+        
+        # 如果窗口已隐藏到屏幕边缘或当前不可见，固定放到右上角提示
+        if self._was_hidden_to_icon or not self.isVisible():
+            target_screen = None
+            if self._hidden_rect:
+                target_screen = QGuiApplication.screenAt(self._hidden_rect.center())
+            if not target_screen:
+                target_screen = QGuiApplication.primaryScreen()
+            if bubble.windowHandle() and target_screen:
+                bubble.windowHandle().setScreen(target_screen)
+            if target_screen:
+                bubble.lock_size_for_screen(target_screen)
+            if target_screen:
+                geo = target_screen.availableGeometry()
+                x = geo.right() - bubble.width() - margin
+                y = geo.top() + margin
+            else:
+                x = margin
+                y = margin
+            bubble.move(x, y)
+            bubble.set_pointer_visible(False)
+            bubble.bring_to_front()
+            if retry:
+                QTimer.singleShot(120, lambda: self._position_request_bubble(bubble, request_info, retry=False))
+            return
+        
+        # 主窗口可见：贴合头像
+        # 拖拽过程中不显示气泡，等拖拽结束（位置稳定）再定位
+        if getattr(self, "_is_dragging", False):
+            bubble.hide()
+            # 拖动期间不设置 retry，避免定时器重新调用导致气泡显示
+            # 拖动结束后会通过 _reposition_all_bubbles 重新定位
+            return
+        else:
+            bubble.show()
+        
+        target_widget = self._find_device_widget_for_request(request_info)
+        screen_point = None
+        if target_widget and hasattr(target_widget, "avatar_label"):
+            avatar = target_widget.avatar_label
+            center = avatar.mapToGlobal(avatar.rect().center())
+            top = avatar.mapToGlobal(avatar.rect().topLeft()).y()
+            x = int(center.x() - bubble.width() / 2)
+            y = int(top - bubble.height() - margin)
+            screen_point = center
+        else:
+            center = self.mapToGlobal(self.rect().center())
+            x = int(center.x() - bubble.width() / 2)
+            y = int(center.y() - bubble.height() / 2)
+            screen_point = center
+        
+        screen = QGuiApplication.screenAt(screen_point) if screen_point else QGuiApplication.primaryScreen()
+        if not screen:
+            screen = QGuiApplication.primaryScreen()
+        if bubble.windowHandle() and screen:
+            bubble.windowHandle().setScreen(screen)
+        if screen:
+            bubble.lock_size_for_screen(screen)
+        if screen:
+            geo = screen.availableGeometry()
+            x = max(geo.left() + 8, min(x, geo.right() - bubble.width() - 8))
+            y = max(geo.top() + 8, min(y, geo.bottom() - bubble.height() - 8))
+        bubble.move(x, y)
+        bubble.set_pointer_visible(True)
+        bubble.bring_to_front()
+        
+        # 布局可能尚未完成，稍后再尝试一次以提升准确性，同时避免多次锁尺寸
+        if retry:
+            QTimer.singleShot(120, lambda: self._position_request_bubble(bubble, request_info, retry=False))
+    
+    def _reposition_all_bubbles(self):
+        """窗口移动/尺寸变化时，重新定位所有悬浮气泡"""
+        for req_id, info in self._pending_requests.items():
+            dialog = info.get('dialog')
+            if isinstance(dialog, TransferRequestBubble):
+                self._position_request_bubble(dialog, info, retry=False)
+    
+    def _hide_all_bubbles(self):
+        """临时隐藏所有气泡（拖拽时使用）"""
+        for req_id, info in self._pending_requests.items():
+            dialog = info.get('dialog')
+            if isinstance(dialog, TransferRequestBubble) and dialog.isVisible():
+                dialog.hide()
+    
+    def _bring_all_bubbles_to_front(self):
+        """将所有气泡提升到最上层"""
+        for req_id, info in self._pending_requests.items():
+            dialog = info.get('dialog')
+            if isinstance(dialog, TransferRequestBubble) and dialog.isVisible():
+                dialog.bring_to_front()
 
     def _schedule_request_expiration(self, request_id: str):
         """超过1分钟未接受自动移除请求"""
@@ -2188,10 +3559,147 @@ class AirDropView(QWidget):
             return None
         return file_path
     
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference  # "light" or "dark"
+            
+            return theme == "dark"
+        except:
+            return False
+    
+    def _check_and_update_theme(self):
+        """检查主题变化并更新UI"""
+        is_dark = self._detect_theme()
+        if is_dark != self._is_dark:
+            self._is_dark = is_dark
+            self._update_theme_colors()
+    
+    def _get_theme_colors(self) -> dict:
+        """获取当前主题的颜色配置"""
+        if self._is_dark:
+            return {
+                "bg_primary": "#1C1C1E",  # 主背景色
+                "bg_secondary": "#2C2C2E",  # 次要背景色
+                "bg_card": "#2C2C2E",  # 卡片背景色
+                "bg_hover": "#3A3A3C",  # 悬停背景色
+                "text_primary": "#FFFFFF",  # 主文字色
+                "text_secondary": "#EBEBF5",  # 次要文字色
+                "text_tertiary": "#9a9ab1",  # 第三级文字色
+                "border": "#38383A",  # 边框色
+                "border_light": "#48484A",  # 浅边框色
+                "button_primary_bg": "#0A84FF",  # 主按钮背景
+                "button_primary_hover": "#006FE0",  # 主按钮悬停
+                "button_primary_pressed": "#005BB8",  # 主按钮按下
+                "button_secondary_bg": "#2C2C2E",  # 次要按钮背景
+                "button_secondary_border": "#38383A",  # 次要按钮边框
+                "button_secondary_hover": "#3A3A3C",  # 次要按钮悬停
+                "button_secondary_pressed": "#48484A",  # 次要按钮按下
+                "item_border": "#1C1C1E",  # 列表项边框（深色主题下使用更亮的边框）
+                "avatar_bg": "#AAAAAA",  # 头像背景
+                "signal_icon": "#FFFFFF",  # 信号图标颜色
+                "status_waiting": "#EBEBF599",  # 等待状态颜色
+                "status_error": "#FF453A",  # 错误状态颜色
+            }
+        else:
+            return {
+                "bg_primary": "#FFFFFF",  # 主背景色
+                "bg_secondary": "#F2F2F7",  # 次要背景色
+                "bg_card": "#F9F9F9",  # 卡片背景色
+                "bg_hover": "#E5E5EA",  # 悬停背景色
+                "text_primary": "#000000",  # 主文字色
+                "text_secondary": "#111111",  # 次要文字色
+                "text_tertiary": "#8E8E93",  # 第三级文字色
+                "border": "#D1D1D6",  # 边框色
+                "border_light": "#E5E5EA",  # 浅边框色
+                "button_primary_bg": "#0A84FF",  # 主按钮背景
+                "button_primary_hover": "#006FE0",  # 主按钮悬停
+                "button_primary_pressed": "#005BB8",  # 主按钮按下
+                "button_secondary_bg": "#F2F2F7",  # 次要按钮背景
+                "button_secondary_border": "#D1D1D6",  # 次要按钮边框
+                "button_secondary_hover": "#E5E5EA",  # 次要按钮悬停
+                "button_secondary_pressed": "#D8D8DC",  # 次要按钮按下
+                "item_border": "#ffffff",  # 列表项边框（亮色主题下使用标准边框色）
+                "avatar_bg": "#E0E0E0",  # 头像背景
+                "signal_icon": "#000000",  # 信号图标颜色
+                "status_waiting": "#8E8E93",  # 等待状态颜色
+                "status_error": "#FF3B30",  # 错误状态颜色
+            }
+    
+    def _update_theme_colors(self):
+        """更新所有UI元素的颜色以适配当前主题"""
+        colors = self._get_theme_colors()
+        
+        # 更新主窗口背景
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors['bg_primary']};
+            }}
+            QLabel {{
+                color: {colors['text_primary']};
+            }}
+        """)
+        
+        # 更新滚动区域背景
+        if hasattr(self, '_scroll_area'):
+            scroll_widget = self._scroll_area.widget()
+            if scroll_widget:
+                scroll_widget.setStyleSheet(f"background-color: {colors['bg_primary']};")
+        
+        # 更新设备列表样式
+        if hasattr(self, 'devices_list'):
+            self.devices_list.setStyleSheet(f"""
+                QListWidget {{
+                    border: none;
+                    background-color: {colors['bg_primary']};
+                }}
+                QListWidget::item {{
+                    border: 1px solid {colors['item_border']};
+                    border-radius: 8px;
+                    background-color: transparent;
+                    padding: 0px;
+                    text-align: center;
+                }}
+            """)
+        
+        # 更新背景标签颜色
+        if hasattr(self, '_background_label'):
+            self._background_label.setStyleSheet(f"color: {colors['text_tertiary']};")
+        
+        # 更新状态标签颜色
+        if hasattr(self, 'status_label'):
+            self.status_label.setStyleSheet(f"color: {colors['text_tertiary']}; font-size: 13px;")
+        
+        # 更新所有设备项的颜色
+        if hasattr(self, 'devices_list'):
+            for i in range(self.devices_list.count()):
+                item = self.devices_list.item(i)
+                widget = self.devices_list.itemWidget(item)
+                if isinstance(widget, DeviceItemWidget):
+                    widget._is_dark = self._is_dark
+                    widget._update_theme_colors(colors)
+                    # 重新绘制默认头像（如果有）
+                    if hasattr(widget, '_device') and not widget.avatar_label.pixmap():
+                        widget._set_default_avatar()
+        
+        # 更新信号图标颜色
+        if hasattr(self, '_background_frame'):
+            for child in self._background_frame.findChildren(QLabel):
+                if child.pixmap():
+                    # 重新着色图标
+                    colors = self._get_theme_colors()
+                    icon_color = QColor(255, 255, 255) if self._is_dark else QColor(0, 0, 0)
+                    # 这里需要重新加载并着色图标，但为了简化，暂时跳过
+                    pass
+    
     def closeEvent(self, event):
         """关闭事件"""
-        # 注意：这个closeEvent会被main_window中的custom_close_event重写
-        # 所以这里只处理传输管理器的停止
-        if self._transfer_manager:
-            self._transfer_manager.stop()
-        super().closeEvent(event)
+        # 点击窗口关闭按钮时，仅隐藏窗口，保持传输服务运行
+        event.ignore()
+        self.hide()

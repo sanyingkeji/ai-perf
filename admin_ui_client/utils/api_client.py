@@ -9,7 +9,7 @@
 
 import json
 import httpx
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from datetime import date
 
 from utils.config_manager import ConfigManager
@@ -625,11 +625,40 @@ class AdminApiClient:
             payload["user_ids"] = user_ids
         return self._post("/admin/api/generate_report", payload)
     
-    def download_report(self, log_id: int) -> bytes:
+    def download_report_with_name(self, log_id: int) -> Tuple[bytes, Optional[str]]:
         """
         GET /admin/api/download_report/{log_id}
-        下载报表文件（ZIP压缩）
-        返回：ZIP文件的二进制数据
+        下载报表文件（ZIP压缩），返回文件内容及后端提供的文件名（如果有）
         """
-        return self._get_binary(f"/admin/api/download_report/{log_id}")
+        url = f"{self.base_url}/admin/api/download_report/{log_id}"
+        try:
+            r = httpx.get(
+                url,
+                headers=self._headers(),
+                timeout=300,  # 5分钟超时
+                follow_redirects=True,  # 避免潜在的重定向导致 3xx
+            )
+            if r.status_code == 401:
+                raise AuthError("需要重新登录")
+            if r.status_code != 200:
+                raise ApiError(f"下载失败: HTTP {r.status_code}")
+
+            # 优先使用后端 Content-Disposition 的文件名
+            filename = None
+            cd = r.headers.get("Content-Disposition") or r.headers.get("content-disposition")
+            if cd and "filename=" in cd:
+                filename = cd.split("filename=", 1)[1].strip().strip('"')
+
+            return r.content, filename
+        except (ApiError, AuthError):
+            raise
+        except Exception as e:
+            raise ApiError(f"网络异常：{type(e).__name__}: {e}")
+
+    def download_report(self, log_id: int) -> bytes:
+        """
+        兼容旧接口：仅返回报表二进制数据
+        """
+        content, _ = self.download_report_with_name(log_id)
+        return content
 

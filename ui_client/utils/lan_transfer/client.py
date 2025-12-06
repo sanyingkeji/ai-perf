@@ -167,7 +167,7 @@ class TransferClient:
         return {
             "success": False,
             "accepted": False,
-            "message": "等待确认超时"
+            "message": "等待接受已超时"
         }
     
     def confirm_transfer(self, request_id: str, target_ip: str, target_port: int,
