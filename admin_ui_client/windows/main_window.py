@@ -818,16 +818,27 @@ class MainWindow(QMainWindow):
             self._tray_icon = QSystemTrayIcon(self)
         
         # 设置托盘图标
-        app_dir = Path(__file__).parent.parent
-        icon_paths = [
-            app_dir / "resources" / "app_icon.icns",
-            app_dir / "resources" / "app_icon.ico",
-            app_dir / "resources" / "app_icon.png",
-        ]
-        for icon_path in icon_paths:
-            if icon_path.exists():
-                self._tray_icon.setIcon(QIcon(str(icon_path)))
-                break
+        from utils.resource_path import get_app_icon_path
+        icon_path = get_app_icon_path()
+        if icon_path and icon_path.exists():
+            try:
+                icon = QIcon(str(icon_path))
+                # 验证图标是否有效
+                if icon.isNull():
+                    # 图标无效，尝试使用默认图标
+                    self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+                else:
+                    self._tray_icon.setIcon(icon)
+            except Exception as e:
+                # 加载图标失败，使用默认图标
+                import sys
+                print(f"加载托盘图标失败: {e}", file=sys.stderr)
+                self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        else:
+            # 如果找不到图标，使用默认图标
+            import sys
+            print(f"未找到托盘图标文件: {icon_path}", file=sys.stderr)
+            self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
         
         # 创建托盘菜单（macOS 上不设置父对象，确保窗口关闭后菜单仍然可用）
         # 将菜单保存为实例变量，防止被垃圾回收

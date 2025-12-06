@@ -17,7 +17,7 @@ from typing import Optional, Dict, Tuple, Set
 from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QListWidget, QListWidgetItem, QMessageBox,
+    QListWidget, QListWidgetItem, QMessageBox, QGraphicsOpacityEffect,
     QApplication,
     QMenu, QFileDialog, QScrollArea, QSizePolicy, QSpacerItem
 )
@@ -1314,6 +1314,10 @@ class AirDropView(QWidget):
         self._wait_countdown_timer: Optional[QTimer] = None
         self._wait_countdown_remaining: int = 0
         self._wait_countdown_device: Optional[DeviceInfo] = None
+        # 设备列表最小高度（保证提示区在底部，即使只有一行/无同事）
+        self._devices_min_height = None  # 启动后根据初始列表高度动态确定
+        # 淡入动画引用，避免被GC
+        self._fade_animations: list = []
         # 应用退出时统一清理传输管理器（窗口隐藏/关闭不再主动停服务）
         try:
             QApplication.instance().aboutToQuit.connect(self._cleanup_transfer_manager)
@@ -1508,6 +1512,28 @@ class AirDropView(QWidget):
         
         # 保存引用
         self._content_widget = content_widget
+        
+        # 记录初始布局距离（未启动服务时提示块相对窗口的位置）
+        QTimer.singleShot(0, self._log_initial_layout_metrics)
+
+    def _log_initial_layout_metrics(self):
+        """打印未启动服务时提示区域的相对位置，便于校准"""
+        try:
+            if not hasattr(self, '_background_frame') or not hasattr(self, 'devices_list'):
+                return
+            bg_top = self._background_frame.mapTo(self, QPoint(0, 0)).y()
+            list_top = self.devices_list.mapTo(self, QPoint(0, 0)).y()
+            logger.info(
+                f"[AirDropView] initial layout: bg_top={bg_top}, list_top={list_top}, "
+                f"bg_height={self._background_frame.height()}, list_height={self.devices_list.height()}, "
+                f"window_height={self.height()}"
+            )
+            # 动态设定设备列表的最小高度，避免提示区上移
+            if not self._devices_min_height:
+                self._devices_min_height = max(self.devices_list.height(), 200)
+                logger.info(f"[AirDropView] devices_min_height set to {self._devices_min_height}")
+        except Exception as e:
+            logger.debug(f"[AirDropView] log initial layout failed: {e}")
     
     def resizeEvent(self, event):
         """窗口大小改变时调整背景文字位置，并禁止窗口大小改变"""
@@ -2468,6 +2494,10 @@ class AirDropView(QWidget):
         item = QListWidgetItem()
         widget = DeviceItemWidget(display_device)
         widget.file_dropped.connect(self._on_file_dropped)
+        # 先设置为透明，插入后再做淡入动画
+        opacity = QGraphicsOpacityEffect(widget)
+        opacity.setOpacity(0.0)
+        widget.setGraphicsEffect(opacity)
         
         # 找到正确的插入位置
         insert_pos = self._find_insert_position(device)
@@ -2492,6 +2522,8 @@ class AirDropView(QWidget):
         self._update_item_widths()
         # 调整 QListWidget 大小以显示所有内容
         self._adjust_devices_list_size()
+        # 淡入显示
+        self._fade_in_widget(widget)
     
     def _add_device_widget(self, device: DeviceInfo):
         """统一添加设备卡片（保留用于兼容性）"""
@@ -2547,8 +2579,9 @@ class AirDropView(QWidget):
     def _adjust_devices_list_size(self):
         """调整 devices_list 的大小以显示所有内容"""
         if self.devices_list.count() == 0:
-            self.devices_list.setMinimumHeight(0)
-            self.devices_list.setMaximumHeight(0)
+            min_h = self._devices_min_height or 0
+            self.devices_list.setMinimumHeight(min_h)
+            self.devices_list.setMaximumHeight(min_h)
             return
         
         # 获取第一个 item 的大小作为参考
@@ -2571,9 +2604,11 @@ class AirDropView(QWidget):
     def _do_adjust_devices_list_size(self, item_width: int, item_height: int, spacing: int):
         """实际执行调整大小"""
         if self.devices_list.count() == 0:
-            self.devices_list.setMinimumHeight(0)
-            # PySide6 6.5 兼容：使用一个合理的最大值，而不是硬编码的大数字
-            self.devices_list.setMaximumHeight(10000)  # 足够大的值
+            min_h = self._devices_min_height or 0
+            # 无设备时重置边距
+            self.devices_list.setViewportMargins(0, 0, 0, 0)
+            self.devices_list.setMinimumHeight(min_h)
+            self.devices_list.setMaximumHeight(min_h)
             return
         
         # 获取 QListWidget 的可用宽度（减去滚动条宽度）
@@ -2593,9 +2628,46 @@ class AirDropView(QWidget):
         # 计算总高度：行数 * (item高度 + 间距) + 一些边距
         total_height = rows * (item_height + spacing) + spacing
         
+        # 若内容高度低于最小高度，居中显示；否则正常排布
+        min_h = self._devices_min_height or 0
+        top_margin = 0
+        bottom_margin = 0
+        if min_h > 0 and total_height < min_h:
+            free_space = min_h - total_height
+            top_margin = free_space // 2
+            bottom_margin = free_space - top_margin
+            total_height = min_h
+        self.devices_list.setViewportMargins(0, top_margin, 0, bottom_margin)
+        
         # 设置最小和最大高度，确保所有内容都能显示，但不阻止布局系统调整
         self.devices_list.setMinimumHeight(total_height)
         self.devices_list.setMaximumHeight(total_height)
+
+    def _fade_in_widget(self, widget: QWidget, duration: int = 200):
+        """淡入显示新加入的设备卡片"""
+        try:
+            effect = widget.graphicsEffect()
+            if not isinstance(effect, QGraphicsOpacityEffect):
+                effect = QGraphicsOpacityEffect(widget)
+                effect.setOpacity(0.0)
+                widget.setGraphicsEffect(effect)
+            anim = QPropertyAnimation(effect, b"opacity", widget)
+            anim.setDuration(duration)
+            anim.setStartValue(effect.opacity())
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._fade_animations.append(anim)
+            def on_finished():
+                try:
+                    effect.setOpacity(1.0)
+                    if anim in self._fade_animations:
+                        self._fade_animations.remove(anim)
+                except Exception:
+                    pass
+            anim.finished.connect(on_finished)
+            anim.start()
+        except Exception:
+            pass
     
     def _on_device_removed(self, device_name: str):
         """设备移除（通过设备名称，可能移除多个同名设备）"""

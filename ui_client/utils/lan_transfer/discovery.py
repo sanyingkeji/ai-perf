@@ -7,6 +7,7 @@
 import socket
 import platform
 import sys
+import time
 from typing import Dict, Optional, Callable
 from dataclasses import dataclass
 from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
@@ -53,6 +54,9 @@ class DeviceDiscovery:
         self._on_device_added = on_device_added
         self._on_device_removed = on_device_removed
         self._devices: Dict[str, DeviceInfo] = {}  # key: service_name
+        self._device_last_seen: Dict[str, float] = {}  # key: service_name, value: timestamp
+        self._cleanup_timer: Optional[threading.Timer] = None
+        self._device_ttl = 60  # seconds
         self._lock = threading.Lock()
         self._running = False
     
@@ -75,6 +79,7 @@ class DeviceDiscovery:
             )
             _debug_log("ServiceBrowser started for _aiperf-transfer._tcp.local.")
             self._running = True
+            self._schedule_cleanup()
             logger.info("设备发现服务已启动")
         except Exception as e:
             logger.error(f"启动设备发现服务失败: {e}")
@@ -94,9 +99,13 @@ class DeviceDiscovery:
             if self._zeroconf:
                 self._zeroconf.close()
                 self._zeroconf = None
+            if self._cleanup_timer:
+                self._cleanup_timer.cancel()
+                self._cleanup_timer = None
             self._running = False
             with self._lock:
                 self._devices.clear()
+                self._device_last_seen.clear()
             logger.info("设备发现服务已停止")
         except Exception as e:
             logger.error(f"停止设备发现服务失败: {e}")
@@ -160,6 +169,7 @@ class DeviceDiscovery:
             
             should_add = False
             with self._lock:
+                self._device_last_seen[service_name] = time.time()
                 # 检查是否已存在相同的设备（user_id + ip）
                 existing_device = None
                 existing_service_name = None
@@ -221,6 +231,31 @@ class DeviceDiscovery:
         except Exception as e:
             logger.error(f"处理设备丢失事件失败: {e}")
             _debug_log(f"_on_device_lost error: {e}")
+        finally:
+            with self._lock:
+                self._device_last_seen.pop(service_name, None)
+
+    def _schedule_cleanup(self):
+        """周期性清理超时设备（防止异常下线未发送 goodbye 时残留）"""
+        if not self._running:
+            return
+        def cleanup():
+            try:
+                now = time.time()
+                stale = []
+                with self._lock:
+                    for sn, last in list(self._device_last_seen.items()):
+                        if now - last > self._device_ttl:
+                            stale.append(sn)
+                for sn in stale:
+                    self._on_device_lost(sn)
+            finally:
+                if self._running:
+                    self._schedule_cleanup()
+        timer = threading.Timer(10, cleanup)
+        timer.daemon = True
+        timer.start()
+        self._cleanup_timer = timer
     
     def get_devices(self) -> list[DeviceInfo]:
         """获取当前发现的设备列表"""

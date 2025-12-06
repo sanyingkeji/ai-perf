@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QListWidget, QStackedWidget, QLabel, QDialog, QPushButton, QSizePolicy,
+    QListWidget, QListWidgetItem, QStackedWidget, QLabel, QDialog, QPushButton, QSizePolicy,
     QSystemTrayIcon, QMenu, QApplication, QMessageBox, QTextEdit
 )
 from PySide6.QtCore import Qt, QSize, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QRect
@@ -16,10 +16,12 @@ from windows.ranking_view import RankingView
 from windows.settings_view import SettingsView
 from windows.update_dialog import UpdateDialog
 from windows.help_center_window import HelpCenterWindow
+from windows.data_trend_view import DataTrendView
 from utils.config_manager import ConfigManager
 from utils.google_login import login_and_get_id_token, GoogleLoginError
 from utils.api_client import ApiClient, ApiError, AuthError
 from utils.polling_service import get_polling_service
+from utils.resource_path import get_app_icon_path
 from widgets.toast import Toast
 from widgets.loading_overlay import LoadingOverlay
 from datetime import date, datetime
@@ -109,6 +111,11 @@ class MainWindow(QMainWindow):
             5: False,  # 我的
             6: False,  # 设置
         }
+        # 图文趋势菜单与页面索引（延后赋值）
+        self.DATA_TREND_PAGE_INDEX = None
+        self.data_trend_url: Optional[str] = None
+        self._data_trend_last_loaded_url: Optional[str] = None
+        self.DEFAULT_DATA_TREND_TEXT = "数据趋势"
 
         root = QWidget()
         root_layout = QHBoxLayout(root)
@@ -143,6 +150,10 @@ class MainWindow(QMainWindow):
         self.nav.addItem("今日评分")
         self.nav.addItem("历史评分")
         self.nav.addItem("复评中心")
+        # 图文趋势：放在复评中心后、排行榜前
+        self.data_trend_item = QListWidgetItem(self.DEFAULT_DATA_TREND_TEXT)
+        self.data_trend_item.setHidden(True)  # 默认隐藏
+        self.nav.addItem(self.data_trend_item)
         self.nav.addItem("排行榜")
         self.nav.addItem("消息")
         self.nav.addItem("我的")
@@ -155,11 +166,23 @@ class MainWindow(QMainWindow):
             item_text = self.nav.item(i).text()
             text_width = font_metrics.horizontalAdvance(item_text)
             max_width = max(max_width, text_width)
-        # 设置宽度：文本宽度 + 左右内边距 + 图标空间（如果有）
-        content_width = max_width + 40  # 40px 用于内边距和图标
-        nav_width = max(120, content_width)
-        nav_width = min(nav_width, 300)  # 最大宽度300
-        self.nav.setFixedWidth(nav_width)
+        def recalc_nav_width():
+            """根据当前菜单文本长度动态调整导航宽度"""
+            font_metrics = self.nav.fontMetrics()
+            max_width_local = 0
+            for i in range(self.nav.count()):
+                item = self.nav.item(i)
+                if not item:
+                    continue
+                text_width = font_metrics.horizontalAdvance(item.text())
+                max_width_local = max(max_width_local, text_width)
+            content_width_local = max_width_local + 40  # 左右内边距 + 图标空间
+            nav_width_local = max(120, content_width_local)
+            nav_width_local = min(nav_width_local, 300)
+            self.nav.setFixedWidth(nav_width_local)
+
+        # 初始计算宽度
+        recalc_nav_width()
         
         # 隐藏 Windows 上的焦点虚线框
         self.nav.setStyleSheet("""
@@ -198,20 +221,27 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
         def adjust_nav_height():
             """根据菜单项数量自动调整菜单高度"""
-            item_count = self.nav.count()
-            if item_count > 0:
-                # 获取第一项的高度作为每项高度
-                item_height = self.nav.sizeHintForRow(0)
-                if item_height <= 0:
-                    item_height = 30  # 默认高度
-                # 计算总高度：项数 * 每项高度 + 边框（约4px）
-                total_height = item_count * item_height + 4
-                self.nav.setFixedHeight(total_height)
-            else:
+            visible_indices = [
+                i for i in range(self.nav.count())
+                if self.nav.item(i) and not self.nav.item(i).isHidden()
+            ]
+            if not visible_indices:
                 self.nav.setFixedHeight(30)
+                return
+
+            first_index = visible_indices[0]
+            item_height = self.nav.sizeHintForRow(first_index)
+            if item_height <= 0:
+                item_height = 30  # 默认高度
+
+            total_height = len(visible_indices) * item_height + 4
+            self.nav.setFixedHeight(total_height)
         
+        # 暴露方法，便于后续动态调整（例如图文趋势菜单的显隐）
+        self._adjust_nav_height = adjust_nav_height
+        self._recalculate_nav_width = recalc_nav_width
         # 延迟执行，确保窗口已显示
-        QTimer.singleShot(100, adjust_nav_height)
+        QTimer.singleShot(100, self._adjust_nav_height)
 
         root_layout.addWidget(nav_container)
 
@@ -229,14 +259,18 @@ class MainWindow(QMainWindow):
         self.notification_page = NotificationView(self)
         self.profile_page = ProfileView(self)
         self.settings_page = SettingsView()
+        self.data_trend_page = DataTrendView(self)
 
         self.stack.addWidget(self.today_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.review_page)
+        self.stack.addWidget(self.data_trend_page)
         self.stack.addWidget(self.ranking_page)
         self.stack.addWidget(self.notification_page)
         self.stack.addWidget(self.profile_page)
         self.stack.addWidget(self.settings_page)
+        self.DATA_TREND_PAGE_INDEX = self.stack.indexOf(self.data_trend_page)
+        self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = False
 
         # 全局加载中遮罩
         self.loading_overlay = LoadingOverlay(self)
@@ -607,9 +641,9 @@ class MainWindow(QMainWindow):
         if index == 6 and hasattr(self.settings_page, "refresh_login_status"):
             self.settings_page.refresh_login_status()
 
-        # 只对业务 Tab 做一次性自动请求
+        # 只对业务 Tab 做一次性自动请求（排除设置页和图文趋势页）
         # 判定条件：已登录 且 该页面还没有请求过数据
-        if index in (0, 1, 2, 3, 4, 5) and not self._page_first_loaded.get(index, False):
+        if index in (0, 1, 2, 4, 5, 6) and index != self.DATA_TREND_PAGE_INDEX and not self._page_first_loaded.get(index, False):
             # 未登录：只提示，不标记为已加载，方便登录后再自动触发
             if not self._ensure_logged_in():
                 return
@@ -636,6 +670,15 @@ class MainWindow(QMainWindow):
             elif index == 5 and hasattr(self.profile_page, "reload_from_api"):
                 # 我的
                 self.profile_page.reload_from_api()
+        elif index == self.DATA_TREND_PAGE_INDEX:
+            # 图文趋势：仅当有有效链接时才加载
+            if self.data_trend_url:
+                if self._data_trend_last_loaded_url != self.data_trend_url:
+                    self.data_trend_page.load_url(self.data_trend_url)
+                    self._data_trend_last_loaded_url = self.data_trend_url
+                elif not self._page_first_loaded.get(index, False):
+                    self.data_trend_page.load_url(self.data_trend_url)
+                self._page_first_loaded[index] = True
 
     # 窗口尺寸变化时，让遮罩自适应
     def resizeEvent(self, event):
@@ -664,16 +707,26 @@ class MainWindow(QMainWindow):
             self._tray_icon = QSystemTrayIcon(self)
         
         # 设置托盘图标
-        app_dir = Path(__file__).parent.parent
-        icon_paths = [
-            app_dir / "resources" / "app_icon.icns",
-            app_dir / "resources" / "app_icon.ico",
-            app_dir / "resources" / "app_icon.png",
-        ]
-        for icon_path in icon_paths:
-            if icon_path.exists():
-                self._tray_icon.setIcon(QIcon(str(icon_path)))
-                break
+        icon_path = get_app_icon_path()
+        if icon_path and icon_path.exists():
+            try:
+                icon = QIcon(str(icon_path))
+                # 验证图标是否有效
+                if icon.isNull():
+                    # 图标无效，尝试使用默认图标
+                    self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+                else:
+                    self._tray_icon.setIcon(icon)
+            except Exception as e:
+                # 加载图标失败，使用默认图标
+                import sys
+                print(f"加载托盘图标失败: {e}", file=sys.stderr)
+                self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        else:
+            # 如果找不到图标，使用默认图标
+            import sys
+            print(f"未找到托盘图标文件: {icon_path}", file=sys.stderr)
+            self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
         
         # 创建托盘菜单（macOS 上不设置父对象，确保窗口关闭后菜单仍然可用）
         # 将菜单保存为实例变量，防止被垃圾回收
@@ -765,7 +818,8 @@ class MainWindow(QMainWindow):
             tray_menu.addSeparator()
             
             quit_action = QAction("退出", self)
-            quit_action.triggered.connect(self._quit_application)
+            # 仅隐藏窗口，保持后台服务运行
+            quit_action.triggered.connect(self.hide)
             tray_menu.addAction(quit_action)
         
         self._tray_icon.setContextMenu(tray_menu)
@@ -1692,7 +1746,13 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(worker)
     
     def _on_health_data_received(self, health_data: dict):
-        """接收到健康检查数据，检查是否有 help_text 字段，动态更新标签"""
+        """接收到健康检查数据，更新帮助中心与图文趋势入口"""
+        # 优先处理 data_trend（远程图文趋势链接与文案）
+        self._update_data_trend_link(
+            health_data.get("data_trend"),
+            health_data.get("data_trend_text"),
+        )
+
         help_text = health_data.get("help_text")
         # 只有在 help_text 存在、是字符串、且非空时才显示
         # 处理三种情况：不存在、null、空字符串
@@ -1703,6 +1763,53 @@ class MainWindow(QMainWindow):
         else:
             # 如果没有 help_text、为 null、或为空字符串，隐藏标签
             self.help_label.setVisible(False)
+
+    def _update_data_trend_link(self, data_trend_value, data_trend_text=None):
+        """根据 /api/health 返回的 data_trend 相关字段控制菜单显隐与文案"""
+        if self.DATA_TREND_PAGE_INDEX is None or not hasattr(self, "data_trend_item"):
+            return
+
+        # 处理菜单文案
+        text = self.DEFAULT_DATA_TREND_TEXT
+        if isinstance(data_trend_text, str) and data_trend_text.strip():
+            text = data_trend_text.strip()
+        self.data_trend_item.setText(text)
+        if hasattr(self, "_recalculate_nav_width"):
+            self._recalculate_nav_width()
+
+        # 校验链接格式，仅接受 http/https
+        url = ""
+        if isinstance(data_trend_value, str):
+            candidate = data_trend_value.strip()
+            if candidate.lower().startswith(("http://", "https://")):
+                url = candidate
+
+        if url:
+            self.data_trend_url = url
+            self._data_trend_last_loaded_url = None  # 触发重新加载
+            self.data_trend_item.setHidden(False)
+            if hasattr(self, "_adjust_nav_height"):
+                self._adjust_nav_height()
+
+            # 如果当前就在该页面或尚未加载过，则立即加载
+            should_load_now = (
+                self.nav.currentRow() == self.DATA_TREND_PAGE_INDEX
+                or not self._page_first_loaded.get(self.DATA_TREND_PAGE_INDEX, False)
+            )
+            if should_load_now:
+                self.data_trend_page.load_url(url)
+                self._data_trend_last_loaded_url = url
+                self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = True
+        else:
+            # 不合法或缺失：收起菜单、重置状态
+            self.data_trend_url = None
+            self._data_trend_last_loaded_url = None
+            self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = False
+            self.data_trend_item.setHidden(True)
+            if self.nav.currentRow() == self.DATA_TREND_PAGE_INDEX:
+                self.nav.setCurrentRow(0)
+            if hasattr(self, "_adjust_nav_height"):
+                self._adjust_nav_height()
     
     def _on_version_update_available(self, version_info: dict):
         """检测到新版本，显示升级弹窗（从轮询服务调用）"""
