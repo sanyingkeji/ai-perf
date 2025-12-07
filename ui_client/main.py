@@ -1,26 +1,62 @@
 import sys
+import os
 import encodings  # 确保 PyInstaller 包含 encodings 模块（修复 ModuleNotFoundError）
 import traceback
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType, QLoggingCategory
 from utils.theme_manager import ThemeManager
+from utils.config_manager import CONFIG_PATH, ConfigManager
 from windows.main_window import MainWindow
+
+# 开发开关：设置为 True 或环境变量 AI_PERF_DISABLE_LOGGING=1 可关闭日志输出
+DISABLE_LOGGING = os.environ.get("AI_PERF_DISABLE_LOGGING") == "1"
+
+
+def _get_log_dir() -> Path:
+    """日志目录（随用户配置存放）"""
+    return CONFIG_PATH.parent / "logs"
+
+
+def _cleanup_old_logs(log_dir: Path, retention_hours: int) -> None:
+    """删除超过保留时间的旧日志，避免磁盘占用"""
+    try:
+        if retention_hours <= 0:
+            return
+        deadline = datetime.now() - timedelta(hours=retention_hours)
+        for file in log_dir.glob("*.log"):
+            try:
+                if datetime.fromtimestamp(file.stat().st_mtime) < deadline:
+                    file.unlink()
+            except Exception:
+                # 忽略单个文件的删除失败
+                pass
+    except Exception:
+        # 清理失败不影响主流程
+        pass
+
+
+def _get_retention_hours() -> int:
+    """从配置读取日志保留时长，默认 1 小时"""
+    try:
+        cfg = ConfigManager.load()
+        return int(cfg.get("log_retention_hours", 1)) or 1
+    except Exception:
+        return 1
 
 
 def setup_crash_logging():
     """设置崩溃日志记录"""
-    app_dir = Path(__file__).parent
-    log_dir = app_dir / "logs"
-    log_dir.mkdir(exist_ok=True)
-    
+    log_dir = _get_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+
     # 创建日志文件，文件名包含时间戳
     log_file = log_dir / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    
-    # 配置日志格式
+
+    # 创建日志文件，文件名包含时间戳
     logging.basicConfig(
         level=logging.DEBUG,
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -29,14 +65,19 @@ def setup_crash_logging():
             logging.StreamHandler(sys.stderr)
         ]
     )
-    
+
     logger = logging.getLogger('crash_logger')
     logger.info("=" * 80)
     logger.info(f"应用启动 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"Python 版本: {sys.version}")
     logger.info(f"日志文件: {log_file}")
     logger.info("=" * 80)
-    
+
+    # 按配置清理旧日志
+    retention_hours = _get_retention_hours()
+    logger.info(f"日志保留时长：{retention_hours} 小时")
+    _cleanup_old_logs(log_dir, retention_hours)
+
     return logger, log_file
 
 
@@ -99,14 +140,17 @@ def exception_handler(exc_type, exc_value, exc_traceback):
 
 
 def main():
-    # 设置崩溃日志
-    logger, log_file = setup_crash_logging()
-    
-    # 设置全局异常处理器
-    sys.excepthook = exception_handler
-    
-    # 设置 Qt 消息处理器
-    qInstallMessageHandler(qt_message_handler)
+    # 设置崩溃日志（可通过 DISABLE_LOGGING 关闭）
+    if DISABLE_LOGGING:
+        logging.disable(logging.CRITICAL)  # 全局禁用日志
+        logger = logging.getLogger('crash_logger')
+        log_file = None
+    else:
+        logger, log_file = setup_crash_logging()
+        # 设置全局异常处理器
+        sys.excepthook = exception_handler
+        # 设置 Qt 消息处理器
+        qInstallMessageHandler(qt_message_handler)
     
     try:
         logger.info("初始化 QApplication...")

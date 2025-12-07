@@ -9,6 +9,7 @@
 import sys
 import platform
 from typing import Optional
+from pathlib import Path
 
 
 class SystemNotification:
@@ -22,11 +23,15 @@ class SystemNotification:
             if hasattr(sys, 'frozen') and sys.frozen:
                 # 打包后的应用
                 if platform.system() == "Darwin":
-                    # macOS: 从应用包获取
+                    # macOS: 从应用包获取（更健壮：查找上层的 Contents/Resources）
                     exe_path = Path(sys.executable)
-                    if exe_path.parts[-3:] == ('Contents', 'MacOS', 'Ai Perf Client'):
-                        app_bundle = exe_path.parent.parent.parent
-                        icon_path = app_bundle / "Contents" / "Resources" / "app_icon.icns"
+                    contents_root = None
+                    for parent in exe_path.parents:
+                        if parent.name == "Contents":
+                            contents_root = parent
+                            break
+                    if contents_root:
+                        icon_path = contents_root / "Resources" / "app_icon.icns"
                         if icon_path.exists():
                             return str(icon_path)
                 elif platform.system() == "Windows":
@@ -104,10 +109,16 @@ class SystemNotification:
                 # 设置图标（如果提供）
                 if icon_path:
                     try:
-                        from AppKit import NSImage
+                        from AppKit import NSImage, NSApplication
                         icon_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
                         if icon_image:
                             notification.setContentImage_(icon_image)
+                            # 开发模式下没有 bundle，会用 Python 默认图标。直接设置进程图标，确保通知图标一致。
+                            try:
+                                app = NSApplication.sharedApplication()
+                                app.setApplicationIconImage_(icon_image)
+                            except Exception:
+                                pass
                     except Exception:
                         # 图标设置失败，忽略（使用默认图标）
                         pass

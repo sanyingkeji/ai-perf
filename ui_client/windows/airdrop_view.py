@@ -45,6 +45,7 @@ from PySide6.QtGui import (
     QColor,
     QBrush,
     QPen,
+    QIcon,
     QDragEnterEvent,
     QDropEvent,
     QMouseEvent,
@@ -234,8 +235,10 @@ class DeviceItemWidget(QWidget):
         # 第二步：添加同事名字（中间，第二行）
         self.name_label = QLabel(self._device.name)
         self.name_label.setAlignment(Qt.AlignCenter)
-        # PySide6 6.5 兼容：使用 QFont.Weight.Medium
-        name_font = QFont("SF Pro Display", 12)
+        # PySide6 6.5 兼容：使用 setter 方式避免静态检查误报
+        name_font = QFont()
+        name_font.setFamily("SF Pro Display")
+        name_font.setPointSize(12)
         name_font.setWeight(QFont.Weight.Medium)
         self.name_label.setFont(name_font)
         self.name_label.setStyleSheet("background-color: transparent;")
@@ -248,7 +251,9 @@ class DeviceItemWidget(QWidget):
         self.device_label = QLabel(device_text)
         self.device_label.setAlignment(Qt.AlignCenter)
         self.device_label.setWordWrap(True)
-        device_font = QFont("SF Pro Display", 9)
+        device_font = QFont()
+        device_font.setFamily("SF Pro Display")
+        device_font.setPointSize(9)
         self.device_label.setFont(device_font)
         # 使用主题颜色
         colors = self._get_theme_colors()
@@ -506,8 +511,10 @@ class DeviceItemWidget(QWidget):
         painter.drawEllipse(center - radius, center - radius, self._avatar_size, self._avatar_size)
         
         painter.setPen(text_color)
-        # PySide6 6.5 兼容：使用 QFont.Weight.Medium
-        avatar_font = QFont("SF Pro Display", 32)
+        # PySide6 6.5 兼容：使用 setter 方式避免静态检查误报
+        avatar_font = QFont()
+        avatar_font.setFamily("SF Pro Display")
+        avatar_font.setPointSize(32)
         avatar_font.setWeight(QFont.Weight.Medium)
         painter.setFont(avatar_font)
         first_char = self._device.name[0].upper() if self._device.name else "?"
@@ -644,6 +651,7 @@ class TransferRequestBubble(QWidget):
                 "border_alpha": 1.0,
                 "bg_rgb": "28, 28, 30",
                 "border_rgb": "50, 50, 52",
+                "link": "#0A84FF",
             }
         else:
             return {
@@ -662,6 +670,7 @@ class TransferRequestBubble(QWidget):
                 "border_alpha": 0.1,
                 "bg_rgb": "255, 255, 255",
                 "border_rgb": "0, 0, 0",
+                "link": "#0A84FF",
             }
     
     def _setup_ui(self, colors: dict = None):
@@ -1017,6 +1026,25 @@ class ClipboardRequestBubble(QWidget):
             return theme == "dark"
         except Exception:
             return False
+
+    def _load_discover_scope(self) -> str:
+        """读取可被发现范围配置，默认 all"""
+        try:
+            cfg = ConfigManager.load()
+            scope = cfg.get("airdrop_discover_scope", "all")
+            if scope not in ("all", "group", "none"):
+                scope = "all"
+            return scope
+        except Exception:
+            return "all"
+
+    def _save_discover_scope(self, scope: str):
+        try:
+            cfg = ConfigManager.load()
+            cfg["airdrop_discover_scope"] = scope
+            ConfigManager.save(cfg)
+        except Exception as e:
+            logger.warning(f"保存 discover_scope 配置失败: {e}")
     
     def _get_theme_colors(self) -> dict:
         """获取主题颜色"""
@@ -1037,6 +1065,7 @@ class ClipboardRequestBubble(QWidget):
                 "border_alpha": 1.0,
                 "bg_rgb": "28, 28, 30",
                 "border_rgb": "50, 50, 52",
+                "link": "#0A84FF",
             }
         else:
             return {
@@ -1055,6 +1084,7 @@ class ClipboardRequestBubble(QWidget):
                 "border_alpha": 0.1,
                 "bg_rgb": "255, 255, 255",
                 "border_rgb": "0, 0, 0",
+                "link": "#0A84FF",
             }
     
     def _primary_button_style(self, colors: dict = None) -> str:
@@ -1241,6 +1271,26 @@ class AirDropView(QWidget):
     # 信号：传输请求结果（用于从后台线程通知主线程）
     transfer_request_result = Signal(dict, str, str, str, int, str)  # result, file_path, device_name, device_ip, device_port, request_id
     
+    def _load_discover_scope(self) -> str:
+        """读取可被发现范围配置，默认 all"""
+        try:
+            cfg = ConfigManager.load()
+            scope = cfg.get("airdrop_discover_scope", "all")
+            if scope not in ("all", "group", "none"):
+                scope = "all"
+            return scope
+        except Exception:
+            return "all"
+
+    def _save_discover_scope(self, scope: str):
+        """保存可被发现范围配置"""
+        try:
+            cfg = ConfigManager.load()
+            cfg["airdrop_discover_scope"] = scope
+            ConfigManager.save(cfg)
+        except Exception as e:
+            logger.warning(f"保存 discover_scope 配置失败: {e}")
+
     @staticmethod
     def _log_with_timestamp(message: str):
         """打印带时间戳的日志（精确到毫秒）"""
@@ -1310,6 +1360,10 @@ class AirDropView(QWidget):
         self._device_discovery_times: Dict[str, float] = {}  # 设备发现时间 {user_id: timestamp}
         self._device_transfer_times: Dict[str, float] = {}  # 设备传输时间 {user_id: timestamp}
         self._device_group_ids: Dict[str, Optional[str]] = {}  # 设备组ID {user_id: group_id}
+        self._discover_scope: str = self._load_discover_scope()  # 可被发现范围 all/group/none
+        self._scope_change_thread: Optional[threading.Thread] = None  # 更新可见范围的后台任务
+        self._temp_visible_devices: Set[str] = set()  # 临时显示的设备（发送请求方）
+        self._temp_device_timers: Dict[str, QTimer] = {}  # 临时设备的定时移除器
         # 发送等待倒计时
         self._wait_countdown_timer: Optional[QTimer] = None
         self._wait_countdown_remaining: int = 0
@@ -1366,6 +1420,11 @@ class AirDropView(QWidget):
             if platform.system() == "Darwin":
                 # 延迟稍长，确保窗口激活事件已经处理完
                 QTimer.singleShot(200, self._bring_all_bubbles_to_front)
+                # 激活后立即尝试聚焦最早待处理请求，避免必须点击
+                QTimer.singleShot(200, self._focus_first_pending_request)
+            else:
+                # 其他平台也补一刀，防止悬浮窗口被覆盖
+                QTimer.singleShot(50, self._focus_first_pending_request)
         super().changeEvent(event)
     
     def mouseDoubleClickEvent(self, event):
@@ -1480,8 +1539,37 @@ class AirDropView(QWidget):
         self._background_label = QLabel('"隔空投送"可让你与附近的同事立即共享。')
         self._background_label.setAlignment(Qt.AlignCenter)
         self._background_label.setStyleSheet(f"color: {colors['text_tertiary']}; font-size: 12px;")
-        self._background_label.setWordWrap(True)
+        self._background_label.setWordWrap(False)  # 不换行
         background_layout.addWidget(self._background_label)
+
+        # 允许发现控制（文案占位，功能后续实现）
+        discover_row = QHBoxLayout()
+        discover_row.setContentsMargins(0, 0, 0, 0)
+        discover_row.setSpacing(4)
+        discover_row.addStretch()
+        link_color = colors.get("link", colors.get("button_primary_bg", "#0A84FF"))
+        self._discover_button = QPushButton("允许这些同事发现我：所有人")
+        self._discover_button.setCursor(Qt.PointingHandCursor)
+        self._discover_button.setFlat(True)
+        self._discover_button.setStyleSheet(self._discover_button_style(link_color))
+        # 设置箭头图标（与文字同色）
+        arrow_path = Path(__file__).parent.parent / "resources" / "arrow_down.png"
+        if arrow_path.exists():
+            arrow_pix = QPixmap(str(arrow_path))
+            if not arrow_pix.isNull():
+                try:
+                    tinted_arrow = self._tint_pixmap(arrow_pix, QColor(link_color))
+                except Exception:
+                    tinted_arrow = arrow_pix
+                self._discover_button.setIcon(QIcon(tinted_arrow))
+                self._discover_button.setIconSize(QSize(14, 9))  # 放大箭头尺寸
+                self._discover_button.setLayoutDirection(Qt.RightToLeft)  # 让箭头在文字右侧
+        self._update_discover_button_label()
+        # 用 lambda 包一层，避免 IDE 对 connect 的解析警告
+        self._discover_button.clicked.connect(lambda: self._on_discover_clicked())
+        discover_row.addWidget(self._discover_button)
+        discover_row.addStretch()
+        background_layout.addLayout(discover_row)
         
         # 将提示内容添加到布局中，单独一行，居中显示
         content_layout.addWidget(self._background_frame, 0, Qt.AlignHCenter)
@@ -1515,6 +1603,85 @@ class AirDropView(QWidget):
         
         # 记录初始布局距离（未启动服务时提示块相对窗口的位置）
         QTimer.singleShot(0, self._log_initial_layout_metrics)
+    
+    def _discover_button_style(self, link_color: str) -> str:
+        """下拉按钮样式，仿苹果蓝色文本+简洁箭头"""
+        return f"""
+            QPushButton {{
+                color: {link_color};
+                font-size: 12px;
+                border: 0px;
+                background: transparent;
+                padding: 2px 4px 2px 0px; /* 给右侧箭头留一点空隙 */
+                text-align: left;
+            }}
+            QPushButton::menu-indicator {{
+                image: none;
+                width: 0px;
+            }}
+            QPushButton:hover {{
+                color: {link_color};
+                text-decoration: underline;
+            }}
+        """
+    
+    def _update_discover_button_label(self):
+        """根据当前 scope 更新按钮文案"""
+        scope_label_map = {"all": "所有人", "group": "本部门", "none": "没有人"}
+        label = scope_label_map.get(self._discover_scope, "所有人")
+        self._discover_button.setText(f"允许这些同事发现我：{label}")
+    
+    def _apply_discover_scope(self, scope: str, persist: bool = True, update_service: bool = True):
+        """应用选择的可见范围，更新 UI / 配置 / 服务"""
+        if scope not in ("all", "group", "none"):
+            scope = "all"
+        self._discover_scope = scope
+        self._update_discover_button_label()
+        if persist:
+            self._save_discover_scope(scope)
+        if update_service and self._transfer_manager:
+            # 后台线程执行，避免阻塞 UI
+            def worker():
+                try:
+                    self._transfer_manager.set_discover_scope(scope)
+                except Exception as e:
+                    logger.warning(f"更新 discover_scope 到 TransferManager 失败: {e}")
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            self._scope_change_thread = t
+    
+    def _on_discover_clicked(self):
+        """展示自定义下拉（向上弹出），选项暂不改逻辑，仅UI"""
+        colors = self._get_theme_colors()
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                border-radius: 8px;
+                border: 1px solid {colors['button_secondary_border']};
+            }}
+            QMenu::item:selected {{
+                background: {colors['button_primary_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        options = [("all", "所有人"), ("group", "本部门"), ("none", "没有人")]
+        actions = []
+        for key, label in options:
+            actions.append((menu.addAction(label), key))
+    
+        # 计算向上弹出的位置
+        anchor = self._discover_button.mapToGlobal(QPoint(self._discover_button.width() // 2, 0))
+        menu_size = menu.sizeHint()
+        pos = QPoint(anchor.x() - menu_size.width() // 2, anchor.y() - menu_size.height())
+        chosen = menu.exec(pos)
+        if chosen:
+            for action, key in actions:
+                if action == chosen:
+                    # 仅更新广播/配置，不拦截发送，失败交由对方拒绝
+                    self._apply_discover_scope(key, persist=True, update_service=True)
+                    break
 
     def _log_initial_layout_metrics(self):
         """打印未启动服务时提示区域的相对位置，便于校准"""
@@ -1559,6 +1726,9 @@ class AirDropView(QWidget):
         # 窗口显示后，延迟更新 item 宽度，确保布局已完成
         if hasattr(self, 'devices_list'):
             QTimer.singleShot(50, self._update_item_widths)
+        # 如果有待处理请求，显示时主动聚焦最早的请求
+        if self._pending_requests:
+            QTimer.singleShot(50, self._focus_first_pending_request)
     
     def _tint_pixmap(self, pixmap: QPixmap, color: QColor) -> QPixmap:
         """将图标着色为指定颜色"""
@@ -2068,6 +2238,7 @@ class AirDropView(QWidget):
                     self._is_showing_animation = False
                     # 重新定位气泡到头像位置
                     self._reposition_all_bubbles()
+                    QTimer.singleShot(0, self._focus_first_pending_request)
                 except Exception as e:
                     import sys
                     import traceback
@@ -2333,7 +2504,8 @@ class AirDropView(QWidget):
                 user_id=user_id,
                 user_name=user_name,
                 avatar_url=avatar_url,
-                group_id=self._current_user_group_id
+                group_id=self._current_user_group_id,
+                discover_scope=self._discover_scope
             )
             
             self._transfer_manager.device_added.connect(self._on_device_added)
@@ -2389,6 +2561,89 @@ class AirDropView(QWidget):
     def _get_device_unique_id(self, device: DeviceInfo) -> str:
         """获取设备的唯一标识（user_id + ip，支持同一账号多个设备）"""
         return f"{device.user_id}::{device.ip}"
+
+    def _has_device_in_list(self, key: str) -> bool:
+        """当前列表中是否已有该设备"""
+        for i in range(self.devices_list.count()):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget):
+                if self._get_device_unique_id(widget.device) == key:
+                    return True
+        return False
+
+    def _resolve_device_name(self, user_id: str, ip: str, fallback: str) -> str:
+        """根据已知设备缓存获取设备名，找不到则用 fallback"""
+        try:
+            if self._transfer_manager:
+                for d in self._transfer_manager.get_devices():
+                    if d.user_id == user_id and d.ip == ip:
+                        return d.device_name or d.name or fallback
+        except Exception:
+            pass
+        return fallback
+
+    def _is_device_visible(self, device: DeviceInfo) -> bool:
+        """
+        根据对方的 discover_scope 及组信息决定是否展示。
+        本端选择“本部门/没人”仅影响自身广播（通过 discover_scope 传递给对方），不影响本地列表展示。
+        """
+        device_key = self._get_device_unique_id(device)
+        if device_key in self._temp_visible_devices:
+            return True  # 有临时展示需求，直接显示
+        remote_scope = (getattr(device, "discover_scope", None) or "all").lower()
+        device_group = getattr(device, "group_id", None)
+        my_group = self._current_user_group_id
+
+        # 对端关闭广播
+        if remote_scope == "none":
+            return False
+        # 对端仅同组可见
+        if remote_scope == "group":
+            if not my_group or not device_group or device_group != my_group:
+                return False
+        return True
+
+    def _add_temp_device_for_request(self, device: DeviceInfo, ttl_ms: int = 60000):
+        """临时将发送方展示在列表中，超时自动移除"""
+        key = self._get_device_unique_id(device)
+        # 已在临时集或已在常规列表中，直接返回，避免重复
+        if key in self._temp_visible_devices or self._has_device_in_list(key):
+            return
+        self._temp_visible_devices.add(key)
+        self._add_device_widget_at_sorted_position(device)
+        # 定时移除
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(ttl_ms)
+        timer.timeout.connect(lambda k=key: self._remove_temp_device_by_key(k))
+        timer.start()
+        self._temp_device_timers[key] = timer
+
+    def _remove_temp_device_by_key(self, key: str):
+        """移除临时显示的设备（并刷新列表）"""
+        if key not in self._temp_visible_devices:
+            return
+        self._temp_visible_devices.discard(key)
+        timer = self._temp_device_timers.pop(key, None)
+        if timer:
+            timer.stop()
+            timer.deleteLater()
+        # 删除列表中的对应 item
+        for i in range(self.devices_list.count() - 1, -1, -1):
+            item = self.devices_list.item(i)
+            widget = self.devices_list.itemWidget(item)
+            if isinstance(widget, DeviceItemWidget):
+                if self._get_device_unique_id(widget.device) == key:
+                    self.devices_list.takeItem(i)
+        QTimer.singleShot(0, self._adjust_devices_list_size)
+
+    def _remove_temp_device_by_sender(self, sender_id: str, sender_ip: str):
+        key = f"{sender_id or ''}::{sender_ip or ''}"
+        self._remove_temp_device_by_key(key)
+        QTimer.singleShot(0, self._adjust_devices_list_size)
+
+    # 发送前不再因本端 discover_scope 拦截，保持与苹果一致（发送方可随时发送）
     
     def _update_device_group_cache(self, device: DeviceInfo, reorder_if_changed: bool = False):
         """根据设备自身携带的组信息更新缓存"""
@@ -2406,6 +2661,9 @@ class AirDropView(QWidget):
     
     def _on_device_added(self, device: DeviceInfo):
         """设备添加"""
+        if not self._is_device_visible(device):
+            _debug_log(f"[UI] Device hidden by discover_scope: {getattr(device, 'discover_scope', None)} user_id={device.user_id}")
+            return
         device_unique_id = self._get_device_unique_id(device)
         _debug_log(f"[UI] Device discovered in AirDropView: {device.name} ({device.ip}) user_id={device.user_id}, unique_id={device_unique_id}")
         
@@ -2709,17 +2967,16 @@ class AirDropView(QWidget):
         self._start_wait_countdown(device, 60)
         
         def send_in_thread():
-            result = self._transfer_manager.send_transfer_request(file_path, device)
-            
-            if result["success"]:
-                request_id = result["request_id"]
-                self._wait_and_transfer(file_path, device, request_id)
-            else:
-                self._transferring = False
-                self.status_label.setVisible(False)
-                self._set_device_status(device, None)
-                self._stop_wait_countdown()
-                Toast.show_message(self, f"请求失败: {result['message']}")
+            try:
+                result = self._transfer_manager.send_transfer_request(file_path, device)
+                if result.get("success"):
+                    request_id = result.get("request_id")
+                    self._wait_and_transfer(file_path, device, request_id)
+                else:
+                    msg = result.get("message", "请求失败")
+                    QTimer.singleShot(0, lambda m=msg: self._handle_send_request_failure(device, m))
+            except Exception as e:
+                QTimer.singleShot(0, lambda m=str(e): self._handle_send_request_failure(device, m))
         
         import threading
         thread = threading.Thread(target=send_in_thread, daemon=True)
@@ -2808,6 +3065,20 @@ class AirDropView(QWidget):
                                      filename: str, file_size: int, sender_ip: str = "", sender_port: int = 8765):
         """收到传输请求"""
         _debug_log(f"收到传输请求: request_id={request_id}, sender_ip={sender_ip}, sender_port={sender_port}")
+        # 临时显示发送方（即便对方不在可见列表），对齐苹果的“临时可见”体验
+        if sender_ip:
+            device_name_resolved = self._resolve_device_name(sender_id or "", sender_ip, sender_name)
+            temp_device = DeviceInfo(
+                name=sender_name,
+                user_id=sender_id or "",
+                ip=sender_ip,
+                port=sender_port,
+                avatar_url=None,
+                device_name=device_name_resolved,
+                group_id=None,
+                discover_scope="all"  # 临时视为可见
+            )
+            self._add_temp_device_for_request(temp_device)
         is_clipboard = (
             filename.startswith('clipboard_')
             or filename.startswith('clipboard_image_')
@@ -2830,7 +3101,8 @@ class AirDropView(QWidget):
             'clipboard_image_format': clipboard_image_format,
             'clipboard_image_base64': is_clipboard_image and is_clipboard_image_base64,
             'dialog': None,
-            'auto_expired': False
+            'auto_expired': False,
+            'received_at': time.time()
         }
         self._schedule_request_expiration(request_id)
         
@@ -2868,6 +3140,10 @@ class AirDropView(QWidget):
             filename.startswith('clipboard_') or filename.startswith('clipboard_image_') or filename.startswith('clipboard_img-')
         )
         is_clipboard_image = request_info.get('is_clipboard_image', False)
+        
+        # 预取发送端标识（用于临时可见清理）
+        sender_id_local = request_info.get('sender_id', '')
+        sender_ip_local = request_info.get('sender_ip', '')
         
         bubble = TransferRequestBubble(
             sender_name=request_info['sender_name'],
@@ -2929,6 +3205,8 @@ class AirDropView(QWidget):
                 self._transfer_manager._server.confirm_transfer(request_id, False)
             if request_id in self._pending_requests:
                 del self._pending_requests[request_id]
+            # 拒绝后移除临时设备
+            self._remove_temp_device_by_sender(sender_id_local, sender_ip_local)
             bubble.close()
         
         if is_clipboard:
@@ -2993,6 +3271,7 @@ class AirDropView(QWidget):
                 if request_id in self._pending_requests:
                     self._pending_requests[request_id]['accepted'] = True
                     self._pending_requests[request_id]['open_after_accept'] = open_after
+                # 接受后暂不移除，等待文件收完或超时清理
                 file_bubble.close()
             except Exception as e:
                 import traceback
@@ -3006,6 +3285,8 @@ class AirDropView(QWidget):
             if self._transfer_manager and self._transfer_manager._server and not auto_expired:
                 self._transfer_manager._server.confirm_transfer(request_id, False)
             if request_id in self._pending_requests:
+                req_info_local = self._pending_requests[request_id]
+                self._remove_temp_device_by_sender(req_info_local.get('sender_id', ""), req_info_local.get('sender_ip', ""))
                 del self._pending_requests[request_id]
             file_bubble.close()
         
@@ -3111,6 +3392,7 @@ class AirDropView(QWidget):
                 req_info.get('file_size', 0) == file_size):
                 request_ids_to_remove.append(req_id)
                 sender_id = req_info.get('sender_id')
+                sender_ip = req_info.get('sender_ip', "")
                 if sender_id:
                     sender_ids_to_reset.add(sender_id)
                 if req_info.get('paste_to_clipboard', False):
@@ -3122,6 +3404,9 @@ class AirDropView(QWidget):
                     clipboard_image_format = clipboard_image_format or req_info.get('clipboard_image_format')
                 if req_info.get('open_after_accept', False):
                     open_after_accept = True
+                # 清理临时可见设备
+                key = f"{sender_id or ''}::{sender_ip or ''}"
+                self._remove_temp_device_by_key(key)
         
         message_shown = False
         clipboard_image_base64 = clipboard_image_format is not None and original_filename.endswith('.b64img')
@@ -3234,6 +3519,9 @@ class AirDropView(QWidget):
         for device in self._transfer_manager.get_devices():
             device_unique_id = self._get_device_unique_id(device)
             if device_unique_id not in existing_device_ids:
+                if not self._is_device_visible(device):
+                    _debug_log(f"[UI] Skip device by scope: {device_unique_id}, scope={getattr(device, 'discover_scope', None)}")
+                    continue
                 _debug_log(f"[UI] _refresh_devices: Adding new device {device_unique_id}")
                 # 记录设备发现时间
                 import time
@@ -3381,6 +3669,14 @@ class AirDropView(QWidget):
             self._set_device_status(device, f"等待中({remaining})...", colors['status_waiting'])
             if remaining <= 0:
                 self._stop_wait_countdown()
+                # 超时仍未确认，重置传输状态并提示
+                self._transferring = False
+                self.status_label.setVisible(False)
+                if self._current_target and getattr(self._current_target, "ip", None) == device.ip:
+                    self._current_target = None
+                timeout_msg = "等待对方响应超时"
+                self._set_device_status(device, timeout_msg, colors.get('status_error'))
+                Toast.show_message(self, timeout_msg)
         
         timer.timeout.connect(tick)
         timer.start()
@@ -3394,6 +3690,39 @@ class AirDropView(QWidget):
         self._wait_countdown_timer = None
         self._wait_countdown_device = None
         self._wait_countdown_remaining = 0
+    
+    def _handle_send_request_failure(self, device: DeviceInfo, message: str):
+        """发送请求失败时的统一处理"""
+        self._transferring = False
+        self.status_label.setVisible(False)
+        self._stop_wait_countdown()
+        
+        # 更友好的错误提示
+        friendly = message
+        if "actively refused" in message or "actively refused" in message.lower():
+            friendly = "对方可能已离线或拒绝连接"
+        elif "timeout" in message.lower() or "timed out" in message.lower():
+            friendly = "连接超时，对方可能已离线"
+        
+        try:
+            logger.info(f"[AirDrop] send_request_failure: user_id={getattr(device,'user_id',None)}, ip={getattr(device,'ip',None)}, raw='{message}'")
+        except Exception:
+            pass
+        
+        colors = self._get_theme_colors()
+        self._set_device_status(device, friendly, colors.get('status_error'))
+        Toast.show_message(self, friendly)
+        
+        # 尝试触发一次刷新，更新设备在线状态
+        QTimer.singleShot(0, self._refresh_devices)
+        
+        # 主动告知发现模块该设备不可达，加速离线清理
+        try:
+            if self._transfer_manager and getattr(self._transfer_manager, "_discovery", None):
+                logger.info(f"[AirDrop] mark_unreachable for user_id={device.user_id}, ip={device.ip}")
+                self._transfer_manager._discovery.mark_unreachable(device.user_id, device.ip)
+        except Exception:
+            pass
 
     def _cleanup_transfer_manager(self, stop_manager: bool = True):
         """统一清理传输管理器资源"""
@@ -3442,11 +3771,93 @@ class AirDropView(QWidget):
         
         return None
     
+    def _scroll_to_device_widget(self, widget: QWidget, margin: int = 24):
+        """滚动确保指定设备卡片可见"""
+        if not widget or not hasattr(self, "_scroll_area") or not self._scroll_area:
+            return
+        try:
+            self._scroll_area.ensureWidgetVisible(widget, margin, margin)
+            return
+        except Exception:
+            pass
+        try:
+            vbar = self._scroll_area.verticalScrollBar()
+            if vbar:
+                target_y = widget.mapTo(self._scroll_area.widget(), QPoint(0, 0)).y()
+                vbar.setValue(max(0, target_y - margin))
+        except Exception:
+            pass
+    
+    def _focus_first_pending_request(self):
+        """
+        当窗口重新显示时，将视图滚动到最早的未处理请求并重新显示气泡。
+        """
+        # 动画未完成时稍后重试，避免定位不准
+        if getattr(self, "_is_showing_animation", False):
+            QTimer.singleShot(200, self._focus_first_pending_request)
+            return
+        
+        if not self._pending_requests:
+            return
+        
+        # 过滤出仍未处理的请求，按收到时间排序
+        candidates = []
+        for rid, info in self._pending_requests.items():
+            if info.get("accepted") or info.get("auto_expired"):
+                continue
+            received_at = info.get("received_at", 0)
+            candidates.append((received_at, rid))
+        if not candidates:
+            return
+        
+        candidates.sort(key=lambda x: x[0])
+        target_request_id = candidates[0][1]
+        
+        def do_focus():
+            req_info = self._pending_requests.get(target_request_id)
+            if not req_info or req_info.get("accepted") or req_info.get("auto_expired"):
+                return
+            
+            # 确保窗口已激活，避免气泡被遮挡
+            try:
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+            
+            # 确保对应设备卡片在可视区域
+            target_widget = self._find_device_widget_for_request(req_info)
+            if target_widget:
+                self._scroll_to_device_widget(target_widget)
+            
+            # 确保气泡存在并可见
+            dialog = req_info.get("dialog")
+            if not isinstance(dialog, TransferRequestBubble):
+                self._show_confirm_dialog(target_request_id)
+                dialog = self._pending_requests.get(target_request_id, {}).get("dialog")
+            elif not dialog.isVisible():
+                dialog.show()
+            
+            if isinstance(dialog, TransferRequestBubble):
+                self._position_request_bubble(dialog, self._pending_requests[target_request_id], retry=True)
+                dialog.bring_to_front()
+                # 再次提升所有气泡，避免被窗口覆盖
+                self._bring_all_bubbles_to_front()
+                # 再次激活窗口，确保无需点击即可看到
+                try:
+                    self.raise_()
+                    self.activateWindow()
+                except Exception:
+                    pass
+        
+        # 略微延迟，等待布局稳定后再滚动定位
+        QTimer.singleShot(120, do_focus)
+    
     def _position_request_bubble(self, bubble: TransferRequestBubble, request_info: dict, retry: bool = True):
         """将气泡定位在发送者头像附近；若主窗口隐藏到边缘，则固定到屏幕右上角"""
         margin = 12
         
-        # 如果窗口已隐藏到屏幕边缘或当前不可见，固定放到右上角提示
+        # 如果窗口已隐藏到屏幕边缘或当前不可见，固定到屏幕角落提示
         if self._was_hidden_to_icon or not self.isVisible():
             target_screen = None
             if self._hidden_rect:
@@ -3457,13 +3868,29 @@ class AirDropView(QWidget):
                 bubble.windowHandle().setScreen(target_screen)
             if target_screen:
                 bubble.lock_size_for_screen(target_screen)
+
+            # 平台区分：Windows → 右上角；macOS → 右下角
+            try:
+                import sys
+                is_macos = sys.platform == "darwin"
+            except Exception:
+                is_macos = False
+
+            # 尺寸可能在未显示前为0，使用 sizeHint 兜底
+            w = bubble.width() or bubble.sizeHint().width()
+            h = bubble.height() or bubble.sizeHint().height()
+
             if target_screen:
                 geo = target_screen.availableGeometry()
-                x = geo.right() - bubble.width() - margin
-                y = geo.top() + margin
+                x = geo.right() - w - margin
+                if is_macos:
+                    y = geo.bottom() - h - margin
+                else:
+                    y = geo.top() + margin
             else:
                 x = margin
                 y = margin
+
             bubble.move(x, y)
             bubble.set_pointer_visible(False)
             bubble.bring_to_front()

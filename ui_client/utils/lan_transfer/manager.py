@@ -37,7 +37,8 @@ class TransferManager(QObject):
     transfer_completed = Signal(str, bool, str)  # 传输完成 (target_name, success, message)
     
     def __init__(self, user_id: str, user_name: str, avatar_url: Optional[str] = None,
-                 group_id: Optional[str] = None, save_dir: Optional[Path] = None, port: int = 8765):
+                 group_id: Optional[str] = None, discover_scope: str = "all",
+                 save_dir: Optional[Path] = None, port: int = 8765):
         """
         初始化传输管理器
         
@@ -53,6 +54,7 @@ class TransferManager(QObject):
         self._user_name = user_name
         self._avatar_url = avatar_url
         self._group_id = group_id
+        self._discover_scope = discover_scope or "all"
         self._save_dir = save_dir or (Path.home() / "Downloads")
         self._port = port
         
@@ -66,6 +68,7 @@ class TransferManager(QObject):
         self._zeroconf = None
         self._service_info = None
         self._local_ip = None  # 当前设备的 IP 地址，用于过滤自己
+        self._service_name: Optional[str] = None
         
         self._running = False
     
@@ -91,24 +94,33 @@ class TransferManager(QObject):
             # 使用 user_id + platform.node() + ip 确保唯一性，支持同一账号多个设备
             local_ip = get_local_ip()
             self._local_ip = local_ip  # 保存当前设备的 IP，用于过滤自己
-            service_name = f"aiperf-{self._user_id}-{platform.node()}-{local_ip.replace('.', '-')}"
-            _debug_log(f"Registering mDNS service {service_name} (user={self._user_name}, ip={local_ip})")
-            logger.info(f"[TransferManager] Registering service: service_name={service_name}, user_id={self._user_id}, ip={local_ip}")
-            self._zeroconf, self._service_info = register_service(
-                name=service_name,
-                port=self._port,
-                user_id=self._user_id,
-                user_name=self._user_name,
-                avatar_url=self._avatar_url,
-                device_name=self._device_name,
-                group_id=self._group_id
-            )
+            if self._discover_scope == "none":
+                logger.info("[TransferManager] discover_scope=none, skip mDNS register (仅停止广播)")
+                self._zeroconf = None
+                self._service_info = None
+                self._service_name = f"aiperf-{self._user_id}-{platform.node()}-{local_ip.replace('.', '-')}"
+            else:
+                self._service_name = f"aiperf-{self._user_id}-{platform.node()}-{local_ip.replace('.', '-')}"
+                _debug_log(f"Registering mDNS service {self._service_name} (user={self._user_name}, ip={local_ip}, scope={self._discover_scope})")
+                logger.info(f"[TransferManager] Registering service: service_name={self._service_name}, user_id={self._user_id}, ip={local_ip}, scope={self._discover_scope}")
+                self._zeroconf, self._service_info = register_service(
+                    name=self._service_name,
+                    port=self._port,
+                    user_id=self._user_id,
+                    user_name=self._user_name,
+                    avatar_url=self._avatar_url,
+                    device_name=self._device_name,
+                    group_id=self._group_id,
+                    discover_scope=self._discover_scope,
+                )
             
             # 启动设备发现
             _debug_log("Starting DeviceDiscovery...")
             self._discovery = DeviceDiscovery(
                 on_device_added=self._on_device_added,
-                on_device_removed=self._on_device_removed
+                on_device_removed=self._on_device_removed,
+                local_user_id=self._user_id,
+                local_ip=self._local_ip
             )
             self._discovery.start()
             
@@ -136,6 +148,7 @@ class TransferManager(QObject):
                 self._zeroconf.close()
                 self._zeroconf = None
                 self._service_info = None
+                self._service_name = None
             
             if self._server:
                 self._server.stop()
@@ -147,6 +160,64 @@ class TransferManager(QObject):
         except Exception as e:
             logger.error(f"停止文件传输管理器失败: {e}")
             _debug_log(f"TransferManager.stop() failed: {e}")
+
+    def set_discover_scope(self, scope: str):
+        """
+        更新可被发现范围：
+        all   -> 正常广播
+        group -> 正常广播，标记为仅同组
+        none  -> 取消广播（仍可发现别人）
+        """
+        self._discover_scope = scope or "all"
+        if not self._running:
+            return
+        
+        # 1) 如果关闭广播
+        if self._discover_scope == "none":
+            if self._zeroconf and self._service_info:
+                try:
+                    self._zeroconf.unregister_service(self._service_info)
+                    self._zeroconf.close()
+                except Exception as e:
+                    logger.warning(f"[TransferManager] unregister service failed: {e}")
+                self._zeroconf = None
+                self._service_info = None
+            return
+        
+        # 2) 需要广播：先注销旧的，再按新 scope 注册
+        try:
+            if self._zeroconf and self._service_info:
+                self._zeroconf.unregister_service(self._service_info)
+                self._zeroconf.close()
+        except Exception as e:
+            logger.warning(f"[TransferManager] re-register cleanup failed: {e}")
+        finally:
+            self._zeroconf = None
+            self._service_info = None
+        
+        # 使用已有信息重注册
+        local_ip = self._local_ip or get_local_ip()
+        if not local_ip:
+            logger.warning("[TransferManager] cannot re-register service: no local ip")
+            return
+        self._local_ip = local_ip
+        if not self._service_name:
+            self._service_name = f"aiperf-{self._user_id}-{platform.node()}-{local_ip.replace('.', '-')}"
+        
+        try:
+            self._zeroconf, self._service_info = register_service(
+                name=self._service_name,
+                port=self._port,
+                user_id=self._user_id,
+                user_name=self._user_name,
+                avatar_url=self._avatar_url,
+                device_name=self._device_name,
+                group_id=self._group_id,
+                discover_scope=self._discover_scope,
+            )
+            logger.info(f"[TransferManager] re-registered service with scope={self._discover_scope}")
+        except Exception as e:
+            logger.error(f"[TransferManager] re-register service failed: {e}")
     
     def get_devices(self) -> list[DeviceInfo]:
         """获取发现的设备列表"""

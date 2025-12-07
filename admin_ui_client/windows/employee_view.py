@@ -27,12 +27,13 @@ from PySide6.QtGui import QFont, QAction
 from utils.api_client import AdminApiClient, ApiError, AuthError
 from utils.error_handler import handle_api_error
 from widgets.toast import Toast
+from utils.config_manager import CONFIG_PATH
 
 
 class _DataCache:
     """数据缓存工具类，用于缓存团队、角色、职级、薪级等数据（缓存1天）"""
     
-    CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
+    CACHE_DIR = CONFIG_PATH.parent / "cache"
     CACHE_EXPIRE_HOURS = 24  # 缓存24小时
     
     @classmethod

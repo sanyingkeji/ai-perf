@@ -1,13 +1,75 @@
 import sys
+import os
 import encodings  # 确保 PyInstaller 包含 encodings 模块（修复 ModuleNotFoundError）
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from utils.theme_manager import ThemeManager
+from utils.config_manager import CONFIG_PATH, ConfigManager
 from windows.main_window import MainWindow
+
+# 开发开关：设置 True 或环境变量 AI_PERF_DISABLE_LOGGING=1 关闭日志
+DISABLE_LOGGING = os.environ.get("AI_PERF_DISABLE_LOGGING") == "1"
+
+
+def _get_log_dir() -> Path:
+    return CONFIG_PATH.parent / "logs"
+
+
+def _get_retention_hours() -> int:
+    try:
+        cfg = ConfigManager.load()
+        return int(cfg.get("log_retention_hours", 1)) or 1
+    except Exception:
+        return 1
+
+
+def _cleanup_old_logs(log_dir: Path, retention_hours: int) -> None:
+    try:
+        if retention_hours <= 0:
+            return
+        deadline = datetime.now() - timedelta(hours=retention_hours)
+        for f in log_dir.glob("*.log"):
+            try:
+                if datetime.fromtimestamp(f.stat().st_mtime) < deadline:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def main():
+    # 本地诊断日志，落盘到用户目录，避免被升级覆盖
+    if DISABLE_LOGGING:
+        logging.disable(logging.CRITICAL)
+        log_file = None
+    else:
+        try:
+            log_dir = _get_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"admin_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+                handlers=[
+                    logging.FileHandler(log_file, encoding='utf-8'),
+                    logging.StreamHandler(sys.stderr),
+                ],
+            )
+            logger = logging.getLogger("admin_app")
+            logger.info("Admin app start, log file: %s", log_file)
+
+            # 按配置清理旧日志
+            retention_hours = _get_retention_hours()
+            logger.info("日志保留时长：%s 小时", retention_hours)
+            _cleanup_old_logs(log_dir, retention_hours)
+        except Exception:
+            # 日志初始化失败不阻断启动
+            pass
+
     app = QApplication(sys.argv)
     
     # macOS: 关闭窗口时不退出应用，保留在状态栏

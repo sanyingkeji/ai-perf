@@ -13,6 +13,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
 
+from utils.config_manager import CONFIG_PATH
+
 
 class BackgroundNotifier:
     """后台通知服务，可以在应用未运行时发送通知"""
@@ -24,7 +26,8 @@ class BackgroundNotifier:
         Args:
             config_path: 配置文件路径，用于读取通知设置
         """
-        self.config_path = config_path or Path.home() / ".ai_perf_client" / "notifications.json"
+        base_dir = CONFIG_PATH.parent
+        self.config_path = config_path or base_dir / "notifications.json"
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
     
     def send_notification(self, title: str, message: str, 

@@ -32,6 +32,7 @@ class DeviceInfo:
     avatar_url: Optional[str] = None  # 头像URL
     device_name: Optional[str] = None  # 设备名称（如：MacBook Pro）
     group_id: Optional[str] = None  # 组ID（由客户端广播）
+    discover_scope: Optional[str] = None  # 可被发现范围：all/group/none
 
 
 class DeviceDiscovery:
@@ -40,7 +41,9 @@ class DeviceDiscovery:
     SERVICE_TYPE = "_aiperf-transfer._tcp.local."
     
     def __init__(self, on_device_added: Optional[Callable[[DeviceInfo], None]] = None,
-                 on_device_removed: Optional[Callable[[str], None]] = None):
+                 on_device_removed: Optional[Callable[[str], None]] = None,
+                 local_user_id: Optional[str] = None,
+                 local_ip: Optional[str] = None):
         """
         初始化设备发现服务
         
@@ -55,8 +58,13 @@ class DeviceDiscovery:
         self._on_device_removed = on_device_removed
         self._devices: Dict[str, DeviceInfo] = {}  # key: service_name
         self._device_last_seen: Dict[str, float] = {}  # key: service_name, value: timestamp
+        self._device_miss_count: Dict[str, int] = {}
         self._cleanup_timer: Optional[threading.Timer] = None
-        self._device_ttl = 60  # seconds
+        # 快速检测但带防抖：TTL 15s，周期 5s，连续 miss>=2 才移除
+        self._device_ttl = 15  # seconds
+        self._cleanup_interval = 5  # seconds
+        self._local_user_id = str(local_user_id) if local_user_id is not None else None
+        self._local_ip = local_ip
         self._lock = threading.Lock()
         self._running = False
     
@@ -106,6 +114,7 @@ class DeviceDiscovery:
             with self._lock:
                 self._devices.clear()
                 self._device_last_seen.clear()
+                self._device_miss_count.clear()
             logger.info("设备发现服务已停止")
         except Exception as e:
             logger.error(f"停止设备发现服务失败: {e}")
@@ -150,6 +159,7 @@ class DeviceDiscovery:
             avatar_url = props.get('avatar_url')
             device_name = props.get('device_name')
             group_id = props.get('group_id')
+            discover_scope = props.get('discover_scope')
             
             device_info = DeviceInfo(
                 name=name,
@@ -158,7 +168,8 @@ class DeviceDiscovery:
                 port=port,
                 avatar_url=avatar_url,
                 device_name=device_name,
-                group_id=group_id
+                group_id=group_id,
+                discover_scope=discover_scope,
             )
             
             # 使用 user_id + ip 作为唯一标识，支持同一账号多个设备
@@ -170,6 +181,7 @@ class DeviceDiscovery:
             should_add = False
             with self._lock:
                 self._device_last_seen[service_name] = time.time()
+                self._device_miss_count[service_name] = 0
                 # 检查是否已存在相同的设备（user_id + ip）
                 existing_device = None
                 existing_service_name = None
@@ -186,15 +198,12 @@ class DeviceDiscovery:
                     should_add = True
                     logger.info(f"[Discovery] Adding new device: service_name={service_name}, user_id={user_id}, ip={ip}")
                 else:
-                    # 设备已存在，更新 service_name 映射（可能 service_name 变了）
+                    # 设备已存在，更新属性并刷新映射（scope/group 变化需要同步）
                     if existing_service_name != service_name:
-                        # 移除旧的映射
                         self._devices.pop(existing_service_name, None)
-                        # 添加新的映射
-                        self._devices[service_name] = device_info
                         logger.info(f"[Discovery] Updating device service_name: {existing_service_name} -> {service_name}")
-                    # 不触发添加回调，因为设备已存在
-                    should_add = False
+                    self._devices[service_name] = device_info
+                    should_add = True  # 触发回调以让上层刷新显示（scope/group 可能改变）
             
             if should_add and self._on_device_added:
                 logger.info(f"[Discovery] Calling _on_device_added callback for: user_id={user_id}, ip={ip}")
@@ -211,6 +220,7 @@ class DeviceDiscovery:
         """设备丢失时的处理"""
         try:
             with self._lock:
+                self._device_miss_count.pop(service_name, None)
                 device_info = self._devices.pop(service_name, None)
             
             if device_info and self._on_device_removed:
@@ -246,17 +256,47 @@ class DeviceDiscovery:
                 with self._lock:
                     for sn, last in list(self._device_last_seen.items()):
                         if now - last > self._device_ttl:
-                            stale.append(sn)
+                            if self._is_self_service(sn):
+                                continue
+                            # 尝试主动刷新一次服务信息，若仍不可得再计入 miss
+                            refreshed = False
+                            try:
+                                if self._zeroconf:
+                                    info = self._zeroconf.get_service_info(self.SERVICE_TYPE, sn)
+                                    if info and info.addresses:
+                                        self._device_last_seen[sn] = now
+                                        self._device_miss_count[sn] = 0
+                                        refreshed = True
+                            except Exception:
+                                pass
+                            if refreshed:
+                                continue
+                            
+                            miss = self._device_miss_count.get(sn, 0) + 1
+                            self._device_miss_count[sn] = miss
+                            # 连续 2 次超时才标记离线，降低误判
+                            if miss >= 2:
+                                stale.append(sn)
                 for sn in stale:
                     self._on_device_lost(sn)
             finally:
                 if self._running:
                     self._schedule_cleanup()
-        timer = threading.Timer(10, cleanup)
+        timer = threading.Timer(self._cleanup_interval, cleanup)
         timer.daemon = True
         timer.start()
         self._cleanup_timer = timer
     
+    def mark_unreachable(self, user_id: str, ip: str):
+        """主动标记某设备不可达，触发离线处理"""
+        targets = []
+        with self._lock:
+            for sn, di in list(self._devices.items()):
+                if di.user_id == str(user_id) and di.ip == ip:
+                    targets.append(sn)
+        for sn in targets:
+            self._on_device_lost(sn)
+
     def get_devices(self) -> list[DeviceInfo]:
         """获取当前发现的设备列表"""
         with self._lock:
@@ -265,6 +305,20 @@ class DeviceDiscovery:
             for device in devices:
                 logger.info(f"[Discovery]   - {device.name} (user_id={device.user_id}, ip={device.ip})")
             return devices
+    
+    def _is_self_service(self, service_name: str) -> bool:
+        """判断给定 service 是否为本机发布的服务"""
+        try:
+            device = self._devices.get(service_name)
+            if not device:
+                return False
+            if self._local_user_id and device.user_id == self._local_user_id:
+                return True
+            if self._local_ip and device.ip == self._local_ip:
+                return True
+            return False
+        except Exception:
+            return False
     
     @staticmethod
     def _is_ipv4(ip: str) -> bool:
@@ -304,7 +358,8 @@ class _DeviceListener(ServiceListener):
 def register_service(name: str, port: int, user_id: str, user_name: str,
                      avatar_url: Optional[str] = None,
                      device_name: Optional[str] = None,
-                     group_id: Optional[str] = None) -> tuple[Zeroconf, ServiceInfo]:
+                     group_id: Optional[str] = None,
+                     discover_scope: Optional[str] = None) -> tuple[Zeroconf, ServiceInfo]:
     """
     注册mDNS服务
     
@@ -316,6 +371,7 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
         avatar_url: 头像URL（可选）
         device_name: 设备名称（可选）
         group_id: 组ID（可选，由客户端在登录后提供）
+        discover_scope: 可被发现范围（all/group/none）
     
     Returns:
         (zeroconf实例, service_info实例)
@@ -336,6 +392,8 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
         properties['device_name'] = device_name.encode('utf-8')
     if group_id:
         properties['group_id'] = str(group_id).encode('utf-8')
+    if discover_scope:
+        properties['discover_scope'] = str(discover_scope).encode('utf-8')
     
     # 创建服务信息
     service_info = ServiceInfo(

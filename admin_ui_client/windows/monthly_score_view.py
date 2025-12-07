@@ -452,8 +452,10 @@ class MonthlyScoreView(QWidget):
     def _load_employee_data(self):
         """加载员工数据以获取团队信息（带缓存）"""
         # 使用与employee_view相同的缓存机制
+        from utils.config_manager import CONFIG_PATH
+
         class _DataCache:
-            CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
+            CACHE_DIR = CONFIG_PATH.parent / "cache"
             CACHE_EXPIRE_HOURS = 24
             
             @classmethod

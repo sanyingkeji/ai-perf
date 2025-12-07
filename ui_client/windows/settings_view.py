@@ -1,17 +1,19 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 import sys
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit,
-    QCheckBox, QRadioButton, QHBoxLayout, QPushButton, QFrame, QDialog, QTextEdit,
-    QScrollArea, QApplication
+    QCheckBox, QHBoxLayout, QPushButton, QFrame, QDialog, QTextEdit,
+    QScrollArea, QApplication, QSpinBox, QFileDialog, QButtonGroup
 )
 from PySide6.QtGui import QFont
 from PySide6.QtCore import QTimer, QRunnable, QThreadPool, QObject, Signal, Slot, Qt
 import platform
+import zipfile
+from pathlib import Path
 
-from utils.config_manager import ConfigManager
+from utils.config_manager import ConfigManager, CONFIG_PATH
 from utils.theme_manager import ThemeManager
 from utils.google_login import login_and_get_id_token, GoogleLoginError
 from utils.api_client import ApiClient, ApiError, AuthError
@@ -190,26 +192,52 @@ class SettingsView(QWidget):
         theme_title.setFont(theme_title_font)
         theme_layout.addWidget(theme_title)
 
-        self.rb_auto = QRadioButton("跟随系统")
-        self.rb_light = QRadioButton("浅色模式")
-        self.rb_dark = QRadioButton("深色模式")
+        # 使用互斥的可切换按钮替代 QRadioButton，规避 macOS 原生样式崩溃
+        self.theme_buttons: list[QPushButton] = []
+        self.theme_group = QButtonGroup(self)
+        self.theme_group.setExclusive(True)
+
+        def _make_theme_button(text: str, value: str) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setProperty("themeValue", value)
+            btn.setFixedHeight(24)
+            btn.setMinimumWidth(60)
+            self.theme_group.addButton(btn)
+            self.theme_buttons.append(btn)
+            return btn
+
+        btn_auto = _make_theme_button("跟随系统", "auto")
+        btn_light = _make_theme_button("浅色模式", "light")
+        btn_dark = _make_theme_button("深色模式", "dark")
 
         theme_choice = self.cfg.get("theme", "auto")
         if theme_choice == "light":
-            self.rb_light.setChecked(True)
+            btn_light.setChecked(True)
         elif theme_choice == "dark":
-            self.rb_dark.setChecked(True)
+            btn_dark.setChecked(True)
         else:
-            self.rb_auto.setChecked(True)
+            btn_auto.setChecked(True)
 
-        # 主题变更时自动保存并应用（使用 lambda 确保只在选中时触发）
-        self.rb_auto.toggled.connect(lambda checked: self._auto_save_theme("auto") if checked and not self._is_initializing else None)
-        self.rb_light.toggled.connect(lambda checked: self._auto_save_theme("light") if checked and not self._is_initializing else None)
-        self.rb_dark.toggled.connect(lambda checked: self._auto_save_theme("dark") if checked and not self._is_initializing else None)
+        # 主题变更时自动保存并应用
+        def _on_theme_clicked(button: QPushButton):
+            if self._is_initializing:
+                return
+            value = button.property("themeValue")
+            if value:
+                self._auto_save_theme(str(value))
 
-        theme_layout.addWidget(self.rb_auto)
-        theme_layout.addWidget(self.rb_light)
-        theme_layout.addWidget(self.rb_dark)
+        self.theme_group.buttonClicked.connect(_on_theme_clicked)
+
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(8)
+        for btn in (btn_auto, btn_light, btn_dark):
+            theme_row.addWidget(btn)
+        theme_row.addStretch()
+        theme_layout.addLayout(theme_row)
+
+        # 初始根据当前/系统主题刷新样式
+        self._update_theme_buttons_style(theme_choice)
 
         layout.addWidget(theme_frame)
 
@@ -234,6 +262,32 @@ class SettingsView(QWidget):
         self.chk_notifications.setChecked(self.cfg.get("notifications", True))
         self.chk_notifications.stateChanged.connect(self._auto_save_notifications)
         behavior_layout.addWidget(self.chk_notifications)
+
+        # 日志保留时长（小时）
+        log_retention_row = QHBoxLayout()
+        log_retention_label = QLabel("日志保留时长（小时）：")
+        self.spin_log_retention = QSpinBox()
+        self.spin_log_retention.setRange(1, 72)  # 最多保留 3 天
+        self.spin_log_retention.setValue(int(self.cfg.get("log_retention_hours", 1) or 1))
+        self.spin_log_retention.setSuffix(" 小时")
+        self.spin_log_retention.valueChanged.connect(self._auto_save_log_retention)
+        log_retention_row.addWidget(log_retention_label)
+        log_retention_row.addWidget(self.spin_log_retention)
+        log_retention_row.addStretch()
+        behavior_layout.addLayout(log_retention_row)
+
+        # 导出日志按钮
+        export_row = QHBoxLayout()
+        self.btn_export_logs = QPushButton("导出最近日志")
+        # 迷你按钮样式
+        self.btn_export_logs.setFixedWidth(90)
+        self.btn_export_logs.setFixedHeight(26)
+        self.btn_export_logs.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.btn_export_logs.clicked.connect(self._export_logs)
+        export_row.addWidget(QLabel("日志导出："))
+        export_row.addWidget(self.btn_export_logs)
+        export_row.addStretch()
+        behavior_layout.addLayout(export_row)
         
         # 全局快捷键启用开关（仅 macOS）
         import platform
@@ -691,6 +745,59 @@ class SettingsView(QWidget):
         self.cfg["theme"] = theme
         ConfigManager.save(self.cfg)
         ThemeManager.apply_theme()
+        # 同步主题按钮的配色
+        self._update_theme_buttons_style(theme)
+
+    def _resolve_effective_theme(self, pref: str) -> str:
+        """根据用户偏好与系统，得出实际主题（light/dark）。"""
+        if pref == "auto":
+            try:
+                return ThemeManager.detect_system_theme()
+            except Exception:
+                return "light"
+        return pref if pref in ("light", "dark") else "light"
+
+    def _update_theme_buttons_style(self, pref: str):
+        """根据当前主题调整按钮配色，保证暗色/亮色都可读。"""
+        effective = self._resolve_effective_theme(pref)
+        if effective == "dark":
+            bg = "#2d2d2d"
+            bg_hover = "#383838"
+            border = "#555"
+            checked_bg = "#3d7bfd"
+            checked_border = "#3d7bfd"
+            text = "#e8e8e8"
+            checked_text = "#ffffff"
+        else:
+            bg = "#f6f6f6"
+            bg_hover = "#f0f0f0"
+            border = "#c7c7c7"
+            checked_bg = "#0078d4"
+            checked_border = "#0078d4"
+            text = "#222"
+            checked_text = "#ffffff"
+
+        style = (
+            "QPushButton {"
+            f"  border: 1px solid {border};"
+            "  border-radius: 6px;"
+            "  padding: 4px 10px;"
+            f"  background: {bg};"
+            f"  color: {text};"
+            "  font-size: 12px;"
+            "}"
+            "QPushButton:hover {"
+            f"  background: {bg_hover};"
+            "}"
+            "QPushButton:checked {"
+            f"  background: {checked_bg};"
+            f"  color: {checked_text};"
+            f"  border-color: {checked_border};"
+            "}"
+        )
+
+        for btn in getattr(self, "theme_buttons", []):
+            btn.setStyleSheet(style)
 
     def _auto_save_auto_refresh(self, state: int):
         """自动保存自动刷新设置"""
@@ -717,6 +824,77 @@ class SettingsView(QWidget):
         # 如果启用了通知，检查权限
         if state == 2:
             self._check_notification_permission()
+
+    def _auto_save_log_retention(self, value: int):
+        """自动保存日志保留时长（小时）"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        hours = max(1, int(value))
+        self.cfg["log_retention_hours"] = hours
+        ConfigManager.save(self.cfg)
+        # 立即按新策略清理旧日志
+        try:
+            log_dir = Path(CONFIG_PATH.parent / "logs")
+            if log_dir.exists():
+                deadline = datetime.now() - timedelta(hours=hours)
+                for f in log_dir.glob("*.log"):
+                    try:
+                        if datetime.fromtimestamp(f.stat().st_mtime) < deadline:
+                            f.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        Toast.show_message(self, f"日志将保留最近 {hours} 小时")
+
+    def _export_logs(self):
+        """导出当前保留范围内的日志为 zip"""
+        log_dir = Path(CONFIG_PATH.parent / "logs")
+        if not log_dir.exists():
+            Toast.show_message(self, "暂无日志可导出")
+            return
+
+        retention_hours = int(self.cfg.get("log_retention_hours", 1) or 1)
+        deadline = datetime.now(timezone.utc).astimezone() - timedelta(hours=retention_hours)
+
+        # 收集符合保留时长的日志
+        log_files = []
+        for f in log_dir.glob("*.log"):
+            try:
+                mtime = datetime.fromtimestamp(f.stat().st_mtime).astimezone()
+                if mtime >= deadline:
+                    log_files.append(f)
+            except Exception:
+                pass
+
+        if not log_files:
+            Toast.show_message(self, "暂无符合保留时长的日志")
+            return
+
+        default_name = Path.home() / f"ai-perf-logs-{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出日志",
+            str(default_name),
+            "Zip 文件 (*.zip)"
+        )
+        if not file_path:
+            return
+
+        try:
+            with zipfile.ZipFile(file_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for f in log_files:
+                    zf.write(f, arcname=f.name)
+            Toast.show_message(self, "日志导出成功")
+        except Exception as e:
+            Toast.show_message(self, f"导出失败：{e}")
+            print(f"[Settings] Export logs failed: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
     
     def _auto_save_global_hotkey(self, state: int):
         """自动保存全局快捷键设置"""
@@ -995,7 +1173,7 @@ class SettingsView(QWidget):
                     # 注册新的快捷键
                     try:
                         main_window._global_hotkey = MacGlobalHotkey(main_window._show_airdrop)
-                        Toast.show_message(self, "全局快捷键已启用")
+                        # Toast.show_message(self, "全局快捷键已启用")
                     except Exception as e:
                         Toast.show_message(self, f"启用快捷键失败：{e}\n请检查辅助功能权限")
             else:

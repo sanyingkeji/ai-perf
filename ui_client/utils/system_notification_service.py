@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 
+from utils.config_manager import CONFIG_PATH
+
 
 class SystemNotificationService:
     """系统通知服务管理器"""
@@ -20,6 +22,7 @@ class SystemNotificationService:
     def __init__(self):
         self.system = platform.system()
         self.project_root = Path(__file__).resolve().parents[2]
+        self.user_data_dir = CONFIG_PATH.parent
         
         # macOS LaunchAgent 配置
         self.macos_label = "site.sanying.aiperf.notification"
@@ -66,7 +69,7 @@ class SystemNotificationService:
         # 通用路径（无论是否打包）
         possible_paths.extend([
             # 用户配置目录
-            Path.home() / ".ai_perf_client" / "scripts" / "notification_background_service.py",
+            self.user_data_dir / "scripts" / "notification_background_service.py",
             # 当前可执行文件目录
             Path(sys.executable).parent / "scripts" / "notification_background_service.py",
         ])
@@ -275,7 +278,7 @@ class SystemNotificationService:
             python_exe = self._get_python_executable()
             
             # 创建 plist 文件
-            log_dir = Path.home() / '.ai_perf_client'
+            log_dir = self.user_data_dir / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             stdout_log = str(log_dir / 'notification_service.log')
             stderr_log = str(log_dir / 'notification_service_error.log')

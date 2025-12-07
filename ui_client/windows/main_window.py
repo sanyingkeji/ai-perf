@@ -18,6 +18,7 @@ from windows.update_dialog import UpdateDialog
 from windows.help_center_window import HelpCenterWindow
 from windows.data_trend_view import DataTrendView
 from utils.config_manager import ConfigManager
+from utils.notification import send_notification
 from utils.google_login import login_and_get_id_token, GoogleLoginError
 from utils.api_client import ApiClient, ApiError, AuthError
 from utils.polling_service import get_polling_service
@@ -271,6 +272,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
         self.DATA_TREND_PAGE_INDEX = self.stack.indexOf(self.data_trend_page)
         self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = False
+        # 启动时强制隐藏图文趋势入口，等待接口决定是否展示
+        self._ensure_data_trend_hidden_by_default()
 
         # 全局加载中遮罩
         self.loading_overlay = LoadingOverlay(self)
@@ -346,8 +349,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # 启动应用时自动打开隔空投送窗口，便于调试
-        QTimer.singleShot(500, self._show_airdrop)
+        # 启动应用时自动打开隔空投送窗口，并在1秒后自动隐藏
+        QTimer.singleShot(500, self._startup_airdrop_with_autohide)
         
         # macOS: 确保应用在窗口关闭后仍然运行
         if platform.system() == "Darwin":
@@ -850,13 +853,89 @@ class MainWindow(QMainWindow):
         painter.end()
         return result
     
+    def _restore_dock_icon(self):
+        """macOS 恢复 Dock 图标与前置激活"""
+        import platform
+        if platform.system() != "Darwin":
+            return
+        try:
+            from AppKit import NSApplication, NSImage
+            app = NSApplication.sharedApplication()
+            # 0 = NSApplicationActivationPolicyRegular，恢复 Dock 图标
+            app.setActivationPolicy_(0)
+            # 尝试重新设置应用图标（避免变成默认白图标）
+            app_dir = Path(__file__).parent.parent
+            candidates = [
+                app_dir / "resources" / "app_icon.icns",
+                app_dir / "resources" / "app_icon.png",
+                app_dir / "resources" / "app_icon_512x512.png",
+                app_dir / "resources" / "app_icon_256x256.png",
+                app_dir / "resources" / "airdrop.png",
+            ]
+            for icon_path in candidates:
+                if icon_path.exists():
+                    ns_image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+                    if ns_image:
+                        app.setApplicationIconImage_(ns_image)
+                        break
+            # 抢占前台，避免需要点击
+            app.activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+    
     def _show_window_from_tray(self):
         """从托盘菜单打开窗口"""
+        import platform
+        if platform.system() == "Darwin":
+            # 恢复 Dock 图标再显示窗口
+            self._restore_dock_icon()
         # 确保窗口存在且可见
         if self.isHidden():
             self.show()
         self.raise_()
         self.activateWindow()
+
+    def _notify_airdrop_hint_once(self):
+        """首次启动提示如何呼出隔空投送窗口（侧边缘呼出）"""
+        try:
+            cfg = ConfigManager.load()
+        except Exception:
+            cfg = {}
+        if cfg.get("airdrop_first_run_hint_shown"):
+            return
+        send_notification(
+            title="隔空投送提示",
+            message="鼠标移动到侧边缘呼出隔空传送窗口",
+            subtitle=None,
+            sound=True
+        )
+        cfg["airdrop_first_run_hint_shown"] = True
+        try:
+            ConfigManager.save(cfg)
+        except Exception:
+            pass
+
+    def _startup_airdrop_with_autohide(self):
+        """
+        启动时展示隔空投送窗口，1秒后自动隐藏为侧边图标。
+        首次启动会发系统通知提示使用方式。
+        """
+        try:
+            self._show_airdrop()
+        except Exception:
+            return
+
+        # 1 秒后自动隐藏到侧边
+        def hide_later():
+            if self._airdrop_window and hasattr(self._airdrop_window, "_animate_to_icon"):
+                try:
+                    self._airdrop_window._animate_to_icon()
+                except Exception:
+                    pass
+        QTimer.singleShot(1000, hide_later)
+
+        # 首次启动提示
+        QTimer.singleShot(1200, self._notify_airdrop_hint_once)
     
     def _show_error_dialog(self, title: str, message: str, detailed_text: str = ""):
         """显示可复制错误信息的对话框（仅 Windows/Linux）"""
@@ -1763,6 +1842,21 @@ class MainWindow(QMainWindow):
         else:
             # 如果没有 help_text、为 null、或为空字符串，隐藏标签
             self.help_label.setVisible(False)
+
+    def _ensure_data_trend_hidden_by_default(self):
+        """默认隐藏图文趋势入口，等待接口返回控制显示与文案"""
+        if not hasattr(self, "data_trend_item"):
+            return
+        # 清空缓存的链接与加载状态，防止默认展示
+        self.data_trend_url = None
+        self._data_trend_last_loaded_url = None
+        self.data_trend_item.setText(self.DEFAULT_DATA_TREND_TEXT)
+        self.data_trend_item.setHidden(True)
+        # 同步导航尺寸，避免因默认项展示导致的占位
+        if hasattr(self, "_adjust_nav_height"):
+            self._adjust_nav_height()
+        if hasattr(self, "_recalculate_nav_width"):
+            self._recalculate_nav_width()
 
     def _update_data_trend_link(self, data_trend_value, data_trend_text=None):
         """根据 /api/health 返回的 data_trend 相关字段控制菜单显隐与文案"""

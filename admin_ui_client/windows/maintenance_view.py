@@ -582,7 +582,7 @@ class DatabaseBackupTab(QWidget):
                 }
             """)
             filename = item.get("filename", "")
-            download_btn.clicked.connect(lambda checked, f=filename: self._on_download_clicked(f))
+            download_btn.clicked.connect(lambda *_, f=filename: self._on_download_clicked(f))
             self.backup_table.setCellWidget(row, 3, download_btn)
 
     def _on_backup_list_error(self, error_msg: str):
@@ -1435,7 +1435,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #c82333;
                     }
                 """)
-                stop_btn.clicked.connect(lambda checked, s=service_name: self._on_control_clicked(s, "stop"))
+                stop_btn.clicked.connect(lambda *_, s=service_name: self._on_control_clicked(s, "stop"))
                 btn_layout.addWidget(stop_btn)
                 
                 restart_btn = QPushButton("重启")
@@ -1452,7 +1452,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #e0a800;
                     }
                 """)
-                restart_btn.clicked.connect(lambda checked, s=service_name: self._on_control_clicked(s, "restart"))
+                restart_btn.clicked.connect(lambda *_, s=service_name: self._on_control_clicked(s, "restart"))
                 btn_layout.addWidget(restart_btn)
             else:
                 start_btn = QPushButton("启动")
@@ -1469,7 +1469,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #218838;
                     }
                 """)
-                start_btn.clicked.connect(lambda checked, s=service_name: self._on_control_clicked(s, "start"))
+                start_btn.clicked.connect(lambda *_, s=service_name: self._on_control_clicked(s, "start"))
                 btn_layout.addWidget(start_btn)
             
             # 开机自启控制按钮
@@ -1488,7 +1488,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #5a6268;
                     }
                 """)
-                disable_btn.clicked.connect(lambda checked, s=service_name: self._on_control_clicked(s, "disable"))
+                disable_btn.clicked.connect(lambda *_, s=service_name: self._on_control_clicked(s, "disable"))
                 btn_layout.addWidget(disable_btn)
             else:
                 enable_btn = QPushButton("启用自启")
@@ -1505,7 +1505,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #138496;
                     }
                 """)
-                enable_btn.clicked.connect(lambda checked, s=service_name: self._on_control_clicked(s, "enable"))
+                enable_btn.clicked.connect(lambda *_, s=service_name: self._on_control_clicked(s, "enable"))
                 btn_layout.addWidget(enable_btn)
             
             btn_layout.addStretch()
@@ -1649,7 +1649,7 @@ class SystemSettingsTab(QWidget):
                             background-color: #c82333;
                         }
                     """)
-                    disable_btn.clicked.connect(lambda checked, j=job_name: self._on_cron_job_control_clicked(j, "disable"))
+                    disable_btn.clicked.connect(lambda *_, j=job_name: self._on_cron_job_control_clicked(j, "disable"))
                     btn_layout.addWidget(disable_btn)
                 else:
                     enable_btn = QPushButton("启用")
@@ -1666,7 +1666,7 @@ class SystemSettingsTab(QWidget):
                             background-color: #218838;
                         }
                     """)
-                    enable_btn.clicked.connect(lambda checked, j=job_name: self._on_cron_job_control_clicked(j, "enable"))
+                    enable_btn.clicked.connect(lambda *_, j=job_name: self._on_cron_job_control_clicked(j, "enable"))
                     btn_layout.addWidget(enable_btn)
                 
                 # 立即执行按钮
@@ -1684,7 +1684,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #0056b3;
                     }
                 """)
-                run_now_btn.clicked.connect(lambda checked, j=job_name: self._on_run_timer_now_clicked(j))
+                run_now_btn.clicked.connect(lambda *_, j=job_name: self._on_run_timer_now_clicked(j))
                 btn_layout.addWidget(run_now_btn)
                 
                 # 查看命令按钮
@@ -1702,7 +1702,7 @@ class SystemSettingsTab(QWidget):
                         background-color: #5a6268;
                     }
                 """)
-                view_cmd_btn.clicked.connect(lambda checked, j=job_name: self._on_view_timer_command_clicked(j))
+                view_cmd_btn.clicked.connect(lambda *_, j=job_name: self._on_view_timer_command_clicked(j))
                 btn_layout.addWidget(view_cmd_btn)
             else:
                 # cron任务不支持控制
@@ -5092,11 +5092,13 @@ class PackageTab(QWidget):
         self._download_progress = None  # 下载进度对话框
         self._sign_process = None  # 签名脚本进程
         self._download_progress_label = None  # 右上角下载进度显示标签
-        
+
         # 获取项目根目录
         current_file = Path(__file__).resolve()
         project_root = current_file.parent.parent.parent
         self._project_root = str(project_root.resolve())
+        self._sign_script_default = str(Path(self._project_root) / "scripts" / "sign_and_notarize_from_github.py")
+        self._sign_script_path = self._sign_script_default
         
         # 使用 VersionManager 统一管理版本号
         self._version_manager = VersionManager(Path(self._project_root))
@@ -5121,39 +5123,49 @@ class PackageTab(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setSpacing(8)
         
-        # 显示本地目录地址
-        dir_label = QLabel(f"本地目录：{self._project_root}")
-        dir_label.setFont(QFont("Arial", 10))
-        dir_label.setStyleSheet("color: #666; font-family: 'Courier New', monospace;")
-        header_layout.addWidget(dir_label)
+        # 签名脚本路径显示（仅展示文字，不可编辑）
+        self.sign_script_label = QLabel()
+        self.sign_script_label.setFont(QFont("Arial", 10))
+        # 统一配色，避免使用 QSS cursor 属性造成警告
+        self.sign_script_label.setStyleSheet("color: #666; font-family: 'Courier New', monospace;")
+        self.sign_script_label.setCursor(Qt.PointingHandCursor)
+        self._update_sign_script_label()
+        header_layout.addWidget(self.sign_script_label)
+
+        sign_browse_btn = QPushButton("选择签名脚本")
+        sign_browse_btn.setFixedWidth(120)
+        sign_browse_btn.setFixedHeight(32)
+        sign_browse_btn.clicked.connect(self._on_browse_sign_script)
+        header_layout.addWidget(sign_browse_btn)
+
         header_layout.addStretch()
         
         # git push 按钮
         self.push_btn = QPushButton("git push")
-        self.push_btn.setFixedWidth(120)
-        self.push_btn.setFixedHeight(28)
+        self.push_btn.setFixedWidth(100)
+        self.push_btn.setFixedHeight(32)
         self.push_btn.clicked.connect(self._on_push_clicked)
         header_layout.addWidget(self.push_btn)
         
         # Release 按钮（动态获取版本号，使用 VersionManager）
         self.release_btn = QPushButton(f"Release V{self._current_version}")
-        self.release_btn.setFixedWidth(180)
-        self.release_btn.setFixedHeight(28)
+        self.release_btn.setFixedWidth(140)
+        self.release_btn.setFixedHeight(32)
         self.release_btn.clicked.connect(self._on_release_clicked)
         header_layout.addWidget(self.release_btn)
         
         # 版本管理按钮（统一管理版本号）
         version_mgmt_btn = QPushButton("版本号管理")
         version_mgmt_btn.setFixedWidth(100)
-        version_mgmt_btn.setFixedHeight(28)
+        version_mgmt_btn.setFixedHeight(32)
         version_mgmt_btn.setToolTip("统一管理所有客户端的版本号")
         version_mgmt_btn.clicked.connect(self._on_version_management_clicked)
         header_layout.addWidget(version_mgmt_btn)
         
         # Check Actions 按钮
         self.actions_btn = QPushButton("Check Actions")
-        self.actions_btn.setFixedWidth(150)
-        self.actions_btn.setFixedHeight(28)
+        self.actions_btn.setFixedWidth(130)
+        self.actions_btn.setFixedHeight(32)
         self.actions_btn.clicked.connect(self._on_check_actions_clicked)
         header_layout.addWidget(self.actions_btn)
         
@@ -5177,7 +5189,8 @@ class PackageTab(QWidget):
         
         # 刷新按钮（更明显的样式）
         self.refresh_versions_btn = QPushButton("🔄 刷新")
-        self.refresh_versions_btn.setFixedWidth(100)
+        self.refresh_versions_btn.setFixedWidth(90)
+        self.refresh_versions_btn.setFixedHeight(28)
         self.refresh_versions_btn.setToolTip("刷新 GitHub Releases 版本列表")
         self.refresh_versions_btn.clicked.connect(self.reload_versions)
         title_layout.addWidget(self.refresh_versions_btn)
@@ -5276,7 +5289,7 @@ class PackageTab(QWidget):
         splitter.setSizes([300, 700])
         
         layout.addWidget(splitter, 1)
-        
+
         # 创建右上角下载进度显示标签（初始隐藏）
         self._download_progress_label = QLabel(self)
         self._download_progress_label.setAlignment(Qt.AlignCenter)
@@ -5291,6 +5304,33 @@ class PackageTab(QWidget):
         """)
         self._download_progress_label.hide()
         self._download_progress_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标事件
+
+    def _update_sign_script_label(self):
+        """更新签名脚本路径显示"""
+        display_path = self._sign_script_path
+        # 长路径做截断显示，完整路径在提示中
+        if len(display_path) > 40:
+            display_path = display_path[:12] + "..." + display_path[-15:]
+        self.sign_script_label.setText(f"签名脚本：{display_path}")
+        self.sign_script_label.setToolTip(self._sign_script_path)
+
+    def _on_browse_sign_script(self):
+        """浏览选择签名/打包脚本"""
+        current_path = Path(self._sign_script_path).expanduser()
+        if not current_path.is_absolute():
+            current_path = Path(self._project_root) / current_path
+        browse_dir = current_path.parent if current_path.exists() else Path(self._project_root) / "scripts"
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择签名脚本",
+            str(browse_dir),
+            "Python Files (*.py);;All Files (*)"
+        )
+
+        if file_path:
+            self._sign_script_path = file_path
+            self._update_sign_script_label()
     
     def resizeEvent(self, event):
         """窗口大小改变时，更新进度标签位置"""
@@ -5661,8 +5701,11 @@ class PackageTab(QWidget):
             )
             return
         
-        # 获取脚本路径
-        script_path = Path(self._project_root) / "scripts" / "sign_and_notarize_from_github.py"
+        # 获取脚本路径（可自定义）
+        script_path_str = self._sign_script_path or self._sign_script_default
+        script_path = Path(script_path_str).expanduser()
+        if not script_path.is_absolute():
+            script_path = Path(self._project_root) / script_path
         if not script_path.exists():
             QMessageBox.warning(
                 self,
@@ -6747,7 +6790,7 @@ class PackageTab(QWidget):
                         view_logs_btn = QPushButton("下载日志")
                         view_logs_btn.setFixedSize(70, 22)  # 宽度稍大以适应"查看日志"文本
                         view_logs_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
-                        view_logs_btn.clicked.connect(lambda checked, rid=run_id, rurl=run_url, parent_dlg=dialog: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name, parent_dlg))
+                        view_logs_btn.clicked.connect(lambda *_, rid=run_id, rurl=run_url, parent_dlg=dialog: self._view_workflow_logs(rid, rurl, api_url, api_key, repo_owner, repo_name, parent_dlg))
                         btn_layout.addWidget(view_logs_btn)
                         
                         # Cancel-run 按钮（只有正在运行的工作流才能取消）
@@ -6767,7 +6810,7 @@ class PackageTab(QWidget):
                                     background-color: #c82333;
                                 }
                             """)
-                            cancel_btn.clicked.connect(lambda checked, rid=run_id: self._cancel_workflow(rid, api_url, api_key, repo_owner, repo_name, load_workflow_runs, parent=dialog))
+                            cancel_btn.clicked.connect(lambda *_, rid=run_id: self._cancel_workflow(rid, api_url, api_key, repo_owner, repo_name, load_workflow_runs, parent=dialog))
                             btn_layout.addWidget(cancel_btn)
                         
                         # Re-run 按钮（只有已完成的工作流才能重新运行）
@@ -6775,7 +6818,7 @@ class PackageTab(QWidget):
                             rerun_btn = QPushButton("Re-run")
                             rerun_btn.setFixedSize(60, 22)  # mini 按钮样式，与健康检查一致
                             rerun_btn.setStyleSheet("font-size: 9pt; padding: 0px;")
-                            rerun_btn.clicked.connect(lambda checked, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs, parent=dialog))
+                            rerun_btn.clicked.connect(lambda *_, rid=run_id, wid=workflow_id: self._rerun_workflow(rid, wid, api_url, api_key, repo_owner, repo_name, load_workflow_runs, parent=dialog))
                             btn_layout.addWidget(rerun_btn)
                         
                         btn_layout.addStretch()
