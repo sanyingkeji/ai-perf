@@ -49,17 +49,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Show inputs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "release_tag=${{ inputs.release_tag }}"
+          echo "client_type=${{ inputs.client_type }}"
+          echo "arch=${{ matrix.arch }}"
+          echo "download_url_arm64=${{ inputs.download_url_arm64 }}"
+          echo "download_url_intel=${{ inputs.download_url_intel }}"
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Prepare signing keychain
+        shell: bash
         run: |
           set -euo pipefail
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
@@ -73,6 +86,7 @@ jobs:
           security find-certificate -c "Apple Worldwide Developer Relations Certification Authority" /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null || true
 
       - name: Configure notarytool profile
+        shell: bash
         run: |
           set -euo pipefail
           xcrun notarytool store-credentials "AC_CRED" \
@@ -88,8 +102,9 @@ jobs:
           INPUT_TAG: ${% raw %}{{ inputs.release_tag }}{% endraw %}
           INPUT_URL_ARM64: ${% raw %}{{ inputs.download_url_arm64 }}{% endraw %}
           INPUT_URL_INTEL: ${% raw %}{{ inputs.download_url_intel }}{% endraw %}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           REPO_OWNER="${REPO_NAME%%/*}"
           REPO_SIMPLE="${REPO_NAME##*/}"
 
@@ -120,6 +135,7 @@ jobs:
               "$REPO_SIMPLE" \
               "$GH_API_KEY" \
               "${EXTRA_ARGS[@]}"
+            echo "=== Done ${CLIENT} for ${{ matrix.arch }} ==="
           done
 
       - name: Upload signed apps
@@ -128,4 +144,3 @@ jobs:
           name: signed-${% raw %}{{ matrix.arch }}{% endraw %}
           path: ui_client/dist/from_github/**/*
           if-no-files-found: warn
-

@@ -1276,6 +1276,22 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                             if not resources_link.exists() and current_dir.exists():
                                 resources_link.symlink_to("Versions/Current/Resources")
                                 log_info(f"      ✓ 修复 Resources 符号链接")
+
+                            # 修复 Helpers 目录符号链接（QtWebEngineCore 需要）
+                            helpers_target = current_dir / "Helpers"
+                            helpers_link = framework_dir / "Helpers"
+                            if helpers_link.exists() and not helpers_link.is_symlink():
+                                try:
+                                    shutil.rmtree(helpers_link)
+                                    log_info("      ✓ 删除根目录 Helpers 真实目录（将创建符号链接）")
+                                except Exception as e:
+                                    log_warn(f"      ⚠ 删除根目录 Helpers 目录失败: {e}")
+                            if helpers_target.exists() and not helpers_link.exists():
+                                try:
+                                    helpers_link.symlink_to("Versions/Current/Helpers")
+                                    log_info("      ✓ 修复 Helpers 符号链接 -> Versions/Current/Helpers")
+                                except Exception as e:
+                                    log_warn(f"      ⚠ 创建 Helpers 符号链接失败: {e}")
                             
                             # 第一步：彻底清理框架根目录（在修复符号链接之前）
                             # 嵌入式框架的根目录应该只包含符号链接和 Versions 目录
