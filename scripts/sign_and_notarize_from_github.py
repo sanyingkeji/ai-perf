@@ -127,82 +127,160 @@ def log_step(step: Step, message: str = ""):
 
 # 导入 build_client.py 中的签名和公证函数
 # 由于需要复用大量代码，我们直接导入并调用相关函数
-def download_file(url: str, dest_path: Path, api_key: str = None) -> bool:
-    """下载文件（如果文件已存在则跳过下载）"""
-    try:
-        # 检查文件是否已存在
-        if dest_path.exists() and dest_path.is_file():
-            file_size = dest_path.stat().st_size
-            if file_size > 0:
-                file_size_mb = file_size / (1024 * 1024)
-                log_info(f"文件已存在，跳过下载: {dest_path}")
-                log_info(f"  文件大小: {file_size_mb:.2f} MB")
-                return True
-            else:
-                log_warn(f"文件存在但大小为 0，将重新下载: {dest_path}")
-                dest_path.unlink()
-        
-        import httpx
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"token {api_key}"
-        
-        log_info(f"下载文件: {url}")
-        log_info(f"保存到: {dest_path}")
-        
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with httpx.stream("GET", url, headers=headers, timeout=300.0, follow_redirects=True) as response:
-            if response.status_code != 200:
-                log_error(f"下载失败: HTTP {response.status_code}")
-                return False
+def download_file(url: str, dest_path: Path, api_key: str = None, max_retries: int = 3, retry_delay: int = 5) -> bool:
+    """
+    下载文件（如果文件已存在则跳过下载）
+    
+    Args:
+        url: 下载 URL
+        dest_path: 目标文件路径
+        api_key: GitHub API 密钥（可选）
+        max_retries: 最大重试次数（默认 3 次）
+        retry_delay: 重试间隔（秒，默认 5 秒）
+    
+    Returns:
+        下载成功返回 True，否则返回 False
+    """
+    # 检查文件是否已存在
+    if dest_path.exists() and dest_path.is_file():
+        file_size = dest_path.stat().st_size
+        if file_size > 0:
+            file_size_mb = file_size / (1024 * 1024)
+            log_info(f"文件已存在，跳过下载: {dest_path}")
+            log_info(f"  文件大小: {file_size_mb:.2f} MB")
+            return True
+        else:
+            log_warn(f"文件存在但大小为 0，将重新下载: {dest_path}")
+            dest_path.unlink()
+    
+    import httpx
+    
+    # 重试循环
+    for attempt in range(1, max_retries + 1):
+        try:
+            # 如果不是第一次尝试，删除可能存在的部分下载文件
+            if attempt > 1 and dest_path.exists():
+                try:
+                    dest_path.unlink()
+                    log_info(f"清理部分下载的文件: {dest_path}")
+                except Exception as e:
+                    log_warn(f"清理部分下载文件失败: {e}")
             
-            total_size = int(response.headers.get("content-length", 0))
-            downloaded = 0
-            last_percent = -1
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"token {api_key}"
+            
+            if attempt == 1:
+                log_info(f"下载文件: {url}")
+                log_info(f"保存到: {dest_path}")
+            else:
+                log_warn(f"第 {attempt}/{max_retries} 次尝试下载...")
             
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # 检测是否在终端环境中（支持 ANSI 转义序列）
-            is_tty = sys.stderr.isatty() if hasattr(sys.stderr, 'isatty') else False
+            # 增加超时时间：基础超时 300 秒，每次重试增加 60 秒
+            timeout = 300.0 + (attempt - 1) * 60.0
             
-            # 使用 stderr 输出进度，避免与日志输出冲突
-            # 先打印一个空行到 stderr，确保进度显示在独立行
-            if is_tty:
-                sys.stderr.write("\n")
-                sys.stderr.flush()
-            
-            with open(dest_path, "wb") as f:
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        # 只在百分比变化时更新（避免打印太多行）
-                        if int(percent) != last_percent:
-                            # 格式化文件大小
-                            downloaded_mb = downloaded / (1024 * 1024)
-                            total_mb = total_size / (1024 * 1024)
-                            # 使用 stderr 输出进度，避免与日志输出冲突
-                            progress_text = f"  进度: {percent:.1f}% ({downloaded_mb:.2f}/{total_mb:.2f} MB)"
-                            if is_tty:
-                                # 在终端环境中，使用 \r 在同一行更新，\033[K 清除到行尾
-                                sys.stderr.write(f"\r{progress_text}\033[K")
-                            else:
-                                # 在非终端环境中，直接换行输出（避免显示转义序列）
-                                sys.stderr.write(f"{progress_text}\n")
-                            sys.stderr.flush()
-                            last_percent = int(percent)
-            
-            # 下载完成后，清除进度行并打印完成信息
-            if is_tty:
-                sys.stderr.write("\r" + " " * 80 + "\r\n")  # 清除进度行并换行
-                sys.stderr.flush()
-            log_info(f"✓ 下载完成: {dest_path}")
-            return True
-    except Exception as e:
-        log_error(f"下载失败: {e}")
-        return False
+            with httpx.stream("GET", url, headers=headers, timeout=timeout, follow_redirects=True) as response:
+                if response.status_code != 200:
+                    log_error(f"下载失败: HTTP {response.status_code}")
+                    if attempt < max_retries:
+                        log_warn(f"将在 {retry_delay} 秒后重试...")
+                        time.sleep(retry_delay)
+                        continue
+                    return False
+                
+                total_size = int(response.headers.get("content-length", 0))
+                downloaded = 0
+                last_percent = -1
+                
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 检测是否在终端环境中（支持 ANSI 转义序列）
+                is_tty = sys.stderr.isatty() if hasattr(sys.stderr, 'isatty') else False
+                
+                # 使用 stderr 输出进度，避免与日志输出冲突
+                # 先打印一个空行到 stderr，确保进度显示在独立行
+                if is_tty:
+                    sys.stderr.write("\n")
+                    sys.stderr.flush()
+                
+                with open(dest_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            # 只在百分比变化时更新（避免打印太多行）
+                            if int(percent) != last_percent:
+                                # 格式化文件大小
+                                downloaded_mb = downloaded / (1024 * 1024)
+                                total_mb = total_size / (1024 * 1024)
+                                # 使用 stderr 输出进度，避免与日志输出冲突
+                                progress_text = f"  进度: {percent:.1f}% ({downloaded_mb:.2f}/{total_mb:.2f} MB)"
+                                if is_tty:
+                                    # 在终端环境中，使用 \r 在同一行更新，\033[K 清除到行尾
+                                    sys.stderr.write(f"\r{progress_text}\033[K")
+                                else:
+                                    # 在非终端环境中，直接换行输出（避免显示转义序列）
+                                    sys.stderr.write(f"{progress_text}\n")
+                                sys.stderr.flush()
+                                last_percent = int(percent)
+                
+                # 下载完成后，清除进度行并打印完成信息
+                if is_tty:
+                    sys.stderr.write("\r" + " " * 80 + "\r\n")  # 清除进度行并换行
+                    sys.stderr.flush()
+                
+                # 验证下载的文件大小
+                if total_size > 0:
+                    actual_size = dest_path.stat().st_size
+                    if actual_size != total_size:
+                        log_warn(f"下载文件大小不匹配: 期望 {total_size} 字节，实际 {actual_size} 字节")
+                        if attempt < max_retries:
+                            log_warn(f"将在 {retry_delay} 秒后重试...")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            log_error("文件大小不匹配，且已达到最大重试次数")
+                            return False
+                
+                log_info(f"✓ 下载完成: {dest_path}")
+                if attempt > 1:
+                    log_info(f"✓ 经过 {attempt} 次尝试后成功下载")
+                return True
+                
+        except httpx.TimeoutException as e:
+            log_error(f"下载超时: {e}")
+            if attempt < max_retries:
+                log_warn(f"将在 {retry_delay} 秒后重试（第 {attempt + 1}/{max_retries} 次）...")
+                time.sleep(retry_delay)
+                continue
+            else:
+                log_error(f"下载失败: 已达到最大重试次数 ({max_retries})")
+                return False
+        except httpx.RequestError as e:
+            log_error(f"网络请求错误: {e}")
+            if attempt < max_retries:
+                log_warn(f"将在 {retry_delay} 秒后重试（第 {attempt + 1}/{max_retries} 次）...")
+                time.sleep(retry_delay)
+                continue
+            else:
+                log_error(f"下载失败: 已达到最大重试次数 ({max_retries})")
+                return False
+        except Exception as e:
+            log_error(f"下载失败: {e}")
+            if attempt < max_retries:
+                log_warn(f"将在 {retry_delay} 秒后重试（第 {attempt + 1}/{max_retries} 次）...")
+                time.sleep(retry_delay)
+                continue
+            else:
+                log_error(f"下载失败: 已达到最大重试次数 ({max_retries})")
+                return False
+    
+    # 所有重试都失败
+    log_error(f"下载失败: 经过 {max_retries} 次尝试后仍无法下载")
+    return False
 
 def find_app_in_zip(zip_path: Path, app_name: str) -> Path:
     """在 ZIP 文件中查找 .app"""
