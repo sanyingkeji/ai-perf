@@ -3,9 +3,6 @@ name: ,w
 on:
   release:
     types: [published]
-  push:
-    tags:
-      - 'v*'  # 支持 tag push 触发（如 v1.0.0）
   workflow_dispatch:
     inputs:
       client_type:
@@ -33,7 +30,10 @@ jobs:
     name: Build macOS (Apple Silicon)
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
     timeout-minutes: 180  # 3小时超时
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''))
     strategy:
       matrix:
         client: [employee, admin]
@@ -291,7 +291,10 @@ jobs:
     name: Build macOS (Intel)
     runs-on: macos-13  # macOS 13 (Ventura) Intel 架构 runner
     timeout-minutes: 180  # 3小时超时
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''))
     strategy:
       matrix:
         client: [employee, admin]
@@ -549,7 +552,10 @@ jobs:
     name: Build Windows
     runs-on: windows-latest
     timeout-minutes: 120  # 2小时超时
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''))
     strategy:
       matrix:
         client: [employee, admin]
@@ -628,7 +634,10 @@ jobs:
     name: Build Linux (Ubuntu/Debian)
     runs-on: ubuntu-22.04
     timeout-minutes: 120  # 2小时超时
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''))
     strategy:
       matrix:
         client: [employee, admin]
@@ -714,7 +723,7 @@ jobs:
     name: Create Release
     needs: [build-macos-arm64, build-macos-intel, build-windows, build-linux-ubuntu]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     permissions:
       contents: write
     steps:
