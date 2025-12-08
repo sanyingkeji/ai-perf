@@ -1,0 +1,131 @@
+name: Build Clients And Sign (macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub Release 标签，例如 v1.1.0"
+        required: true
+        type: string
+      client_type:
+        description: "客户端类型"
+        required: true
+        type: choice
+        options: [employee, admin, both]
+        default: both
+      download_url_arm64:
+        description: "可选，arm64 .app ZIP 下载地址（不填则从 Release 自动获取）"
+        required: false
+        type: string
+      download_url_intel:
+        description: "可选，intel .app ZIP 下载地址（不填则从 Release 自动获取）"
+        required: false
+        type: string
+
+jobs:
+  sign-macos:
+    name: Sign & Notarize (${% raw %}{{ matrix.arch }}{% endraw %})
+    runs-on: ${% raw %}{{ matrix.runner }}{% endraw %}
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: intel
+            runner: macos-13
+    env:
+      CODESIGN_IDENTITY: ${% raw %}{{ secrets.MACOS_SIGNING_IDENTITY }}{% endraw %}
+      APPLE_ID: ${% raw %}{{ secrets.APPLE_ID }}{% endraw %}
+      TEAM_ID: ${% raw %}{{ secrets.APPLE_TEAM_ID }}{% endraw %}
+      NOTARY_PASSWORD: ${% raw %}{{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}{% endraw %}
+      MACOS_CERT_P12_BASE64: ${% raw %}{{ secrets.MACOS_CERT_P12_BASE64 }}{% endraw %}
+      MACOS_CERT_P12_PASSWORD: ${% raw %}{{ secrets.MACOS_CERT_P12_PASSWORD }}{% endraw %}
+      KEYCHAIN_PASSWORD: temp-keychain-pass
+      GH_API_KEY: ${% raw %}{{ secrets.GH_PAT_FOR_SIGNING || github.token }}{% endraw %}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare signing keychain
+        run: |
+          set -euo pipefail
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security set-keychain-settings -lut 21600 build.keychain-db
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k build.keychain-db -P "$MACOS_CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/security
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security list-keychains -d user -s build.keychain-db login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain-db
+          # 确保有 Apple WWDR 证书（一般系统自带）
+          security find-certificate -c "Apple Worldwide Developer Relations Certification Authority" /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null || true
+
+      - name: Configure notarytool profile
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "AC_CRED" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --keychain build.keychain-db
+
+      - name: Sign & notarize .app
+        env:
+          REPO_NAME: ${% raw %}{{ github.repository }}{% endraw %}
+          INPUT_CLIENT: ${% raw %}{{ inputs.client_type }}{% endraw %}
+          INPUT_TAG: ${% raw %}{{ inputs.release_tag }}{% endraw %}
+          INPUT_URL_ARM64: ${% raw %}{{ inputs.download_url_arm64 }}{% endraw %}
+          INPUT_URL_INTEL: ${% raw %}{{ inputs.download_url_intel }}{% endraw %}
+        run: |
+          set -euo pipefail
+          REPO_OWNER="${REPO_NAME%%/*}"
+          REPO_SIMPLE="${REPO_NAME##*/}"
+
+          if [ "$INPUT_CLIENT" = "both" ]; then
+            CLIENTS=("employee" "admin")
+          else
+            CLIENTS=("$INPUT_CLIENT")
+          fi
+
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            DL_URL="$INPUT_URL_ARM64"
+          else
+            DL_URL="$INPUT_URL_INTEL"
+          fi
+
+          for CLIENT in "${CLIENTS[@]}"; do
+            echo "=== Signing ${CLIENT} for ${{ matrix.arch }} ==="
+            EXTRA_ARGS=()
+            if [ -n "$DL_URL" ]; then
+              EXTRA_ARGS+=(--download-url "$DL_URL" --arch "${{ matrix.arch }}")
+            else
+              EXTRA_ARGS+=(--arch "${{ matrix.arch }}")
+            fi
+            python scripts/sign_and_notarize_from_github.py \
+              "$CLIENT" \
+              "$INPUT_TAG" \
+              "$REPO_OWNER" \
+              "$REPO_SIMPLE" \
+              "$GH_API_KEY" \
+              "${EXTRA_ARGS[@]}"
+          done
+
+      - name: Upload signed apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-${% raw %}{{ matrix.arch }}{% endraw %}
+          path: ui_client/dist/from_github/**/*
+          if-no-files-found: warn
+

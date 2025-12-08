@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
 
         # 标记各页面是否已做过"首次自动加载"
         self._page_first_loaded = {
-            0: False,  # 历史评分
+            0: False,  # 每日评分
             1: False,  # 月度评分
             2: False,  # 员工列表
             3: False,  # ETL日志
@@ -80,7 +80,7 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget()
         # 菜单项定义（索引对应页面）
         self.menu_items = [
-            "历史评分",
+            "每日评分",
             "月度评分",
             "员工列表",
             "ETL日志",
@@ -462,7 +462,7 @@ class MainWindow(QMainWindow):
 
             # 为避免 UI 卡顿，这里的自动请求仍交由各页面内部处理
             if index == 0 and hasattr(self.history_page, "reload_from_api"):
-                # 历史评分
+                # 每日评分
                 self.history_page.reload_from_api()
             elif index == 1 and hasattr(self.monthly_score_page, "reload_from_api"):
                 # 月度评分
@@ -561,10 +561,10 @@ class MainWindow(QMainWindow):
                     }
                     self._update_menu_visibility()
                     
-                    # 如果是超级管理员，切换到第一个页面（历史评分）
+                    # 如果是超级管理员，切换到第一个页面（每日评分）
                     # 如果是普通管理员，切换到第一个允许的菜单项
                     if is_admin:
-                        # 超级管理员，切换到历史评分页面（索引0）
+                        # 超级管理员，切换到每日评分页面（索引0）
                         if 0 < self.nav.count():
                             self.nav.setCurrentRow(0)
                     else:

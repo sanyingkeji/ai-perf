@@ -1286,6 +1286,16 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                 # 跳过 Versions 目录和符号链接
                                 if item_name == "Versions" or item.is_symlink():
                                     continue
+                                # 如果根目录下的目录在 Versions/Current 中存在对应内容，先转成符号链接
+                                target_in_versions = current_dir / item_name
+                                if item.is_dir() and target_in_versions.exists():
+                                    try:
+                                        shutil.rmtree(item)
+                                        item.symlink_to(f"Versions/Current/{item_name}")
+                                        log_info(f"      ✓ 修复根目录目录为符号链接: {item_name} -> Versions/Current/{item_name}")
+                                        continue
+                                    except Exception as e:
+                                        log_warn(f"      ⚠ 将根目录目录转为符号链接失败 {item_name}: {e}")
                                 # 删除所有非符号链接的文件（包括 Info.plist）
                                 if item.is_file():
                                     try:
@@ -1369,12 +1379,55 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                 str(framework_dir)
                             ], capture_output=True, text=True)
                             if result.returncode != 0:
+                                error_msg = (result.stderr or "") + (result.stdout or "")
                                 log_warn(f"    框架签名失败: {framework_dir.relative_to(target_app)}")
-                                log_warn(f"    错误: {result.stderr}")
-                                # 如果签名失败，检查根目录是否还有问题文件
-                                remaining_files = [f.name for f in framework_dir.iterdir() if f.is_file() and not f.is_symlink()]
-                                if remaining_files:
-                                    log_warn(f"    根目录仍有文件: {remaining_files}")
+                                log_warn(f"    错误: {error_msg}")
+                                # 如果签名失败且错误信息包含 "unsealed contents"，需要更彻底地清理根目录
+                                if "unsealed contents" in error_msg.lower():
+                                    log_warn(f"    检测到未密封内容，强制清理框架根目录...")
+                                    # 再次检查并删除根目录中的所有非符号链接文件
+                                    for item in list(framework_dir.iterdir()):
+                                        if item.name == "Versions" or item.is_symlink():
+                                            continue
+                                        # 优先将存在对应 Versions/Current 目录的真实目录转为符号链接
+                                        target_in_versions = current_dir / item.name
+                                        if item.is_dir() and target_in_versions.exists():
+                                            try:
+                                                shutil.rmtree(item)
+                                                item.symlink_to(f"Versions/Current/{item.name}")
+                                                log_info(f"      ✓ 将根目录目录转换为符号链接: {item.name} -> Versions/Current/{item.name}")
+                                                continue
+                                            except Exception as e:
+                                                log_warn(f"      ⚠ 转换根目录目录为符号链接失败 {item.name}: {e}")
+                                        if item.is_file():
+                                            try:
+                                                item.unlink()
+                                                log_info(f"      ✓ 强制删除根目录文件: {item.name}")
+                                            except Exception as e:
+                                                log_warn(f"      ⚠ 删除文件 {item.name} 失败: {e}")
+                                        elif item.is_dir() and item.name != "Versions":
+                                            try:
+                                                shutil.rmtree(item)
+                                                log_info(f"      ✓ 强制删除根目录目录: {item.name}")
+                                            except Exception as e:
+                                                log_warn(f"      ⚠ 删除目录 {item.name} 失败: {e}")
+                                    # 重新尝试签名
+                                    retry_result = subprocess.run([
+                                        "codesign", "--force", "--sign", codesign_identity,
+                                        "--options", "runtime",
+                                        "--timestamp",
+                                        str(framework_dir)
+                                    ], capture_output=True, text=True)
+                                    if retry_result.returncode == 0:
+                                        log_info(f"    ✓ 框架已签名（重试成功）: {framework_dir.name}")
+                                    else:
+                                        retry_error = (retry_result.stderr or "") + (retry_result.stdout or "")
+                                        log_warn(f"    ⚠ 框架签名重试仍失败: {retry_error}")
+                                else:
+                                    # 如果签名失败，检查根目录是否还有问题文件
+                                    remaining_files = [f.name for f in framework_dir.iterdir() if f.is_file() and not f.is_symlink()]
+                                    if remaining_files:
+                                        log_warn(f"    根目录仍有文件: {remaining_files}")
                             else:
                                 log_info(f"    ✓ 框架已签名: {framework_dir.name}")
                         
@@ -1492,7 +1545,44 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                         str(qt_file)
                     ], check=False, capture_output=True)
             
-            # 第五步：先签名主可执行文件（与 build_client.py 保持一致）
+            # 第五步：在签名主可执行文件之前，先签名所有包含 .qmltypes 和 qmldir 文件的目录
+            # 这样可以"密封"这些目录，避免 codesign 检查未签名的文本文件
+            # 注意：codesign 不能直接签名普通目录，但我们可以尝试签名包含这些文件的目录
+            # 如果失败，我们会在签名主可执行文件时使用 --deep 选项作为备选方案
+            if not should_skip_step(Step.SIGN_MAIN, start_from_step):
+                log_warn("在签名主可执行文件之前，先签名包含 .qmltypes 和 qmldir 文件的目录（密封目录）...")
+                qt_qml_dir = frameworks_dir / "PySide6" / "Qt" / "qml"
+                if qt_qml_dir.exists():
+                    # 查找所有包含 .qmltypes 或 qmldir 文件的目录
+                    qml_dirs = set()
+                    # 查找包含 .qmltypes 文件的目录
+                    for qmltypes_file in qt_qml_dir.rglob("*.qmltypes"):
+                        qml_dirs.add(qmltypes_file.parent)
+                    # 查找包含 qmldir 文件的目录
+                    for qmldir_file in qt_qml_dir.rglob("qmldir"):
+                        qml_dirs.add(qmldir_file.parent)
+                    
+                    # 签名这些目录（从最深层到最浅层，避免重复签名）
+                    sorted_dirs = sorted(qml_dirs, key=lambda p: len(str(p)), reverse=True)
+                    signed_count = 0
+                    for qml_dir in sorted_dirs:
+                        try:
+                            # 尝试签名目录（codesign 可能无法签名普通目录，但我们可以尝试）
+                            result = subprocess.run([
+                                "codesign", "--force", "--sign", codesign_identity,
+                                "--options", "runtime",
+                                "--timestamp",
+                                "--preserve-metadata=entitlements,requirements,flags",
+                                str(qml_dir)
+                            ], check=False, capture_output=True, text=True, timeout=60)
+                            if result.returncode == 0:
+                                signed_count += 1
+                        except Exception as e:
+                            # 忽略错误，因为 codesign 可能无法签名普通目录
+                            pass
+                    log_info(f"✓ 已尝试签名 {signed_count}/{len(sorted_dirs)} 个包含 .qmltypes 或 qmldir 文件的目录")
+            
+            # 第六步：先签名主可执行文件（与 build_client.py 保持一致）
             if not should_skip_step(Step.SIGN_MAIN, start_from_step):
                 log_step(Step.SIGN_MAIN, "签名应用包主可执行文件...")
                 main_executable = target_app / "Contents" / "MacOS" / app_name
@@ -1506,13 +1596,111 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                         log_info("✓ 修复主可执行文件权限 (755)")
                     
                     # 先签名主可执行文件（使用 check=True，失败会立即报错，与 build_client.py 保持一致）
-                    subprocess.run([
-                        "codesign", "--force", "--sign", codesign_identity,
-                        "--options", "runtime",
-                        "--timestamp",
-                        str(main_executable)
-                    ], check=True)  # 使用 check=True，失败会立即报错
-                    log_info("✓ 主可执行文件已签名")
+                    # 注意：如果签名失败并提示 .qmltypes 文件未签名，这是正常的，因为文本文件不需要签名
+                    # 但 codesign 在签名主可执行文件时会检查所有子组件，包括这些文本文件
+                    try:
+                        subprocess.run([
+                            "codesign", "--force", "--sign", codesign_identity,
+                            "--options", "runtime",
+                            "--timestamp",
+                            str(main_executable)
+                        ], check=True, capture_output=True, text=True)  # 使用 check=True，失败会立即报错
+                        log_info("✓ 主可执行文件已签名")
+                    except subprocess.CalledProcessError as e:
+                        # 检查错误信息是否与 .qmltypes 文件相关
+                        error_output = (e.stderr or "") + (e.stdout or "")
+                        log_warn(f"  签名主可执行文件失败，错误信息: {error_output}")
+                        if "qmltypes" in error_output.lower() or "qmldir" in error_output.lower() or "code object is not signed at all" in error_output.lower():
+                            log_warn("  警告: 签名主可执行文件时检测到未签名的文本文件（如 .qmltypes 或 qmldir）")
+                            log_warn("  这是正常的，文本文件不需要签名。尝试先签名整个应用包以密封它...")
+                            # 先签名整个应用包（不使用 --deep 和 --strict），这样可以"密封"应用包
+                            # 使用 --preserve-metadata 保留已签名组件的元数据
+                            try:
+                                seal_result = subprocess.run([
+                                    "codesign", "--force", "--sign", codesign_identity,
+                                    "--options", "runtime",
+                                    "--timestamp",
+                                    "--preserve-metadata=entitlements,requirements,flags",
+                                    str(target_app)
+                                ], check=False, capture_output=True, text=True, timeout=300)
+                                if seal_result.returncode != 0:
+                                    log_warn(f"  密封应用包时出现警告: {seal_result.stderr or seal_result.stdout}")
+                                log_info("  应用包已初步签名（密封），现在重新签名主可执行文件...")
+                                # 重新签名主可执行文件
+                                retry_result = subprocess.run([
+                                    "codesign", "--force", "--sign", codesign_identity,
+                                    "--options", "runtime",
+                                    "--timestamp",
+                                    str(main_executable)
+                                ], check=False, capture_output=True, text=True)
+                                if retry_result.returncode != 0:
+                                    retry_error = (retry_result.stderr or "") + (retry_result.stdout or "")
+                                    log_warn(f"  重新签名主可执行文件失败: {retry_error}")
+                                    # 如果仍然失败，尝试使用 --deep 选项签名整个应用包
+                                    # 这会在签名时递归处理所有子组件，包括文本文件
+                                    log_warn("  尝试使用 --deep 选项签名整个应用包（递归处理所有子组件）...")
+                                    # 使用时间戳重试机制（时间戳是必备的，失败后直接停止）
+                                    timestamp_max_retries = 3
+                                    timestamp_retry_delay = 5
+                                    timestamp_success = False
+                                    
+                                    for timestamp_attempt in range(1, timestamp_max_retries + 1):
+                                        log_warn(f"  尝试使用 --deep 选项签名（{timestamp_attempt}/{timestamp_max_retries}）...")
+                                        deep_result = subprocess.run([
+                                            "codesign", "--force", "--sign", codesign_identity,
+                                            "--options", "runtime",
+                                            "--timestamp",
+                                            "--deep",
+                                            str(target_app)
+                                        ], check=False, capture_output=True, text=True, timeout=600)
+                                        if deep_result.returncode == 0:
+                                            log_info("✓ 使用 --deep 选项成功签名整个应用包")
+                                            timestamp_success = True
+                                            break
+                                        else:
+                                            deep_error = (deep_result.stderr or "") + (deep_result.stdout or "")
+                                            error_msg = deep_error.lower()
+                                            if "timestamp service is not available" in error_msg or "network" in error_msg or "timeout" in error_msg:
+                                                if timestamp_attempt < timestamp_max_retries:
+                                                    log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
+                                                    time.sleep(timestamp_retry_delay)
+                                                    timestamp_retry_delay *= 2
+                                                    continue
+                                                else:
+                                                    log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次），停止进程")
+                                                    log_error("  时间戳是必备的，无法通过公证，停止后续流程")
+                                                    raise subprocess.CalledProcessError(deep_result.returncode, deep_result.args, deep_result.stdout, deep_result.stderr)
+                                            else:
+                                                log_error(f"  使用 --deep 选项签名应用包失败: {deep_error}")
+                                                raise subprocess.CalledProcessError(deep_result.returncode, deep_result.args, deep_result.stdout, deep_result.stderr)
+                                    
+                                    if not timestamp_success:
+                                        log_error("✗ 使用 --deep 选项签名应用包失败（时间戳服务不可用）")
+                                        log_error("  时间戳是必备的，无法通过公证，停止后续流程")
+                                        raise Exception("时间戳服务不可用，无法完成签名（已重试所有次数）")
+                                    
+                                    # 验证主可执行文件是否已签名
+                                    verify_result = subprocess.run([
+                                        "codesign", "-vvv", str(main_executable)
+                                    ], check=False, capture_output=True, text=True, timeout=60)
+                                    if verify_result.returncode == 0:
+                                        log_info("✓ 主可执行文件已签名（通过 --deep 选项）")
+                                    else:
+                                        log_error(f"  主可执行文件验证失败: {verify_result.stderr or verify_result.stdout}")
+                                        raise subprocess.CalledProcessError(1, ["codesign", "-vvv"], verify_result.stdout, verify_result.stderr)
+                                else:
+                                    log_info("✓ 主可执行文件已签名")
+                            except subprocess.CalledProcessError as e2:
+                                error_output2 = (e2.stderr or "") + (e2.stdout or "")
+                                log_error(f"  错误: 无法签名主可执行文件: {error_output2}")
+                                raise
+                            except Exception as e2:
+                                log_error(f"  错误: 无法签名主可执行文件: {e2}")
+                                raise
+                        else:
+                            # 其他错误，直接抛出
+                            log_error(f"签名主可执行文件失败: {error_output}")
+                            raise
                 else:
                     log_error(f"主可执行文件不存在: {main_executable}")
                     raise FileNotFoundError(f"主可执行文件不存在: {main_executable}")
@@ -1520,7 +1708,7 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 log_info(f"[跳过] 签名主可执行文件（从步骤 {start_from_step.value} 开始）")
                 main_executable = target_app / "Contents" / "MacOS" / app_name
             
-            # 第五步：签名整个应用包（不使用 --deep，避免重新签名）
+            # 第七步：签名整个应用包（不使用 --deep，避免重新签名）
             if not should_skip_step(Step.SIGN_BUNDLE, start_from_step):
                 log_step(Step.SIGN_BUNDLE, "签名应用包（不使用 --deep，避免重新签名）...")
                 # 不使用 --deep，因为我们已经手动签名了所有组件
@@ -2440,50 +2628,47 @@ def main():
             
             # 步骤：下载 ZIP 文件
             download_path = temp_dir / f"{app_name}_{arch}.zip"
-            zip_exists = download_path.exists() and download_path.is_file() and download_path.stat().st_size > 0
+            target_app = output_dir / f"{app_name}.app"
+            
+            # 只检查 .app 是否已存在且完整（是目录）
+            app_exists = target_app.exists() and target_app.is_dir()
+            
+            # 如果 .app 已存在，跳过下载和解压
+            need_download = not app_exists
             
             if not should_skip_step(Step.DOWNLOAD, start_from_step):
-                if not zip_exists:
+                if need_download:
                     log_step(Step.DOWNLOAD, f"下载 {arch} .app ZIP 文件...")
                     if not download_file(url, download_path, api_key):
                         log_error(f"下载 {arch} .app 失败")
                         continue
                 else:
-                    log_info(f"[跳过] 下载步骤（ZIP 文件已存在: {download_path}）")
+                    log_info(f"[跳过] 下载步骤（.app 已存在且完整: {target_app}）")
             else:
-                if not zip_exists:
-                    log_error(f"ZIP 文件不存在，但跳过了下载步骤。请先下载文件或使用 --start-from download")
-                    continue
-                log_info(f"[跳过] 下载步骤（从步骤 {start_from_step.value} 开始）")
+                if not app_exists:
+                    # 如果跳过了下载步骤，检查 .app 是否存在
+                    if not download_path.exists():
+                        log_error(f".app 不存在，且跳过了下载步骤。请先下载文件或使用 --start-from download")
+                        continue
+                    # 如果 ZIP 存在但 .app 不存在，需要解压
+                    log_info(f"[跳过] 下载步骤（从步骤 {start_from_step.value} 开始）")
+                else:
+                    log_info(f"[跳过] 下载步骤（.app 已存在: {target_app}）")
             
             # 步骤：解压 ZIP 文件
-            target_app = output_dir / f"{app_name}.app"
             app_bundle = None
             
             if not should_skip_step(Step.EXTRACT, start_from_step):
-                # 检查是否需要重新解压
-                need_extract = True
+                # 只检查 .app 是否已存在
                 if target_app.exists() and target_app.is_dir():
-                    # 如果 ZIP 文件存在，检查 ZIP 文件是否比 .app 新
-                    if download_path.exists() and download_path.is_file():
-                        zip_mtime = download_path.stat().st_mtime
-                        app_mtime = target_app.stat().st_mtime
-                        if zip_mtime <= app_mtime:
-                            # ZIP 文件不比 .app 新，可以使用现有的 .app
-                            log_info(f"[跳过] 解压步骤（.app 已存在且 ZIP 文件未更新: {target_app}）")
-                            app_bundle = target_app
-                            need_extract = False
-                        else:
-                            # ZIP 文件比 .app 新，需要重新解压
-                            log_warn(f"ZIP 文件已更新（ZIP: {zip_mtime}, .app: {app_mtime}），将重新解压...")
-                            shutil.rmtree(target_app)
-                    else:
-                        # ZIP 文件不存在，使用现有的 .app
-                        log_info(f"[跳过] 解压步骤（.app 已存在且 ZIP 文件不存在: {target_app}）")
-                        app_bundle = target_app
-                        need_extract = False
-                
-                if need_extract:
+                    # .app 已存在，跳过解压
+                    log_info(f"[跳过] 解压步骤（.app 已存在且完整: {target_app}）")
+                    app_bundle = target_app
+                else:
+                    # .app 不存在，需要解压
+                    if not download_path.exists():
+                        log_error(f"ZIP 文件不存在，无法解压。请先下载文件或使用 --start-from download")
+                        continue
                     log_step(Step.EXTRACT, f"解压 {arch} .app ZIP 文件...")
                     app_bundle = find_app_in_zip(download_path, app_name)
                     if not app_bundle:
@@ -2529,4 +2714,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

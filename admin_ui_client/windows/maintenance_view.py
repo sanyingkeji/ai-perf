@@ -5209,13 +5209,15 @@ class PackageTab(QWidget):
         
         # 设置列宽
         header = self.version_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Asset 名称：自适应宽度，显示完全
+        header.setMinimumSectionSize(180)  # 设置所有列的最小宽度为 180（主要用于 Asset 名称列）
+        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Asset 名称：自适应宽度，显示完全，最小宽度 180
         header.setSectionResizeMode(1, QHeaderView.Fixed)  # 版本号：固定宽度
         header.setSectionResizeMode(2, QHeaderView.Fixed)  # 平台：固定宽度
         header.setSectionResizeMode(3, QHeaderView.Fixed)  # 大小：固定宽度
         header.setSectionResizeMode(4, QHeaderView.Fixed)  # 状态：固定宽度
         
         # 设置固定列的宽度
+        self.version_table.setColumnWidth(0, 180)  # Asset 名称：初始宽度 180（Stretch 模式下会自适应扩展，但不会小于 180）
         self.version_table.setColumnWidth(1, 100)  # 版本号
         self.version_table.setColumnWidth(2, 80)   # 平台
         self.version_table.setColumnWidth(3, 100)  # 大小
@@ -5479,6 +5481,16 @@ class PackageTab(QWidget):
             
             # 存储完整的 asset 和 release 数据到第一列，用于右键菜单
             asset_name_item.setData(Qt.UserRole, asset_data)
+        
+        # 确保状态列始终保持固定宽度，为 Asset 名称列预留空间
+        header = self.version_table.horizontalHeader()
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.version_table.setColumnWidth(4, 60)
+        
+        # 确保 Asset 名称列保持最小宽度 180
+        current_width = self.version_table.columnWidth(0)
+        if current_width < 180:
+            self.version_table.setColumnWidth(0, 180)
     
     def _on_version_table_context_menu(self, position):
         """Assets 列表右键菜单"""

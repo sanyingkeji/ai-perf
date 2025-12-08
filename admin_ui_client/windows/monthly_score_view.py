@@ -199,10 +199,10 @@ class MonthlyScoreView(QWidget):
         
         # 列索引到排序字段的映射
         self._column_to_sort_field = {
-            4: "total_ai_month",  # AI综合均分
-            5: "salary_ratio",    # 工资贡献率
-            6: "growth_rate",     # 成长率
-            7: "final_score",     # 最终综合分
+            4: "final_score",     # 最终综合分
+            5: "total_ai_month",  # AI综合均分
+            6: "salary_ratio",    # 工资贡献率
+            7: "growth_rate",     # 成长率
         }
         
         self._setup_ui()
@@ -271,7 +271,7 @@ class MonthlyScoreView(QWidget):
         self._table = QTableWidget()
         self._table.setColumnCount(9)
         self._table.setHorizontalHeaderLabels([
-            "月份", "员工ID", "姓名", "团队", "AI综合均分", "工资贡献率", "成长率", "最终综合分", "有效工作日"
+            "月份", "员工ID", "姓名", "团队", "最终综合分", "AI综合均分", "工资贡献率", "成长率", "有效工作日"
         ])
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -282,10 +282,10 @@ class MonthlyScoreView(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 员工ID
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # 姓名
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 团队
-        header.setSectionResizeMode(4, QHeaderView.Stretch)  # AI综合均分（可排序）
-        header.setSectionResizeMode(5, QHeaderView.Stretch)  # 工资贡献率（可排序）
-        header.setSectionResizeMode(6, QHeaderView.Stretch)  # 成长率（可排序）
-        header.setSectionResizeMode(7, QHeaderView.Stretch)  # 最终综合分（可排序）
+        header.setSectionResizeMode(4, QHeaderView.Stretch)  # 最终综合分（可排序）
+        header.setSectionResizeMode(5, QHeaderView.Stretch)  # AI综合均分（可排序）
+        header.setSectionResizeMode(6, QHeaderView.Stretch)  # 工资贡献率（可排序）
+        header.setSectionResizeMode(7, QHeaderView.Stretch)  # 成长率（可排序）
         header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # 有效工作日
         
         # 连接列标题点击信号
@@ -307,24 +307,36 @@ class MonthlyScoreView(QWidget):
         layout.addWidget(self._status_label)
     
     def _populate_month_combo(self):
-        """填充月份下拉框（最近12个月）"""
+        """填充月份下拉框（从2025-11到当前月份）"""
         self._month_combo.clear()
         self._month_combo.addItem("全部", None)
         
+        # 从2025年11月开始
+        start_year = 2025
+        start_month = 11
+        
+        # 当前月份
         today = date.today()
-        for i in range(12):
-            # 从当前月份往前推
-            month_date = date(today.year, today.month, 1)
-            # 往前推 i 个月
-            if i > 0:
-                if month_date.month <= i:
-                    month_date = date(month_date.year - 1, 12 - (i - month_date.month), 1)
-                else:
-                    month_date = date(month_date.year, month_date.month - i, 1)
-            
-            month_str = month_date.strftime("%Y-%m")
-            display_str = month_date.strftime("%Y年%m月")
+        current_year = today.year
+        current_month = today.month
+        
+        # 生成月份列表
+        year = start_year
+        month = start_month
+        while year < current_year or (year == current_year and month <= current_month):
+            month_str = f"{year}-{month:02d}"
+            display_str = f"{year}年{month:02d}月"
             self._month_combo.addItem(display_str, month_str)
+            
+            # 移动到下一个月
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+        
+        # 默认选中当前月份（最后一个）
+        if self._month_combo.count() > 1:
+            self._month_combo.setCurrentIndex(self._month_combo.count() - 1)
     
     def _on_header_clicked(self, column: int):
         """列标题点击事件处理"""
@@ -681,23 +693,25 @@ class MonthlyScoreView(QWidget):
             self._table.setItem(idx, 3, team_item)
             
             # 设置可排序的列（居中显示）
-            item_ai = QTableWidgetItem(f"{total_ai_month:.2f}")
-            item_ai.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 4, item_ai)
-            
-            # 工资贡献率：数据库存的是小数（如0.83表示83%），显示时乘以100，显示为整数
-            item_salary = QTableWidgetItem(f"{int(round(salary_ratio * 100))}%")
-            item_salary.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 5, item_salary)
-            
-            # 成长率：数据库存的是小数（如0.10表示10%），显示时乘以100，显示为整数
-            item_growth = QTableWidgetItem(f"{int(round(growth_rate * 100))}%")
-            item_growth.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 6, item_growth)
-            
+            # 最终综合分（列4）
             item_final = QTableWidgetItem(f"{final_score:.2f}")
             item_final.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(idx, 7, item_final)
+            self._table.setItem(idx, 4, item_final)
+            
+            # AI综合均分（列5）
+            item_ai = QTableWidgetItem(f"{total_ai_month:.2f}")
+            item_ai.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(idx, 5, item_ai)
+            
+            # 工资贡献率：数据库存的是小数（如0.83表示83%），显示时乘以100，显示为整数（列6）
+            item_salary = QTableWidgetItem(f"{int(round(salary_ratio * 100))}%")
+            item_salary.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(idx, 6, item_salary)
+            
+            # 成长率：数据库存的是小数（如0.10表示10%），显示时乘以100，显示为整数（列7）
+            item_growth = QTableWidgetItem(f"{int(round(growth_rate * 100))}%")
+            item_growth.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(idx, 7, item_growth)
             
             # 设置有效工作日（居中显示）
             item_workday = QTableWidgetItem(str(workday_count))

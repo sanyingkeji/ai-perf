@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史评分管理页面：
+每日评分管理页面：
 - 支持按日期和员工筛选
-- 显示所有员工的历史评分数据
+- 显示所有员工的每日评分数据
 - 查看原始输入数据和输出数据（包含复评）
 - 重新拉取指定员工的原始输入数据
 """
@@ -32,7 +32,7 @@ class _HistoryScoreWorkerSignals(QObject):
 
 
 class _HistoryScoreWorker(QRunnable):
-    """后台加载历史评分数据"""
+    """后台加载每日评分数据"""
     def __init__(
         self, 
         date_str: Optional[str] = None, 
@@ -76,7 +76,7 @@ class _HistoryScoreWorker(QRunnable):
         except (ApiError, AuthError) as e:
             self.signals.error.emit(str(e))
         except Exception as e:
-            self.signals.error.emit(f"加载历史评分失败：{e}")
+            self.signals.error.emit(f"加载每日评分失败：{e}")
 
 
 class _DataViewWorkerSignals(QObject):
@@ -437,9 +437,12 @@ class HistoryScoreView(QWidget):
         self._is_loading = False
         self._has_more = True
         self._current_filters = {}  # 保存当前筛选条件
+        self._user_team_map = {}  # user_id -> team_name 映射
         
         self._setup_ui()
         self._thread_pool = QThreadPool.globalInstance()
+        # 初始化时加载员工数据以获取团队信息
+        self._load_employee_data()
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -447,7 +450,7 @@ class HistoryScoreView(QWidget):
         layout.setSpacing(12)
         
         # 标题
-        title = QLabel("历史评分管理")
+        title = QLabel("每日评分管理")
         title.setFont(QFont("Arial", 16, QFont.Bold))
         layout.addWidget(title)
         
@@ -551,7 +554,7 @@ class HistoryScoreView(QWidget):
         # 显示加载中
         main_window = self.window()
         if hasattr(main_window, "show_loading"):
-            main_window.show_loading("加载历史评分数据...")
+            main_window.show_loading("加载每日评分数据...")
         
         worker = _HistoryScoreWorker(
             date_str=date_str,
@@ -644,7 +647,15 @@ class HistoryScoreView(QWidget):
             
             self._table.setItem(row, 0, QTableWidgetItem(date_str))
             self._table.setItem(row, 1, QTableWidgetItem(user_id))
-            self._table.setItem(row, 2, QTableWidgetItem(name))
+            
+            # 姓名列：显示姓名和团队，格式如：李婷婷[QA]
+            team_name = self._user_team_map.get(user_id, "") or item.get("team_name", "")
+            if team_name:
+                name_with_team = f"{name}[{team_name}]"
+            else:
+                name_with_team = name
+            self._table.setItem(row, 2, QTableWidgetItem(name_with_team))
+            
             self._table.setItem(row, 3, QTableWidgetItem(str(total_ai)))
             self._table.setItem(row, 4, QTableWidgetItem(dims_text))
             self._table.setItem(row, 5, QTableWidgetItem(rank_text))
@@ -743,4 +754,125 @@ class HistoryScoreView(QWidget):
         # 使用统一的错误处理，如果是 detail 错误会用弹出框显示
         handle_api_error(self, Exception(error), "重新拉取失败")
     
+    def _load_employee_data(self):
+        """加载员工数据以获取团队信息（带缓存）"""
+        from pathlib import Path
+        from utils.config_manager import CONFIG_PATH
+
+        class _DataCache:
+            CACHE_DIR = CONFIG_PATH.parent / "cache"
+            CACHE_EXPIRE_HOURS = 24
+            
+            @classmethod
+            def _get_cache_path(cls, cache_key: str) -> Path:
+                cls.CACHE_DIR.mkdir(exist_ok=True)
+                return cls.CACHE_DIR / f"{cache_key}.json"
+            
+            @classmethod
+            def get(cls, cache_key: str):
+                cache_path = cls._get_cache_path(cache_key)
+                if not cache_path.exists():
+                    return None
+                try:
+                    with open(cache_path, 'r', encoding='utf-8') as f:
+                        cache_data = json.load(f)
+                    cached_time_str = cache_data.get('cached_at')
+                    if not cached_time_str:
+                        return None
+                    cached_time = datetime.fromisoformat(cached_time_str)
+                    now = datetime.now()
+                    if (now - cached_time).total_seconds() > cls.CACHE_EXPIRE_HOURS * 3600:
+                        return None
+                    return cache_data.get('data')
+                except:
+                    try:
+                        cache_path.unlink()
+                    except:
+                        pass
+                    return None
+        
+        class _EmployeeDataWorkerSignals(QObject):
+            finished = Signal(dict)  # user_id -> team_name 映射
+            error = Signal(str)
+        
+        class _EmployeeDataWorker(QRunnable):
+            def __init__(self):
+                super().__init__()
+                self.signals = _EmployeeDataWorkerSignals()
+            
+            @Slot()
+            def run(self):
+                if not AdminApiClient.is_logged_in():
+                    self.signals.finished.emit({})
+                    return
+                
+                try:
+                    client = AdminApiClient.from_config()
+                    # 先尝试从缓存加载
+                    cached_employees = _DataCache.get("employees")
+                    if cached_employees is not None:
+                        employees = cached_employees
+                    else:
+                        resp = client.get_employees()
+                        employees = resp.get("items", []) if isinstance(resp, dict) else []
+                        # 缓存员工数据
+                        cache_path = _DataCache._get_cache_path("employees")
+                        cache_path.parent.mkdir(exist_ok=True)
+                        with open(cache_path, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                'cached_at': datetime.now().isoformat(),
+                                'data': employees
+                            }, f, ensure_ascii=False, indent=2)
+                    
+                    # 建立 user_id -> team_name 映射
+                    user_team_map = {}
+                    for emp in employees:
+                        user_id = str(emp.get("user_id", ""))
+                        team_name = emp.get("team_name") or ""
+                        if user_id:
+                            user_team_map[user_id] = team_name
+                    
+                    self.signals.finished.emit(user_team_map)
+                except Exception as e:
+                    self.signals.error.emit(str(e))
+        
+        worker = _EmployeeDataWorker()
+        worker.signals.finished.connect(self._on_employee_data_loaded)
+        worker.signals.error.connect(lambda err: None)  # 静默失败，不影响主功能
+        self._thread_pool.start(worker)
+    
+    def _on_employee_data_loaded(self, user_team_map: Dict[str, str]):
+        """员工数据加载完成"""
+        self._user_team_map = user_team_map
+        
+        # 如果表格已经有数据，需要更新姓名列
+        if self._table.rowCount() > 0:
+            self._update_name_column()
+    
+    def _update_name_column(self):
+        """更新表格中的姓名列（当员工数据加载完成后调用）"""
+        for row in range(self._table.rowCount()):
+            # 获取该行的员工ID（第1列，索引为1）
+            user_id_item = self._table.item(row, 1)
+            if user_id_item:
+                user_id = user_id_item.text()
+                # 获取姓名列（第2列，索引为2）
+                name_item = self._table.item(row, 2)
+                if name_item:
+                    # 从原始姓名中提取姓名（去掉可能已有的团队信息）
+                    original_name = name_item.text()
+                    # 如果已经有团队信息，先提取原始姓名
+                    if '[' in original_name and ']' in original_name:
+                        name = original_name.split('[')[0]
+                    else:
+                        name = original_name
+                    
+                    # 获取团队名称
+                    team_name = self._user_team_map.get(user_id, "")
+                    if team_name:
+                        name_with_team = f"{name}[{team_name}]"
+                    else:
+                        name_with_team = name
+                    
+                    name_item.setText(name_with_team)
 
