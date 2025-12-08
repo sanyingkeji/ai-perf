@@ -1,4 +1,4 @@
-name: ,w
+name: Build Clients
 
 on:
   release:
