@@ -2721,8 +2721,8 @@ def main():
                 if not chinese_lang_available:
                     log_warn("  ⚠ 未找到中文语言文件，尝试下载...")
                     try:
-                        # Inno Setup 官方翻译文件下载地址
-                        download_url = "http://www.jrsoftware.org/files/istrans/ChineseSimplified.isl"
+                        # Inno Setup 官方翻译文件下载地址（GitHub raw 地址）
+                        download_url = "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/Unofficial/ChineseSimplified.isl"
                         
                         # 创建请求
                         req = Request(download_url)

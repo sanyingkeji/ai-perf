@@ -718,7 +718,57 @@ jobs:
       
       - name: Install WiX Toolset
         run: |
-          choco install wixtoolset -y
+          # WiX Toolset 6.0 需要从 GitHub releases 下载 MSI 安装包
+          Write-Host "正在下载 WiX Toolset 6.0..."
+          
+          $wixVersion = "6.0.0"
+          # WiX Toolset 6.0 MSI 安装包下载地址
+          $wixUrl = "https://github.com/wixtoolset/wix4/releases/download/v$wixVersion/wix-cli-x64.msi"
+          $wixInstaller = "$env:TEMP\wix$wixVersion.msi"
+          
+          try {
+            Invoke-WebRequest -Uri $wixUrl -OutFile $wixInstaller -ErrorAction Stop
+            Write-Host "下载完成，正在安装..."
+            
+            # 静默安装 WiX Toolset
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$wixInstaller`" /quiet /norestart" -Wait -NoNewWindow
+            
+            # 等待安装完成并刷新环境变量
+            Start-Sleep -Seconds 5
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+            
+            # 验证安装（检查常见安装路径）
+            $wixPaths = @(
+              "${env:ProgramFiles}\WiX Toolset v$wixVersion\bin",
+              "${env:ProgramFiles(x86)}\WiX Toolset v$wixVersion\bin",
+              "${env:ProgramFiles}\WiX Toolset v6.0\bin",
+              "${env:ProgramFiles(x86)}\WiX Toolset v6.0\bin"
+            )
+            
+            $wixFound = $false
+            foreach ($path in $wixPaths) {
+              if (Test-Path "$path\wix.exe") {
+                $env:PATH = "$path;$env:PATH"
+                Write-Host "✓ WiX Toolset 已安装到: $path"
+                & "$path\wix.exe" --version
+                $wixFound = $true
+                break
+              }
+            }
+            
+            if (-not $wixFound) {
+              Write-Host "⚠ WiX Toolset 可能未正确安装到预期路径"
+            }
+          } catch {
+            Write-Host "下载或安装失败: $_"
+            Write-Host "将尝试使用 Chocolatey 安装..."
+            choco install wixtoolset -y
+          } finally {
+            # 清理安装包
+            if (Test-Path $wixInstaller) {
+              Remove-Item $wixInstaller -Force
+            }
+          }
         continue-on-error: true
       
       - name: Check if should build
