@@ -131,12 +131,24 @@ class UpdateDialog(QDialog):
         if download_urls and isinstance(download_urls, dict):
             # 检测操作系统
             os_name = platform.system().lower()
+            platform_urls = None
             if os_name == "darwin":
-                return download_urls.get("darwin", "")
+                platform_urls = download_urls.get("darwin")
             elif os_name == "windows":
-                return download_urls.get("windows", "")
+                platform_urls = download_urls.get("windows")
             elif os_name == "linux":
-                return download_urls.get("linux", "")
+                platform_urls = download_urls.get("linux")
+            
+            # 处理不同的数据格式
+            if platform_urls:
+                if isinstance(platform_urls, list) and len(platform_urls) > 0:
+                    # 如果是列表格式，取第一个元素的 url
+                    first_item = platform_urls[0]
+                    if isinstance(first_item, dict) and "url" in first_item:
+                        return first_item["url"]
+                elif isinstance(platform_urls, str):
+                    # 如果是字符串格式（兼容旧版本），直接返回
+                    return platform_urls
         
         # 如果没有多平台地址，使用兼容的 download_url
         return version_info.get("download_url", "")
