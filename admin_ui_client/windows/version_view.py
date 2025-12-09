@@ -10,6 +10,7 @@
 
 from typing import Dict, Any, List, Optional
 from functools import partial
+from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QFrame, QComboBox, QDialog, QLineEdit, QTextEdit,
@@ -31,26 +32,71 @@ class _VersionWorkerSignals(QObject):
 
 
 class _UploadWorkerSignals(QObject):
-    """上传进度信号"""
+    """上传进度信号（支持断点续传）"""
     progress = Signal(int, int)  # 已上传字节数, 总字节数
     finished = Signal(str)  # 下载URL
     error = Signal(str)  # 错误信息
+    chunk_progress = Signal(int, int, int)  # 当前分片索引, 总分片数, 当前分片进度(0-100)
 
 
 class _UploadWorker(QRunnable):
-    """后台线程：上传文件"""
-    def __init__(self, file_path: str, platform: str, version: str, upload_api_url: str):
+    """后台线程：上传文件（支持断点续传）"""
+    def __init__(self, file_path: str, platform: str, version: str, upload_api_url: str, chunk_size: int = 10 * 1024 * 1024):
         super().__init__()
         self.signals = _UploadWorkerSignals()
-        self._file_path = file_path
+        self._file_path = Path(file_path)
         self._platform = platform
         self._version = version
         self._upload_api_url = upload_api_url
+        self._chunk_size = chunk_size  # 分片大小，默认10MB
         self._should_stop = False
+        self._upload_id = None
+        self._total_chunks = 0
+        self._uploaded_chunks = set()
+        
+        # 进度文件路径（用于断点续传）
+        self._progress_file = self._file_path.parent / f".{self._file_path.name}.upload_progress"
     
     def stop(self):
         """停止上传"""
         self._should_stop = True
+    
+    def _load_progress(self) -> Optional[Dict]:
+        """加载上传进度"""
+        if self._progress_file.exists():
+            try:
+                import json
+                with open(self._progress_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+    
+    def _save_progress(self, upload_id: str, uploaded_chunks: set):
+        """保存上传进度"""
+        try:
+            import json
+            file_size = self._file_path.stat().st_size if self._file_path.exists() else 0
+            progress_data = {
+                "upload_id": upload_id,
+                "uploaded_chunks": list(uploaded_chunks),
+                "file_path": str(self._file_path),
+                "platform": self._platform,
+                "version": self._version,
+                "file_size": file_size  # 保存文件大小用于验证
+            }
+            with open(self._progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f)
+        except Exception:
+            pass  # 忽略保存错误
+    
+    def _clear_progress(self):
+        """清除上传进度"""
+        try:
+            if self._progress_file.exists():
+                self._progress_file.unlink()
+        except Exception:
+            pass
     
     @Slot()
     def run(self) -> None:
@@ -58,46 +104,208 @@ class _UploadWorker(QRunnable):
             if self._should_stop:
                 return
             
-            # 读取文件并上传
-            with open(self._file_path, "rb") as f:
-                files = {"file": (os.path.basename(self._file_path), f, "application/octet-stream")}
-                data = {
+            # 检查文件是否存在
+            if not self._file_path.exists():
+                self.signals.error.emit(f"文件不存在：{self._file_path}")
+                return
+            
+            file_size = self._file_path.stat().st_size
+            if file_size == 0:
+                self.signals.error.emit("文件为空")
+                return
+            
+            # 尝试加载之前的进度
+            progress_data = self._load_progress()
+            if progress_data and progress_data.get("upload_id"):
+                # 验证文件路径、大小、平台和版本是否匹配（防止文件被修改）
+                saved_file_path = progress_data.get("file_path")
+                saved_platform = progress_data.get("platform")
+                saved_version = progress_data.get("version")
+                saved_file_size = progress_data.get("file_size", 0)
+                
+                # 如果文件路径、大小、平台或版本不匹配，清除进度并重新开始
+                if (saved_file_path != str(self._file_path) or 
+                    saved_platform != self._platform or 
+                    saved_version != self._version or
+                    saved_file_size != file_size):
+                    self._clear_progress()
+                    progress_data = None
+                else:
+                    # 恢复上传会话
+                    self._upload_id = progress_data["upload_id"]
+                    self._uploaded_chunks = set(progress_data.get("uploaded_chunks", []))
+                    # 查询服务器上的进度
+                    try:
+                        progress_response = httpx.get(
+                            f"{self._upload_api_url}/progress",
+                            params={"upload_id": self._upload_id},
+                            timeout=10.0
+                        )
+                        if progress_response.status_code == 200:
+                            progress_result = progress_response.json()
+                            if progress_result.get("status") == "success":
+                                server_chunks = set(progress_result.get("uploaded_chunks", []))
+                                # 合并本地和服务器进度
+                                self._uploaded_chunks = self._uploaded_chunks.union(server_chunks)
+                                self._total_chunks = progress_result.get("total_chunks", 0)
+                            else:
+                                # 服务器会话已过期或无效，清除本地进度并重新初始化
+                                self._clear_progress()
+                                self._upload_id = None
+                                self._uploaded_chunks = set()
+                        else:
+                            # 服务器返回错误，清除本地进度并重新初始化
+                            self._clear_progress()
+                            self._upload_id = None
+                            self._uploaded_chunks = set()
+                    except Exception:
+                        # 查询失败，清除本地进度并重新初始化（避免使用过期的会话）
+                        self._clear_progress()
+                        self._upload_id = None
+                        self._uploaded_chunks = set()
+            
+            # 如果没有上传ID，初始化上传
+            if not self._upload_id:
+                # 初始化上传
+                init_data = {
+                    "filename": self._file_path.name,
                     "platform": self._platform,
-                    "version": self._version
+                    "version": self._version,
+                    "total_size": file_size
                 }
                 
-                # 使用httpx上传（multipart/form-data）
-                response = httpx.post(
-                    self._upload_api_url,
-                    files=files,
-                    data=data,
-                    timeout=300.0
+                init_response = httpx.post(
+                    f"{self._upload_api_url}/init",
+                    data=init_data,
+                    timeout=30.0
                 )
                 
-                if self._should_stop:
+                if init_response.status_code != 200:
+                    self.signals.error.emit(f"初始化上传失败：HTTP {init_response.status_code}")
                     return
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("status") == "success":
-                        download_url = result.get("url")
-                        if download_url:
-                            self.signals.finished.emit(download_url)
+                init_result = init_response.json()
+                if init_result.get("status") != "success":
+                    self.signals.error.emit(f"初始化上传失败：{init_result.get('message', '未知错误')}")
+                    return
+                
+                self._upload_id = init_result["upload_id"]
+                self._total_chunks = init_result["total_chunks"]
+                self._chunk_size = init_result.get("chunk_size", self._chunk_size)
+            
+            # 计算总分片数（如果还没有）
+            if self._total_chunks == 0:
+                self._total_chunks = (file_size + self._chunk_size - 1) // self._chunk_size
+            
+            # 上传所有分片
+            with open(self._file_path, "rb") as f:
+                uploaded_size = 0
+                
+                for chunk_index in range(self._total_chunks):
+                    if self._should_stop:
+                        return
+                    
+                    # 跳过已上传的分片
+                    if chunk_index in self._uploaded_chunks:
+                        # 计算已上传的字节数
+                        if chunk_index < self._total_chunks - 1:
+                            uploaded_size += self._chunk_size
                         else:
-                            self.signals.error.emit("上传成功但未返回URL")
-                    else:
-                        error_msg = result.get("message", "上传失败")
+                            # 最后一个分片
+                            uploaded_size += file_size - (self._total_chunks - 1) * self._chunk_size
+                        # 发送进度更新
+                        self.signals.progress.emit(uploaded_size, file_size)
+                        self.signals.chunk_progress.emit(chunk_index + 1, self._total_chunks, 100)
+                        continue
+                    
+                    # 读取分片数据
+                    f.seek(chunk_index * self._chunk_size)
+                    chunk_data = f.read(self._chunk_size)
+                    
+                    if not chunk_data:
+                        break
+                    
+                    # 上传分片
+                    chunk_files = {
+                        "chunk": (f"chunk_{chunk_index}", chunk_data, "application/octet-stream")
+                    }
+                    chunk_data_form = {
+                        "upload_id": self._upload_id,
+                        "chunk_index": chunk_index
+                    }
+                    
+                    chunk_response = httpx.post(
+                        f"{self._upload_api_url}/chunk",
+                        files=chunk_files,
+                        data=chunk_data_form,
+                        timeout=300.0
+                    )
+                    
+                    if self._should_stop:
+                        return
+                    
+                    if chunk_response.status_code != 200:
+                        error_msg = f"上传分片 {chunk_index} 失败：HTTP {chunk_response.status_code}"
+                        try:
+                            error_result = chunk_response.json()
+                            if "message" in error_result:
+                                error_msg = f"上传分片 {chunk_index} 失败：{error_result['message']}"
+                        except:
+                            pass
                         self.signals.error.emit(error_msg)
-                else:
-                    try:
-                        error_text = response.text
-                    except:
-                        error_text = "无法读取错误信息"
-                    error_msg = f"HTTP {response.status_code}: {error_text}"
-                    self.signals.error.emit(error_msg)
+                        return
+                    
+                    chunk_result = chunk_response.json()
+                    if chunk_result.get("status") != "success":
+                        self.signals.error.emit(f"上传分片 {chunk_index} 失败：{chunk_result.get('message', '未知错误')}")
+                        return
+                    
+                    # 记录已上传的分片
+                    self._uploaded_chunks.add(chunk_index)
+                    uploaded_size += len(chunk_data)
+                    
+                    # 保存进度
+                    self._save_progress(self._upload_id, self._uploaded_chunks)
+                    
+                    # 发送进度更新
+                    self.signals.progress.emit(uploaded_size, file_size)
+                    self.signals.chunk_progress.emit(chunk_index + 1, self._total_chunks, 100)
+            
+            # 所有分片上传完成，通知服务器合并
+            if self._should_stop:
+                return
+            
+            complete_data = {
+                "upload_id": self._upload_id
+            }
+            
+            complete_response = httpx.post(
+                f"{self._upload_api_url}/complete",
+                data=complete_data,
+                timeout=300.0
+            )
+            
+            if complete_response.status_code != 200:
+                self.signals.error.emit(f"完成上传失败：HTTP {complete_response.status_code}")
+                return
+            
+            complete_result = complete_response.json()
+            if complete_result.get("status") != "success":
+                self.signals.error.emit(f"完成上传失败：{complete_result.get('message', '未知错误')}")
+                return
+            
+            # 清除进度文件
+            self._clear_progress()
+            
+            # 发送完成信号
+            download_url = complete_result.get("url")
+            if download_url:
+                self.signals.finished.emit(download_url)
+            else:
+                self.signals.error.emit("上传成功但未返回URL")
         
         except httpx.TimeoutException:
-            self.signals.error.emit("上传超时，请检查网络连接或文件大小")
+            self.signals.error.emit("上传超时，请检查网络连接。可以稍后继续上传（断点续传）")
         except Exception as e:
             self.signals.error.emit(f"上传失败：{type(e).__name__}: {e}")
 
@@ -680,7 +888,10 @@ class VersionEditDialog(QDialog):
         cfg = ConfigManager.load()
         upload_api_url = cfg.get("upload_api_url", "http://27.0.0.1:8882/api/upload")
         
-        # 创建上传Worker
+        # 存储文件大小用于进度计算
+        self._upload_file_size = file_size
+        
+        # 创建上传Worker（支持断点续传）
         self._upload_worker = _UploadWorker(file_path, platform, version, upload_api_url)
         
         # 连接信号
@@ -688,33 +899,30 @@ class VersionEditDialog(QDialog):
             lambda url: self._on_upload_finished(url, platform, index, url_edit)
         )
         self._upload_worker.signals.error.connect(self._on_upload_error)
+        self._upload_worker.signals.progress.connect(self._on_upload_progress)
+        self._upload_worker.signals.chunk_progress.connect(self._on_upload_chunk_progress)
         self._upload_progress.canceled.connect(self._on_upload_canceled)
         
         # 启动上传
         self._thread_pool.start(self._upload_worker)
-        
-        # 启动进度更新定时器（模拟进度，因为httpx multipart上传不容易跟踪真实进度）
-        self._progress_timer = QTimer(self)
-        self._progress_timer.timeout.connect(self._update_upload_progress)
-        self._progress_timer.start(100)  # 每100ms更新一次
-        self._progress_value = 0
     
-    def _update_upload_progress(self):
-        """更新上传进度（模拟）"""
+    def _on_upload_progress(self, uploaded_bytes: int, total_bytes: int):
+        """更新上传进度（真实进度）"""
         if self._upload_progress and not self._upload_progress.wasCanceled():
-            # 模拟进度：从0到90%，剩余10%等待服务器响应
-            if self._progress_value < 90:
-                self._progress_value += 2
-                self._upload_progress.setValue(self._progress_value)
-            else:
-                # 已经到90%，停止定时器，等待实际完成
-                self._progress_timer.stop()
+            if total_bytes > 0:
+                percent = int((uploaded_bytes / total_bytes) * 100)
+                # 保留5%给完成阶段
+                percent = min(percent, 95)
+                self._upload_progress.setValue(percent)
+    
+    def _on_upload_chunk_progress(self, current_chunk: int, total_chunks: int, chunk_percent: int):
+        """更新分片进度（可选，用于显示详细信息）"""
+        if self._upload_progress and not self._upload_progress.wasCanceled():
+            # 可以在这里更新进度对话框的文本，显示分片信息
+            pass
     
     def _on_upload_finished(self, download_url: str, platform: str, index: int, url_edit: QLineEdit):
         """上传完成"""
-        if self._progress_timer:
-            self._progress_timer.stop()
-        
         if self._upload_progress:
             self._upload_progress.setValue(100)
             self._upload_progress.close()
@@ -731,9 +939,6 @@ class VersionEditDialog(QDialog):
     
     def _on_upload_error(self, error_msg: str):
         """上传错误"""
-        if self._progress_timer:
-            self._progress_timer.stop()
-        
         if self._upload_progress:
             self._upload_progress.close()
             self._upload_progress = None
@@ -746,9 +951,6 @@ class VersionEditDialog(QDialog):
         """取消上传"""
         if self._upload_worker:
             self._upload_worker.stop()
-        
-        if self._progress_timer:
-            self._progress_timer.stop()
         
         if self._upload_progress:
             self._upload_progress.close()

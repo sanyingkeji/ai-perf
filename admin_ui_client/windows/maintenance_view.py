@@ -5447,7 +5447,7 @@ class PackageTab(QWidget):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(8, 8, 8, 8)
-        right_layout.setSpacing(8)
+        right_layout.setSpacing(0)
 
         # 使用 QTabWidget 管理多个输出窗口
         self.output_tabs = QTabWidget()
@@ -5470,13 +5470,13 @@ class PackageTab(QWidget):
                 background-color: #000000;
                 border-radius: 0px;
                 border-top: none;
-                top: -1px;
                 padding: 0px;
                 margin: 0px;
             }
             QTabBar {
                 alignment: left;
-                margin-bottom: 0px;
+                margin: 0px;
+                padding: 0px;
             }
             /* 强制 TAB 标签左对齐（macOS 兼容） */
             QTabBar::scroller {
@@ -5489,6 +5489,7 @@ class PackageTab(QWidget):
                 border-bottom: none;
                 padding: 6px 32px 6px 16px;
                 margin-right: 2px;
+                margin-bottom: 0px;
                 font-size: 12px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
