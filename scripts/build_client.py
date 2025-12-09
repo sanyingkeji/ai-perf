@@ -27,6 +27,12 @@ import time
 import uuid
 import signal
 import threading
+try:
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError, HTTPError
+except ImportError:
+    # Python 2 兼容（虽然不太可能）
+    from urllib2 import urlopen, Request, URLError, HTTPError
 
 # Windows 编码修复：设置 UTF-8 编码
 if sys.platform == "win32":
@@ -2678,6 +2684,72 @@ def main():
             inno_script = client_dir / "setup.iss"
             template_script = project_root / "scripts" / "inno_setup_template.iss"
             
+            # 检查中文语言文件是否存在，如果不存在则尝试下载
+            chinese_lang_available = False
+            inno_dir = None
+            chinese_lang_path = None
+            
+            # 确定 Inno Setup 安装目录
+            if inno_compiler and inno_compiler != "ISCC.exe":
+                # 从编译器路径推断 Inno Setup 安装目录
+                inno_dir = Path(inno_compiler).parent.parent
+            else:
+                # 如果编译器在 PATH 中，尝试从编译器路径查找
+                if inno_compiler == "ISCC.exe":
+                    # 尝试查找 ISCC.exe 的实际路径
+                    iscc_full_path = shutil.which("ISCC.exe")
+                    if iscc_full_path:
+                        inno_dir = Path(iscc_full_path).parent.parent
+                
+                # 如果还没找到，尝试查找常见安装位置
+                if not inno_dir or not inno_dir.exists():
+                    for inno_base in [
+                        Path(r"C:\Program Files (x86)\Inno Setup 6"),
+                        Path(r"C:\Program Files\Inno Setup 6"),
+                    ]:
+                        if inno_base.exists():
+                            inno_dir = inno_base
+                            break
+            
+            # 检查语言文件是否存在
+            if inno_dir and inno_dir.exists():
+                languages_dir = inno_dir / "Languages"
+                chinese_lang_path = languages_dir / "ChineseSimplified.isl"
+                chinese_lang_available = chinese_lang_path.exists()
+                
+                # 如果语言文件不存在，尝试下载
+                if not chinese_lang_available:
+                    log_warn("  ⚠ 未找到中文语言文件，尝试下载...")
+                    try:
+                        # Inno Setup 官方翻译文件下载地址
+                        download_url = "http://www.jrsoftware.org/files/istrans/ChineseSimplified.isl"
+                        
+                        # 创建请求
+                        req = Request(download_url)
+                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                        
+                        # 下载文件
+                        log_info(f"    正在从 {download_url} 下载...")
+                        with urlopen(req, timeout=30) as response:
+                            # 确保 Languages 目录存在
+                            languages_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            # 保存文件
+                            with open(chinese_lang_path, 'wb') as f:
+                                f.write(response.read())
+                            
+                            chinese_lang_available = True
+                            log_info(f"    ✓ 中文语言文件下载成功: {chinese_lang_path}")
+                    except (URLError, HTTPError, OSError, Exception) as e:
+                        log_warn(f"    ✗ 下载失败: {e}")
+                        log_warn("    将使用英语界面")
+                        # 如果下载失败，删除可能创建的空文件
+                        if chinese_lang_path and chinese_lang_path.exists():
+                            try:
+                                chinese_lang_path.unlink()
+                            except:
+                                pass
+            
             # 读取模板或创建基本脚本
             if template_script.exists():
                 with open(template_script, "r", encoding="utf-8") as f:
@@ -2685,6 +2757,19 @@ def main():
                 
                 content = content.replace("{APP_NAME}", app_name)
                 content = content.replace("{EXE_NAME}", app_name)
+                
+                # 如果中文语言文件不存在，移除中文语言配置
+                if not chinese_lang_available:
+                    # 移除中文语言行，保留英语
+                    lines = content.split('\n')
+                    new_lines = []
+                    for line in lines:
+                        # 跳过包含 ChineseSimplified.isl 的行
+                        if 'ChineseSimplified.isl' in line:
+                            continue
+                        new_lines.append(line)
+                    content = '\n'.join(new_lines)
+                    log_warn("  ⚠ 未找到中文语言文件，仅使用英语界面")
                 
                 with open(inno_script, "w", encoding="utf-8") as f:
                     f.write(content)

@@ -725,8 +725,7 @@ jobs:
         id: check_build
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" == "release" ] || \
-             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+          if [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
