@@ -97,6 +97,101 @@ def check_cancel():
     if _cancel_requested.is_set():
         raise KeyboardInterrupt("构建已取消")
 
+def run_with_timeout_and_kill(cmd, timeout, check=False, capture_output=True, text=True, log_prefix=""):
+    """
+    运行命令并确保在超时后强制终止进程
+    
+    Args:
+        cmd: 命令列表
+        timeout: 超时时间（秒）
+        check: 如果为 True，返回码非零时抛出异常
+        capture_output: 是否捕获输出
+        text: 是否以文本模式处理输出
+        log_prefix: 日志前缀（用于显示进度）
+    
+    Returns:
+        subprocess.CompletedProcess 对象
+    
+    Raises:
+        subprocess.TimeoutExpired: 如果超时
+        subprocess.CalledProcessError: 如果 check=True 且返回码非零
+    """
+    import platform
+    
+    # 使用 Popen 以便能够强制终止
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        text=text
+    )
+    
+    start_time = time.time()
+    last_progress_time = start_time
+    progress_interval = 30  # 每30秒输出一次进度
+    
+    try:
+        # 轮询进程状态，同时输出进度
+        while True:
+            elapsed = time.time() - start_time
+            remaining = timeout - elapsed
+            
+            # 检查是否超时
+            if elapsed >= timeout:
+                log_warn(f"{log_prefix}命令执行超时（{timeout} 秒），正在强制终止...")
+                # 尝试优雅终止
+                if platform.system() != "Windows":
+                    process.terminate()
+                else:
+                    process.terminate()
+                
+                # 等待最多5秒
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # 如果5秒后还没结束，强制杀死
+                    log_warn(f"{log_prefix}进程未响应，强制杀死...")
+                    process.kill()
+                    process.wait()
+                
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            
+            # 定期输出进度（避免日志过多）
+            if elapsed - last_progress_time >= progress_interval:
+                log_info(f"{log_prefix}仍在运行...（已用时 {int(elapsed)} 秒，剩余 {int(remaining)} 秒）")
+                last_progress_time = elapsed
+            
+            # 检查进程是否已结束
+            returncode = process.poll()
+            if returncode is not None:
+                # 进程已结束
+                stdout, stderr = process.communicate()
+                result = subprocess.CompletedProcess(
+                    cmd, returncode, stdout, stderr
+                )
+                
+                if check and returncode != 0:
+                    raise subprocess.CalledProcessError(returncode, cmd, stdout, stderr)
+                
+                return result
+            
+            # 短暂休眠，避免 CPU 占用过高
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        # 用户取消，强制终止进程
+        log_warn(f"{log_prefix}收到取消信号，正在终止进程...")
+        if platform.system() != "Windows":
+            process.terminate()
+        else:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
+
 def print_environment_diagnostics():
     """打印环境诊断信息，用于调试 PyInstaller 行为差异"""
     log_warn("========================================")
@@ -2259,43 +2354,75 @@ def main():
             # 尝试使用时间戳签名（带重试机制）
             timestamp_max_retries = 3
             timestamp_retry_delay = 5
+            # PKG 文件可能很大，且时间戳服务可能响应慢，设置较长的超时时间
+            # 使用改进的超时机制后，即使卡住也能强制终止
+            timestamp_timeout = 600  # 600 秒超时（10分钟，PKG 文件可能很大，需要更长时间）
             timestamp_success = False
+            timestamp_result = None
             
             for timestamp_attempt in range(1, timestamp_max_retries + 1):
-                log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-                timestamp_result = subprocess.run([
-                    "productsign",
-                    "--sign", installer_identity,
-                    "--timestamp",
-                    str(pkg_path),
-                    str(pkg_signed)
-                ], capture_output=True, text=True, check=False)
-                
-                if timestamp_result.returncode == 0:
-                    log_info("  ✓ PKG 签名完成（已使用时间戳）")
-                    timestamp_success = True
-                    break
-                else:
-                    error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
-                    if "timestamp service is not available" in error_msg or "network" in error_msg.lower() or "timeout" in error_msg.lower():
-                        if timestamp_attempt < timestamp_max_retries:
-                            log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
-                            time.sleep(timestamp_retry_delay)
-                            timestamp_retry_delay *= 2  # 指数退避
-                        else:
-                            # 最后一次重试失败，将在循环外抛出异常
-                            log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}，超时 {timestamp_timeout} 秒）...")
+                try:
+                    # 使用改进的超时机制，确保进程能被强制终止
+                    timestamp_result = run_with_timeout_and_kill([
+                        "productsign",
+                        "--sign", installer_identity,
+                        "--timestamp",
+                        str(pkg_path),
+                        str(pkg_signed)
+                    ], timeout=timestamp_timeout, check=False, capture_output=True, text=True, log_prefix="    ")
+                    
+                    if timestamp_result.returncode == 0:
+                        log_info("  ✓ PKG 签名完成（已使用时间戳）")
+                        timestamp_success = True
+                        break
                     else:
-                        # 其他错误，立即抛出异常
-                        log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
-                        raise Exception(f"PKG 签名失败: {error_msg[:200]}")
+                        error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                        if "timestamp service is not available" in error_msg or "network" in error_msg.lower():
+                            if timestamp_attempt < timestamp_max_retries:
+                                log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
+                                time.sleep(timestamp_retry_delay)
+                                timestamp_retry_delay *= 2  # 指数退避
+                            else:
+                                log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                        else:
+                            log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
+                            raise Exception(f"PKG 签名失败: {error_msg[:200]}")
+                except subprocess.TimeoutExpired:
+                    log_warn(f"  ⚠ PKG 签名超时（{timestamp_timeout} 秒），可能是时间戳服务响应慢或 PKG 文件过大")
+                    # 创建一个假的 result 对象以便后续错误处理
+                    class FakeResult:
+                        returncode = 1
+                        stderr = f"签名超时：时间戳服务响应超时（超过 {timestamp_timeout} 秒）"
+                        stdout = ""
+                    timestamp_result = FakeResult()
+                    if timestamp_attempt < timestamp_max_retries:
+                        log_warn(f"  ⚠ {timestamp_retry_delay} 秒后重试...")
+                        time.sleep(timestamp_retry_delay)
+                        timestamp_retry_delay *= 2
+                    else:
+                        log_error(f"  ✗ PKG 签名超时（已重试 {timestamp_max_retries} 次）")
+                except Exception as e:
+                    log_error(f"  ✗ PKG 签名过程出错: {str(e)}")
+                    # 创建一个假的 result 对象以便后续错误处理
+                    class FakeResult:
+                        returncode = 1
+                        stderr = f"签名过程出错: {str(e)}"
+                        stdout = ""
+                    timestamp_result = FakeResult()
+                    if timestamp_attempt < timestamp_max_retries:
+                        log_warn(f"  ⚠ {timestamp_retry_delay} 秒后重试...")
+                        time.sleep(timestamp_retry_delay)
+                        timestamp_retry_delay *= 2
+                    else:
+                        raise
             
             # 如果时间戳签名失败，终止构建（不使用无时间戳签名，因为无法通过公证）
             if not timestamp_success:
-                error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                error_msg = timestamp_result.stderr or timestamp_result.stdout or "" if timestamp_result else "未知错误"
                 log_error(f"  ✗ PKG 签名失败（已重试 {timestamp_max_retries} 次）: {error_msg[:200]}")
                 log_error("     无时间戳签名无法通过公证，构建终止")
-                raise Exception(f"PKG 签名失败：时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                raise Exception(f"PKG 签名失败：时间戳服务不可用或超时（已重试 {timestamp_max_retries} 次）")
             
             # 替换原文件（如果签名成功）
             if timestamp_success and pkg_signed.exists():

@@ -117,10 +117,16 @@ class PollingService(QObject):
         """检测到新版本"""
         # 检查版本是否有变化
         new_version = version_info.get("version", "")
+        # 如果版本号相同，仍然发出信号，让主窗口自己决定是否显示
+        # 因为主窗口会检查弹窗是否已关闭，如果已关闭会重置标志并允许重新显示
         if self._last_version_info and self._last_version_info.get("version") == new_version:
-            return  # 版本没变化，不重复通知
+            # 版本没变化，但主窗口可能已经关闭了弹窗，所以仍然发出信号
+            # 主窗口会自己处理重复显示的逻辑
+            pass
         
+        # 更新最后检测到的版本信息
         self._last_version_info = version_info
+        # 总是发出信号，让主窗口决定是否显示弹窗
         self.version_update_available.emit(version_info)
 
 

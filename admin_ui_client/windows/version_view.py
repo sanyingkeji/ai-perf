@@ -1069,25 +1069,39 @@ class VersionView(QWidget):
             
             # 下载地址（显示多平台信息）
             download_urls = item.get("download_urls") or {}
+            tooltip_lines = []  # 用于构建 tooltip
             if isinstance(download_urls, dict):
                 platform_info = []
                 for platform, packages in download_urls.items():
+                    platform_name = {"darwin": "macOS", "windows": "Windows", "linux": "Linux"}.get(platform, platform)
                     if isinstance(packages, list):
                         # 新格式：列表
-                        pkg_count = len([p for p in packages if p.get("url", "").strip()])
+                        valid_packages = [p for p in packages if p.get("url", "").strip()]
+                        pkg_count = len(valid_packages)
                         if pkg_count > 0:
-                            platform_name = {"darwin": "macOS", "windows": "Windows", "linux": "Linux"}.get(platform, platform)
                             platform_info.append(f"{platform_name}({pkg_count}个包)")
+                            # 构建 tooltip：每个包的详细信息
+                            for pkg in valid_packages:
+                                pkg_name = pkg.get("name", "未知")
+                                pkg_url = pkg.get("url", "").strip()
+                                tooltip_lines.append(f"[{platform_name}][{pkg_name}]{pkg_url}")
                     elif isinstance(packages, str) and packages.strip():
                         # 兼容旧格式：单个URL
-                        platform_name = {"darwin": "macOS", "windows": "Windows", "linux": "Linux"}.get(platform, platform)
                         platform_info.append(platform_name)
+                        tooltip_lines.append(f"[{platform_name}]{packages.strip()}")
                 display_url = f"已配置：{', '.join(platform_info)}" if platform_info else "未配置"
             else:
                 # 兼容旧版本
                 download_url = item.get("download_url", "")
                 display_url = download_url[:50] + "..." if len(download_url) > 50 else (download_url or "未配置")
-            self.table.setItem(i, 3, QTableWidgetItem(display_url))
+                if download_url:
+                    tooltip_lines.append(download_url)
+            
+            # 创建下载地址单元格并设置 tooltip
+            url_item = QTableWidgetItem(display_url)
+            if tooltip_lines:
+                url_item.setToolTip("\n".join(tooltip_lines))
+            self.table.setItem(i, 3, url_item)
             
             # 更新内容
             release_notes = item.get("release_notes", "") or ""

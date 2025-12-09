@@ -5456,9 +5456,9 @@ class PackageTab(QWidget):
         
         # 设置 TAB 标签左对齐
         tab_bar = self.output_tabs.tabBar()
-        # 禁用文字截断，确保完整显示
-        tab_bar.setElideMode(Qt.ElideNone)
-        tab_bar.setUsesScrollButtons(False)  # 禁用滚动按钮，让标签自然排列
+        # 当空间不足时允许文字截断（使用省略号），但保持最小宽度确保可读性
+        tab_bar.setElideMode(Qt.ElideRight)  # 右侧截断，显示省略号
+        tab_bar.setUsesScrollButtons(True)  # 启用滚动按钮，当tab太多时可以滚动查看
         tab_bar.setExpanding(False)  # 禁用扩展，确保标签从左边开始排列
         tab_bar.setDocumentMode(False)  # 禁用文档模式，确保标签正常显示
         tab_bar.setMovable(False)  # 禁用标签移动
@@ -5469,10 +5469,10 @@ class PackageTab(QWidget):
                 border: 1px solid #3A3A3C;
                 background-color: #000000;
                 border-radius: 0px;
-                border-top: none;
+                border-top: 1px solid #3A3A3C;
                 padding: 0px;
                 margin: 0px;
-                margin-top: 0px;
+                margin-top: -1px;
             }
             QTabBar {
                 alignment: left;
@@ -5481,18 +5481,29 @@ class PackageTab(QWidget):
                 padding: 0px;
                 spacing: 0px;
             }
-            /* 强制 TAB 标签左对齐（macOS 兼容） */
+            /* 滚动按钮样式（当tab太多时显示） */
             QTabBar::scroller {
-                width: 0px;
+                width: 20px;
+            }
+            QTabBar QAbstractButton {
+                background-color: #2A2B2D;
+                border: 1px solid #3A3A3C;
+                border-radius: 3px;
+                color: #FFFFFF;
+                min-width: 20px;
+                max-width: 20px;
+            }
+            QTabBar QAbstractButton:hover {
+                background-color: #333436;
             }
             QTabBar::tab {
                 background-color: #2A2B2D;
                 color: #FFFFFF;
                 border: 1px solid #3A3A3C;
-                border-bottom: none;
+                border-bottom: 1px solid #3A3A3C;
                 padding: 6px 32px 6px 16px;
                 margin-right: 2px;
-                margin-bottom: 0px;
+                margin-bottom: -1px;
                 font-size: 12px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
@@ -5502,6 +5513,7 @@ class PackageTab(QWidget):
             QTabBar::tab:selected {
                 background-color: #000000;
                 color: #FFFFFF;
+                border-bottom: 1px solid #000000;
             }
             QTabBar::tab:hover:!selected {
                 background-color: #333436;

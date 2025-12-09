@@ -788,8 +788,21 @@ class MainWindow(QMainWindow):
             current_version = "1.0.0"
         
         self._update_dialog = UpdateDialog(self, current_version, version_info)
+        # 连接弹窗关闭信号，确保标志正确重置
+        self._update_dialog.finished.connect(self._on_update_dialog_finished)
         self._update_dialog.show()
         self._update_dialog_shown = True
+    
+    def _on_update_dialog_finished(self, result: int):
+        """弹窗关闭时的处理，重置标志以允许后续版本检查"""
+        # 只有当弹窗被关闭（非强制升级）时才重置标志
+        # 如果是强制升级，弹窗不应该被关闭，所以这里不需要特殊处理
+        if hasattr(self, '_update_dialog') and self._update_dialog:
+            # 检查是否是强制升级
+            is_force_update = getattr(self._update_dialog, '_is_force_update', True)
+            if not is_force_update:
+                # 非强制升级：弹窗已关闭，重置标志，允许后续版本检查
+                self._update_dialog_shown = False
 
     # 窗口尺寸变化时，让遮罩自适应
     def resizeEvent(self, event):

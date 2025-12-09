@@ -2005,8 +2005,26 @@ class MainWindow(QMainWindow):
             current_version = "1.0.0"
         
         self._update_dialog = UpdateDialog(self, current_version, version_info)
+        # 连接弹窗关闭信号，确保标志正确重置
+        self._update_dialog.finished.connect(self._on_update_dialog_finished)
         self._update_dialog.show()
         self._update_dialog_shown = True
+    
+    def _on_update_dialog_finished(self, result: int):
+        """弹窗关闭时的处理，重置标志以允许后续版本检查"""
+        # 只有当弹窗被关闭（非强制升级）时才重置标志
+        # 如果是强制升级，弹窗不应该被关闭，所以这里不需要特殊处理
+        if hasattr(self, '_update_dialog') and self._update_dialog:
+            # 检查是否是强制升级
+            is_force_update = getattr(self._update_dialog, '_is_force_update', True)
+            if not is_force_update:
+                # 非强制升级：弹窗已关闭，重置标志，允许后续版本检查
+                self._update_dialog_shown = False
+                # 同时清除轮询服务中的版本缓存，确保新版本能够被检测到
+                from utils.polling_service import get_polling_service
+                polling_service = get_polling_service()
+                if polling_service:
+                    polling_service._last_version_info = None
     
     def _setup_background_notification_service(self):
         """设置后台通知服务（应用未运行时也能接收通知）"""
