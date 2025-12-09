@@ -5086,6 +5086,8 @@ class PackageTab(QWidget):
         self._upload_progress = None
         self._progress_timer = None
         self._progress_value = 0
+        self._upload_progress_timer = None
+        self._upload_progress_value = 0
         self._versions = []  # 存储版本列表
         self._push_step = None  # 跟踪 git push 的执行步骤：'check', 'add', 'commit', 'push'
         self._git_status_output = ""  # 存储 git status 的输出
@@ -5524,6 +5526,10 @@ class PackageTab(QWidget):
         download_action = menu.addAction("仅下载")
         download_action.triggered.connect(lambda: self._on_download_only(asset_data))
         
+        # 上传到服务器选项
+        upload_action = menu.addAction("上传到服务器")
+        upload_action.triggered.connect(lambda: self._on_upload_to_server(asset_data))
+        
         # 下载并签名选项（仅 macOS 版本显示）
         if has_macos:
             sign_action = menu.addAction("下载并签名")
@@ -5810,6 +5816,206 @@ class PackageTab(QWidget):
                 "请查看输出日志了解错误详情。"
             )
         self._append_output("=" * 50)
+    
+    def _on_upload_to_server(self, asset_data: Dict[str, Any]):
+        """上传到服务器：先下载文件，然后上传到服务器"""
+        # 获取 asset 信息
+        asset_name = asset_data.get("asset_name", "")
+        asset_url = asset_data.get("asset_url", "")
+        platform = asset_data.get("platform", "")
+        version = asset_data.get("version", "")
+        
+        if not asset_url:
+            QMessageBox.warning(self, "错误", "该文件没有下载链接")
+            return
+        
+        if not version:
+            QMessageBox.warning(self, "错误", "无法获取版本号")
+            return
+        
+        # 将平台名称转换为上传接口需要的格式
+        platform_map = {
+            "macOS": "darwin",
+            "Windows": "windows",
+            "Linux": "linux"
+        }
+        upload_platform = platform_map.get(platform, "darwin")
+        
+        # 创建临时目录
+        import tempfile
+        temp_dir = Path(tempfile.gettempdir()) / "ai-perf-upload"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file_path = temp_dir / asset_name
+        
+        # 显示确认对话框
+        reply = QMessageBox.question(
+            self,
+            "确认上传",
+            f"确定要上传以下文件到服务器吗？\n\n"
+            f"文件：{asset_name}\n"
+            f"平台：{platform}\n"
+            f"版本：{version}\n\n"
+            f"文件将先下载到临时目录，然后上传到服务器。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 创建进度对话框
+        self._upload_progress = QProgressDialog(
+            f"正在下载文件：{asset_name}\n然后上传到服务器...",
+            "取消",
+            0,
+            100,
+            self
+        )
+        self._upload_progress.setWindowTitle("上传到服务器")
+        self._upload_progress.setWindowModality(Qt.WindowModal)
+        self._upload_progress.setMinimumDuration(0)
+        self._upload_progress.setValue(0)
+        self._upload_progress.setAutoClose(False)
+        self._upload_progress.setAutoReset(False)
+        
+        # 第一步：下载文件
+        self._upload_progress.setLabelText(f"正在下载文件：{asset_name}...")
+        download_worker = _DownloadSingleAssetWorker(asset_url, str(temp_file_path))
+        
+        def on_download_finished_for_upload(file_path: str):
+            """下载完成后的回调：开始上传"""
+            if not Path(file_path).exists():
+                self._upload_progress.close()
+                self._upload_progress = None
+                QMessageBox.warning(self, "错误", "文件下载失败")
+                return
+            
+            # 第二步：上传文件
+            self._upload_progress.setLabelText(f"正在上传文件到服务器...")
+            self._upload_progress.setValue(50)
+            
+            # 从配置读取上传API地址
+            cfg = ConfigManager.load()
+            upload_api_url = cfg.get("upload_api_url", "http://127.0.0.1:8882/api/upload")
+            
+            # 创建上传Worker
+            self._upload_worker = _UploadFileWorker(file_path, upload_platform, version, upload_api_url)
+            
+            # 连接信号
+            self._upload_worker.signals.finished.connect(self._on_upload_to_server_finished)
+            self._upload_worker.signals.error.connect(self._on_upload_to_server_error)
+            self._upload_progress.canceled.connect(self._on_upload_to_server_canceled)
+            
+            # 启动上传
+            if not hasattr(self, '_thread_pool'):
+                self._thread_pool = QThreadPool()
+            self._thread_pool.start(self._upload_worker)
+            
+            # 启动进度更新定时器
+            if not hasattr(self, '_upload_progress_timer'):
+                self._upload_progress_timer = QTimer(self)
+            self._upload_progress_timer.timeout.connect(self._update_upload_progress_for_server)
+            self._upload_progress_timer.start(100)
+            self._upload_progress_value = 50  # 从50%开始（下载已完成）
+        
+        def on_download_error_for_upload(error_msg: str):
+            """下载失败的回调"""
+            self._upload_progress.close()
+            self._upload_progress = None
+            QMessageBox.warning(self, "下载失败", f"文件下载失败：{error_msg}")
+        
+        def on_download_progress_for_upload(downloaded: int, total: int):
+            """下载进度更新"""
+            if self._upload_progress and not self._upload_progress.wasCanceled():
+                # 下载进度：0-50%
+                if total > 0:
+                    progress = int((downloaded / total) * 50)
+                    self._upload_progress.setValue(progress)
+        
+        download_worker.signals.finished.connect(on_download_finished_for_upload)
+        download_worker.signals.error.connect(on_download_error_for_upload)
+        download_worker.signals.progress.connect(on_download_progress_for_upload)
+        
+        # 启动下载
+        if not hasattr(self, '_thread_pool'):
+            self._thread_pool = QThreadPool()
+        self._thread_pool.start(download_worker)
+    
+    def _update_upload_progress_for_server(self):
+        """更新上传进度（模拟）"""
+        if self._upload_progress and not self._upload_progress.wasCanceled():
+            # 从50%到90%，剩余10%等待服务器响应
+            if self._upload_progress_value < 90:
+                self._upload_progress_value += 2
+                self._upload_progress.setValue(self._upload_progress_value)
+            else:
+                # 已经到90%，停止定时器，等待实际完成
+                if hasattr(self, '_upload_progress_timer'):
+                    self._upload_progress_timer.stop()
+    
+    def _on_upload_to_server_finished(self, download_url: str):
+        """上传到服务器完成"""
+        if hasattr(self, '_upload_progress_timer'):
+            self._upload_progress_timer.stop()
+        
+        if self._upload_progress:
+            self._upload_progress.setValue(100)
+            self._upload_progress.close()
+            self._upload_progress = None
+        
+        # 复制URL到剪贴板
+        from PySide6.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(download_url)
+        
+        # 显示成功消息
+        QMessageBox.information(
+            self,
+            "上传成功",
+            f"文件上传成功！\n\n"
+            f"下载URL：\n{download_url}\n\n"
+            f"URL已复制到剪贴板，可以直接粘贴到版本管理中。"
+        )
+        
+        self._upload_worker = None
+        
+        # 清理临时文件
+        import tempfile
+        temp_dir = Path(tempfile.gettempdir()) / "ai-perf-upload"
+        if temp_dir.exists():
+            try:
+                for file in temp_dir.glob("*"):
+                    if file.is_file():
+                        file.unlink()
+            except Exception:
+                pass  # 忽略清理错误
+    
+    def _on_upload_to_server_error(self, error_msg: str):
+        """上传到服务器错误"""
+        if hasattr(self, '_upload_progress_timer'):
+            self._upload_progress_timer.stop()
+        
+        if self._upload_progress:
+            self._upload_progress.close()
+            self._upload_progress = None
+        
+        QMessageBox.warning(self, "上传失败", f"文件上传失败：{error_msg}")
+        
+        self._upload_worker = None
+    
+    def _on_upload_to_server_canceled(self):
+        """取消上传到服务器"""
+        if self._upload_worker:
+            self._upload_worker.stop()
+        
+        if hasattr(self, '_upload_progress_timer'):
+            self._upload_progress_timer.stop()
+        
+        if self._upload_progress:
+            self._upload_progress.close()
+            self._upload_progress = None
+        
+        self._upload_worker = None
     
     def _on_download_finished(self, saved_files: List[str]):
         """下载完成"""

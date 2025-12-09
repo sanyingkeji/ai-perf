@@ -285,7 +285,7 @@ jobs:
 
   build-macos-intel:
     name: Build macOS (Intel)
-    runs-on: macos-13  # macOS 13 (Ventura) Intel 架构 runner
+    runs-on: macos-15-intel  # macOS 15 Intel 架构 runner（macOS 13 已废弃，使用新的 macos-15-intel 标签）
     timeout-minutes: 180  # 3小时超时
     if: >
       github.event_name == 'workflow_dispatch' &&
