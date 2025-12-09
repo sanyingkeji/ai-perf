@@ -2690,26 +2690,34 @@ def main():
             chinese_lang_path = None
             
             # 确定 Inno Setup 安装目录
-            if inno_compiler and inno_compiler != "ISCC.exe":
-                # 从编译器路径推断 Inno Setup 安装目录
-                inno_dir = Path(inno_compiler).parent.parent
-            else:
-                # 如果编译器在 PATH 中，尝试从编译器路径查找
-                if inno_compiler == "ISCC.exe":
-                    # 尝试查找 ISCC.exe 的实际路径
+            # 优先检查常见安装位置（这些位置最可靠）
+            for inno_base in [
+                Path(r"C:\Program Files (x86)\Inno Setup 6"),
+                Path(r"C:\Program Files\Inno Setup 6"),
+            ]:
+                # 验证这确实是 Inno Setup 安装目录（检查是否有 ISCC.exe）
+                if inno_base.exists() and (inno_base / "ISCC.exe").exists():
+                    inno_dir = inno_base
+                    log_info(f"  找到 Inno Setup 安装目录: {inno_dir}")
+                    break
+            
+            # 如果常见位置没找到，尝试从编译器路径推断
+            if not inno_dir:
+                if inno_compiler and inno_compiler != "ISCC.exe":
+                    # 从编译器路径推断 Inno Setup 安装目录
+                    potential_dir = Path(inno_compiler).parent.parent
+                    if potential_dir.exists() and (potential_dir / "ISCC.exe").exists():
+                        inno_dir = potential_dir
+                        log_info(f"  从编译器路径找到 Inno Setup: {inno_dir}")
+                elif inno_compiler == "ISCC.exe":
+                    # 如果编译器在 PATH 中，尝试查找 ISCC.exe 的实际路径
                     iscc_full_path = shutil.which("ISCC.exe")
                     if iscc_full_path:
-                        inno_dir = Path(iscc_full_path).parent.parent
-                
-                # 如果还没找到，尝试查找常见安装位置
-                if not inno_dir or not inno_dir.exists():
-                    for inno_base in [
-                        Path(r"C:\Program Files (x86)\Inno Setup 6"),
-                        Path(r"C:\Program Files\Inno Setup 6"),
-                    ]:
-                        if inno_base.exists():
-                            inno_dir = inno_base
-                            break
+                        potential_dir = Path(iscc_full_path).parent.parent
+                        # 验证这确实是 Inno Setup 安装目录
+                        if potential_dir.exists() and (potential_dir / "ISCC.exe").exists():
+                            inno_dir = potential_dir
+                            log_info(f"  从 PATH 找到 Inno Setup: {inno_dir}")
             
             # 检查语言文件是否存在
             if inno_dir and inno_dir.exists():
@@ -2734,9 +2742,17 @@ def main():
                             # 确保 Languages 目录存在
                             languages_dir.mkdir(parents=True, exist_ok=True)
                             
+                            # 验证目录权限（需要写入权限）
+                            if not os.access(str(languages_dir), os.W_OK):
+                                raise OSError(f"没有写入权限: {languages_dir}")
+                            
                             # 保存文件
                             with open(chinese_lang_path, 'wb') as f:
                                 f.write(response.read())
+                            
+                            # 验证文件是否成功保存
+                            if not chinese_lang_path.exists():
+                                raise OSError(f"文件保存失败: {chinese_lang_path}")
                             
                             chinese_lang_available = True
                             log_info(f"    ✓ 中文语言文件下载成功: {chinese_lang_path}")

@@ -73,7 +73,9 @@ scripts/health_check*.md
 scripts/how_to_run.md
 scripts/nginx_*.conf
 scripts/nginx_*.site
+# 允许 notification_background_service.py（打包需要）
 scripts/notification_*.py
+!scripts/notification_background_service.py
 scripts/notification_*.sh
 scripts/notification_*.ps1
 scripts/run_daily_pipeline.sh

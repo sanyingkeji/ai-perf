@@ -5472,11 +5472,14 @@ class PackageTab(QWidget):
                 border-top: none;
                 padding: 0px;
                 margin: 0px;
+                margin-top: 0px;
             }
             QTabBar {
                 alignment: left;
                 margin: 0px;
+                margin-bottom: 0px;
                 padding: 0px;
+                spacing: 0px;
             }
             /* 强制 TAB 标签左对齐（macOS 兼容） */
             QTabBar::scroller {
@@ -5493,7 +5496,7 @@ class PackageTab(QWidget):
                 font-size: 12px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
-                min-width: 0px;
+                min-width: 120px;
                 min-height: 28px;
             }
             QTabBar::tab:selected {
@@ -5523,6 +5526,10 @@ class PackageTab(QWidget):
                 width: 0px;
                 height: 0px;
                 image: none;
+            }
+            /* 第一个 TAB（无关闭按钮）使用更小的右侧padding */
+            QTabBar::tab:first-child {
+                padding-right: 16px;
             }
         """)
         
@@ -5557,6 +5564,9 @@ class PackageTab(QWidget):
                         alignment: left;
                     }
                 """)
+            # 强制更新布局，确保文字完整显示
+            tab_bar.updateGeometry()
+            self.output_tabs.updateGeometry()
         # 延迟执行，确保所有 TAB 都已添加
         QTimer.singleShot(10, _force_tab_alignment)
         
