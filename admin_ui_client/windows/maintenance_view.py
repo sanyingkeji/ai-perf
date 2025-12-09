@@ -32,7 +32,7 @@ except ImportError:
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QFrame, QTabWidget, QHeaderView, QAbstractItemView,
+    QTableWidgetItem, QFrame, QTabWidget, QTabBar, QHeaderView, QAbstractItemView,
     QFileDialog, QMessageBox, QLineEdit, QCheckBox, QTextEdit, QPlainTextEdit,
     QSplitter, QComboBox, QProgressDialog, QDialog, QListWidget,
     QListWidgetItem, QProgressBar, QMenu
@@ -5094,6 +5094,8 @@ class PackageTab(QWidget):
         self._download_progress = None  # 下载进度对话框
         self._sign_process = None  # 签名脚本进程（保留用于向后兼容）
         self._sign_tabs = {}  # 存储签名任务TAB：{tab_name: {"widget": QTextEdit, "process": QProcess}}
+        self._download_tabs = {}  # 存储下载任务TAB：{tab_key: {"widget": QTextEdit, "full_name": str, "save_path": Path}}
+        self._upload_tabs = {}  # 存储上传任务TAB：{tab_key: {"widget": QTextEdit, "full_name": str}}
         self._download_progress_label = None  # 右上角下载进度显示标签
 
         # 获取项目根目录
@@ -5250,10 +5252,92 @@ class PackageTab(QWidget):
         self.output_tabs.setTabsClosable(True)  # 允许关闭TAB
         self.output_tabs.tabCloseRequested.connect(self._close_output_tab)  # 关闭TAB时的处理
         
-        # 创建默认的 "Git Push" TAB
+        # 设置 TAB 标签左对齐
+        tab_bar = self.output_tabs.tabBar()
+        tab_bar.setUsesScrollButtons(False)  # 禁用滚动按钮，让标签自然排列
+        tab_bar.setExpanding(False)  # 禁用扩展，确保标签从左边开始排列
+        tab_bar.setDocumentMode(False)  # 禁用文档模式，确保标签正常显示
+        tab_bar.setMovable(False)  # 禁用标签移动
+        # 使用样式表设置 TAB 样式（匹配终端黑色背景）
+        # 统一圆角，确保 TAB 内容区域和输出区域一致
+        self.output_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #3A3A3C;
+                background-color: #000000;
+                border-radius: 0px;
+                border-top: none;
+            }
+            QTabBar {
+                alignment: left;
+            }
+            /* 强制 TAB 标签左对齐（macOS 兼容） */
+            QTabBar::scroller {
+                width: 0px;
+            }
+            QTabBar::tab {
+                background-color: #2A2B2D;
+                color: #9AA0A6;
+                border: 1px solid #3A3A3C;
+                border-bottom: none;
+                padding: 8px 16px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                min-width: 80px;
+            }
+            QTabBar::tab:selected {
+                background-color: #000000;
+                color: #FFFFFF;
+                border-bottom: 2px solid #5C8CFF;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #333436;
+                color: #E8EAED;
+            }
+            QTabBar::close-button {
+                image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==);
+                subcontrol-position: right;
+                subcontrol-origin: padding;
+                width: 16px;
+                height: 16px;
+            }
+            QTabBar::close-button:hover {
+                background-color: rgba(255, 255, 255, 0.2);
+                border-radius: 3px;
+            }
+            /* 隐藏第一个 TAB（Git Push）的关闭按钮 */
+            QTabBar::tab:first-child::close-button {
+                width: 0px;
+                height: 0px;
+                image: none;
+            }
+        """)
+        
+        # 创建默认的 "Git Push" TAB（不可关闭）
         self.output_text = self._create_output_text_edit()
         self.output_text.setPlaceholderText("点击\"git push\"按钮开始推送...")
-        self.output_tabs.addTab(self.output_text, "Git Push")
+        git_push_index = self.output_tabs.addTab(self.output_text, "Git Push")
+        # Git Push TAB 不显示关闭按钮（通过隐藏关闭按钮）
+        # 注意：需要在添加 TAB 后立即设置，否则可能不生效
+        QTimer.singleShot(0, lambda: self._hide_git_push_close_button(git_push_index))
+        
+        # 强制设置 QTabBar 的布局为左对齐（macOS 兼容）
+        # 在 macOS 上，QTabBar 默认可能居中显示，需要通过多种方式强制左对齐
+        def _force_tab_alignment():
+            # 确保所有标签从左边开始排列
+            for i in range(tab_bar.count()):
+                tab_bar.setTabButton(i, QTabBar.LeftSide, None)  # 确保没有左侧按钮
+            # 在 macOS 上，通过设置 QTabBar 的布局来强制左对齐
+            # 使用样式表设置左对齐（如果样式表不生效，则通过布局控制）
+            current_style = tab_bar.styleSheet()
+            if "alignment: left" not in current_style:
+                tab_bar.setStyleSheet(current_style + """
+                    QTabBar {
+                        alignment: left;
+                    }
+                """)
+        # 延迟执行，确保所有 TAB 都已添加
+        QTimer.singleShot(10, _force_tab_alignment)
         
         # 初始化默认文本格式（用于Git Push输出）
         font_families = ["Menlo", "Monaco", "Courier New"]
@@ -5293,6 +5377,14 @@ class PackageTab(QWidget):
         """)
         self._download_progress_label.hide()
         self._download_progress_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标事件
+    
+    def _hide_git_push_close_button(self, index: int):
+        """隐藏 Git Push TAB 的关闭按钮"""
+        tab_bar = self.output_tabs.tabBar()
+        close_button = tab_bar.tabButton(index, QTabBar.RightSide)
+        if close_button:
+            close_button.hide()
+            close_button.setParent(None)
 
     def _create_output_text_edit(self) -> QTextEdit:
         """创建输出文本编辑器（统一的样式）"""
@@ -5316,6 +5408,7 @@ class PackageTab(QWidget):
         output_text.setTabStopDistance(4 * output_text.fontMetrics().averageCharWidth())
         
         # 苹果终端 Basic 主题默认样式（完全匹配发布TAB）
+        # 统一圆角为 0，确保与 TAB 内容区域一致
         output_text.setStyleSheet("""
             QTextEdit {
                 background-color: #000000;
@@ -5327,6 +5420,7 @@ class PackageTab(QWidget):
                 font-family: "Menlo", "Monaco", "Courier New";
                 font-size: 12pt;
                 line-height: 1.2;
+                border-radius: 0px;
             }
         """)
         
@@ -5562,35 +5656,77 @@ class PackageTab(QWidget):
         menu.exec_(self.version_table.viewport().mapToGlobal(position))
     
     def _on_download_only(self, asset_data: Dict[str, Any]):
-        """仅下载：下载选中的单个 asset 到本地"""
+        """仅下载：下载选中的单个 asset 到本地（输出到TAB）"""
         # 获取 asset 信息
         asset_name = asset_data.get("asset_name", "")
         asset_url = asset_data.get("asset_url", "")
+        platform = asset_data.get("platform", "")
         
         if not asset_url:
             QMessageBox.warning(self, "错误", "该文件没有下载链接")
             return
         
-        # 选择保存路径
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "保存文件",
-            str(Path.home() / "Downloads" / asset_name),
-            "All Files (*)"
-        )
+        # 确定客户端类型（从文件名中提取）
+        asset_name_lower = asset_name.lower()
+        client_type = None
+        if "employee" in asset_name_lower or "client" in asset_name_lower or "ai.perf.client" in asset_name_lower or "ai-perf-client" in asset_name_lower:
+            client_type = "employee"
+        elif "admin" in asset_name_lower or "ai-perf-admin" in asset_name_lower or "ai.perf.admin" in asset_name_lower:
+            client_type = "admin"
         
-        if not save_path:
+        if not client_type:
+            QMessageBox.warning(self, "错误", "无法从文件名中识别客户端类型")
             return
         
-        # 显示右上角进度提示
-        self._show_download_progress(asset_name, 0, 0)
+        # 确定架构（macOS 需要）
+        arch = None
+        if platform == "macOS":
+            if "-arm64" in asset_name_lower or "arm64" in asset_name_lower:
+                arch = "arm64"
+            elif "-intel" in asset_name_lower or "intel" in asset_name_lower or "x86" in asset_name_lower:
+                arch = "intel"
+            if not arch:
+                QMessageBox.warning(self, "错误", "无法从文件名中识别架构类型")
+                return
         
-        # 创建下载 Worker（只下载单个文件）
-        worker = _DownloadSingleAssetWorker(asset_url, save_path)
-        worker.signals.finished.connect(lambda path: self._on_download_single_finished(path, asset_name))
-        worker.signals.error.connect(lambda msg: self._on_download_single_error(msg, asset_name))
-        worker.signals.progress.connect(lambda downloaded, total: self._on_download_single_progress(asset_name, downloaded, total))
-        QThreadPool.globalInstance().start(worker)
+        # 构建下载路径：dist/from_github/{client_type}/{arch或操作系统}/
+        # 对于 macOS: dist/from_github/{client_type}/{arch}/
+        # 对于 Windows/Linux: dist/from_github/{client_type}/{platform}/
+        client_dir = Path(self._project_root) / (f"{client_type}_ui_client" if client_type == "employee" else "admin_ui_client")
+        if platform == "macOS" and arch:
+            download_dir = client_dir / "dist" / "from_github" / client_type / arch
+        else:
+            # Windows 或 Linux
+            platform_lower = platform.lower()
+            download_dir = client_dir / "dist" / "from_github" / client_type / platform_lower
+        
+        download_dir.mkdir(parents=True, exist_ok=True)
+        save_path = download_dir / asset_name
+        
+        # 检查文件是否已存在且完整
+        if save_path.exists() and save_path.is_file():
+            file_size = save_path.stat().st_size
+            if file_size > 0:
+                # 尝试获取远程文件大小进行对比
+                try:
+                    import httpx
+                    head_response = httpx.head(asset_url, timeout=10.0, follow_redirects=True)
+                    remote_size = int(head_response.headers.get("content-length", 0))
+                    if remote_size > 0 and file_size == remote_size:
+                        # 文件已存在且大小匹配，跳过下载
+                        tab_name = asset_name
+                        if len(tab_name) > 30:
+                            tab_name = tab_name[:27] + "..."
+                        self._create_download_tab(tab_name, asset_name, save_path, skip_download=True)
+                        return
+                except Exception:
+                    pass  # 如果无法获取远程大小，继续下载
+        
+        # 创建下载 TAB
+        tab_name = asset_name
+        if len(tab_name) > 30:
+            tab_name = tab_name[:27] + "..."
+        self._create_download_tab(tab_name, asset_name, save_path, asset_url)
     
     def _on_download_single_finished(self, save_path: str, asset_name: str):
         """单个文件下载完成"""
@@ -5878,15 +6014,50 @@ class PackageTab(QWidget):
         """关闭输出TAB"""
         tab_name = self.output_tabs.tabText(index)
         
+        # Git Push TAB 不能被关闭
+        if tab_name == "Git Push":
+            return
+        
         # 如果是签名任务TAB，需要停止进程
         if tab_name in self._sign_tabs:
             self._close_sign_tab(tab_name)
-        else:
-            # 普通TAB（如Git Push），直接移除
-            widget = self.output_tabs.widget(index)
-            self.output_tabs.removeTab(index)
-            if widget:
-                widget.deleteLater()
+        # 如果是上传任务TAB，需要停止worker
+        elif hasattr(self, '_upload_tabs'):
+            # 查找匹配的上传TAB
+            for tab_key, tab_info in list(self._upload_tabs.items()):
+                if tab_info.get("widget") == self.output_tabs.widget(index):
+                    # 停止worker（如果还在运行）
+                    if "worker" in tab_info:
+                        worker = tab_info["worker"]
+                        if hasattr(worker, 'stop'):
+                            worker.stop()
+                    # 移除TAB
+                    widget = tab_info["widget"]
+                    self.output_tabs.removeTab(index)
+                    if widget:
+                        widget.deleteLater()
+                    # 清理资源
+                    del self._upload_tabs[tab_key]
+                    return
+        # 如果是下载任务TAB，直接移除
+        elif hasattr(self, '_download_tabs'):
+            # 查找匹配的下载TAB
+            for tab_key, tab_info in list(self._download_tabs.items()):
+                if tab_info.get("widget") == self.output_tabs.widget(index):
+                    # 移除TAB
+                    widget = tab_info["widget"]
+                    self.output_tabs.removeTab(index)
+                    if widget:
+                        widget.deleteLater()
+                    # 清理资源
+                    del self._download_tabs[tab_key]
+                    return
+        
+        # 普通TAB，直接移除
+        widget = self.output_tabs.widget(index)
+        self.output_tabs.removeTab(index)
+        if widget:
+            widget.deleteLater()
     
     def _close_sign_tab(self, tab_name: str):
         """关闭签名任务TAB（停止进程并移除TAB）"""
@@ -5946,7 +6117,7 @@ class PackageTab(QWidget):
         self._append_output_to_tab(tab_name, "=" * 50)
     
     def _on_upload_to_server(self, asset_data: Dict[str, Any]):
-        """上传到服务器：先下载文件，然后上传到服务器"""
+        """上传到服务器：先下载文件，然后上传到服务器（输出到TAB）"""
         # 获取 asset 信息
         asset_name = asset_data.get("asset_name", "")
         asset_url = asset_data.get("asset_url", "")
@@ -5961,6 +6132,29 @@ class PackageTab(QWidget):
             QMessageBox.warning(self, "错误", "无法获取版本号")
             return
         
+        # 确定客户端类型（从文件名中提取）
+        asset_name_lower = asset_name.lower()
+        client_type = None
+        if "employee" in asset_name_lower or "client" in asset_name_lower or "ai.perf.client" in asset_name_lower or "ai-perf-client" in asset_name_lower:
+            client_type = "employee"
+        elif "admin" in asset_name_lower or "ai-perf-admin" in asset_name_lower or "ai.perf.admin" in asset_name_lower:
+            client_type = "admin"
+        
+        if not client_type:
+            QMessageBox.warning(self, "错误", "无法从文件名中识别客户端类型")
+            return
+        
+        # 确定架构（macOS 需要）
+        arch = None
+        if platform == "macOS":
+            if "-arm64" in asset_name_lower or "arm64" in asset_name_lower:
+                arch = "arm64"
+            elif "-intel" in asset_name_lower or "intel" in asset_name_lower or "x86" in asset_name_lower:
+                arch = "intel"
+            if not arch:
+                QMessageBox.warning(self, "错误", "无法从文件名中识别架构类型")
+                return
+        
         # 将平台名称转换为上传接口需要的格式
         platform_map = {
             "macOS": "darwin",
@@ -5969,132 +6163,206 @@ class PackageTab(QWidget):
         }
         upload_platform = platform_map.get(platform, "darwin")
         
-        # 创建临时目录
-        import tempfile
-        temp_dir = Path(tempfile.gettempdir()) / "ai-perf-upload"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_file_path = temp_dir / asset_name
+        # 构建下载路径：dist/from_github/{client_type}/{arch或操作系统}/
+        # 对于 macOS: dist/from_github/{client_type}/{arch}/
+        # 对于 Windows/Linux: dist/from_github/{client_type}/{platform}/
+        client_dir = Path(self._project_root) / (f"{client_type}_ui_client" if client_type == "employee" else "admin_ui_client")
+        if platform == "macOS" and arch:
+            download_dir = client_dir / "dist" / "from_github" / client_type / arch
+        else:
+            # Windows 或 Linux
+            platform_lower = platform.lower()
+            download_dir = client_dir / "dist" / "from_github" / client_type / platform_lower
         
-        # 显示确认对话框
-        reply = QMessageBox.question(
-            self,
-            "确认上传",
-            f"确定要上传以下文件到服务器吗？\n\n"
-            f"文件：{asset_name}\n"
-            f"平台：{platform}\n"
-            f"版本：{version}\n\n"
-            f"文件将先下载到临时目录，然后上传到服务器。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+        download_dir.mkdir(parents=True, exist_ok=True)
+        save_path = download_dir / asset_name
+        
+        # 创建上传TAB
+        tab_name = f"上传 {asset_name}"
+        if len(tab_name) > 30:
+            tab_name = tab_name[:27] + "..."
+        self._create_upload_tab(tab_name, asset_name, save_path, asset_url, upload_platform, version, download_dir)
+    
+    def _create_upload_tab(self, tab_name: str, full_asset_name: str, save_path: Path, asset_url: str, upload_platform: str, version: str, download_dir: Path):
+        """创建上传任务TAB并开始下载"""
+        # 创建新的输出TAB
+        output_text = self._create_output_text_edit()
+        output_text.setPlaceholderText(f"正在上传文件到服务器：{full_asset_name}...")
+        
+        # 添加到TAB
+        tab_index = self.output_tabs.addTab(output_text, tab_name)
+        self.output_tabs.setCurrentIndex(tab_index)  # 切换到新TAB
+        
+        # 存储TAB信息
+        upload_tab_key = f"upload_{tab_name}"
+        if not hasattr(self, '_upload_tabs'):
+            self._upload_tabs = {}
+        self._upload_tabs[upload_tab_key] = {
+            "widget": output_text,
+            "full_name": full_asset_name,
+            "save_path": save_path,
+            "upload_platform": upload_platform,
+            "version": version,
+            "download_dir": download_dir
+        }
+        
+        # 输出初始信息
+        self._append_output_to_widget(output_text, "=" * 50 + "\n")
+        self._append_output_to_widget(output_text, f"上传文件到服务器：{full_asset_name}\n")
+        self._append_output_to_widget(output_text, f"版本：{version}\n")
+        self._append_output_to_widget(output_text, f"平台：{upload_platform}\n")
+        self._append_output_to_widget(output_text, "=" * 50 + "\n\n")
+        
+        # 检查文件是否已存在且完整
+        if save_path.exists() and save_path.is_file():
+            file_size = save_path.stat().st_size
+            if file_size > 0:
+                # 尝试获取远程文件大小进行对比
+                try:
+                    import httpx
+                    head_response = httpx.head(asset_url, timeout=10.0, follow_redirects=True)
+                    remote_size = int(head_response.headers.get("content-length", 0))
+                    if remote_size > 0 and file_size == remote_size:
+                        # 文件已存在且大小匹配，跳过下载，直接上传
+                        file_size_mb = file_size / (1024 * 1024)
+                        self._append_output_to_widget(output_text, f"✓ 文件已存在，跳过下载\n")
+                        self._append_output_to_widget(output_text, f"  文件大小: {file_size_mb:.2f} MB\n")
+                        self._append_output_to_widget(output_text, f"  文件路径: {save_path}\n\n")
+                        self._append_output_to_widget(output_text, "开始上传到服务器...\n")
+                        self._start_upload_to_server(upload_tab_key, str(save_path))
+                        return
+                except Exception as e:
+                    self._append_output_to_widget(output_text, f"  无法验证远程文件大小，将重新下载: {e}\n\n")
+        
+        # 开始下载
+        self._append_output_to_widget(output_text, f"步骤 1/2: 下载文件\n")
+        self._append_output_to_widget(output_text, f"  下载路径: {save_path}\n\n")
+        
+        # 创建下载 Worker
+        worker = _DownloadSingleAssetWorker(asset_url, str(save_path))
+        worker.signals.finished.connect(
+            lambda path: self._on_upload_download_finished(upload_tab_key, path)
         )
-        
-        if reply != QMessageBox.Yes:
+        worker.signals.error.connect(
+            lambda msg: self._on_upload_download_error(upload_tab_key, msg)
+        )
+        worker.signals.progress.connect(
+            lambda downloaded, total: self._on_upload_download_progress(upload_tab_key, downloaded, total)
+        )
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_upload_download_finished(self, tab_key: str, save_path: str):
+        """上传任务中的下载完成"""
+        if tab_key not in self._upload_tabs:
             return
         
-        # 创建进度对话框
-        self._upload_progress = QProgressDialog(
-            f"正在下载文件：{asset_name}\n然后上传到服务器...",
-            "取消",
-            0,
-            100,
-            self
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        
+        try:
+            file_size = Path(save_path).stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+            self._append_output_to_widget(output_text, f"\n✓ 下载完成\n")
+            self._append_output_to_widget(output_text, f"  文件大小: {file_size_mb:.2f} MB\n\n")
+            self._append_output_to_widget(output_text, "步骤 2/2: 上传到服务器...\n")
+            self._start_upload_to_server(tab_key, save_path)
+        except Exception as e:
+            self._append_output_to_widget(output_text, f"\n✓ 下载完成\n")
+            self._append_output_to_widget(output_text, f"  文件路径: {save_path}\n\n")
+            self._append_output_to_widget(output_text, "步骤 2/2: 上传到服务器...\n")
+            self._start_upload_to_server(tab_key, save_path)
+    
+    def _on_upload_download_error(self, tab_key: str, error_msg: str):
+        """上传任务中的下载错误"""
+        if tab_key not in self._upload_tabs:
+            return
+        
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        self._append_output_to_widget(output_text, f"\n✗ 下载失败: {error_msg}\n", is_error=True)
+    
+    def _on_upload_download_progress(self, tab_key: str, downloaded_bytes: int, total_bytes: int):
+        """上传任务中的下载进度更新"""
+        if tab_key not in self._upload_tabs:
+            return
+        
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        
+        if total_bytes > 0:
+            percent = (downloaded_bytes / total_bytes) * 100
+            downloaded_mb = downloaded_bytes / (1024 * 1024)
+            total_mb = total_bytes / (1024 * 1024)
+            # 更新最后一行进度信息
+            cursor = output_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
+            progress_text = f"  进度: {percent:.1f}% ({downloaded_mb:.2f}/{total_mb:.2f} MB)\r"
+            cursor.insertText(progress_text)
+            output_text.setTextCursor(cursor)
+            
+            # 自动滚动到底部
+            scrollbar = output_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+    
+    def _start_upload_to_server(self, tab_key: str, file_path: str):
+        """开始上传到服务器"""
+        if tab_key not in self._upload_tabs:
+            return
+        
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        upload_platform = tab_info["upload_platform"]
+        version = tab_info["version"]
+        
+        # 从配置读取上传API地址
+        cfg = ConfigManager.load()
+        upload_api_url = cfg.get("upload_api_url", "http://127.0.0.1:8882/api/upload")
+        
+        if not upload_api_url:
+            self._append_output_to_widget(output_text, f"\n✗ 错误：未配置上传API地址\n", is_error=True)
+            return
+        
+        self._append_output_to_widget(output_text, f"  上传API: {upload_api_url}\n")
+        self._append_output_to_widget(output_text, f"  平台: {upload_platform}\n")
+        self._append_output_to_widget(output_text, f"  版本: {version}\n\n")
+        
+        # 创建上传Worker
+        upload_worker = _UploadFileWorker(file_path, upload_platform, version, upload_api_url)
+        
+        # 连接信号
+        upload_worker.signals.finished.connect(
+            lambda url: self._on_upload_to_server_finished(tab_key, url)
         )
-        self._upload_progress.setWindowTitle("上传到服务器")
-        self._upload_progress.setWindowModality(Qt.WindowModal)
-        self._upload_progress.setMinimumDuration(0)
-        self._upload_progress.setValue(0)
-        self._upload_progress.setAutoClose(False)
-        self._upload_progress.setAutoReset(False)
+        upload_worker.signals.error.connect(
+            lambda msg: self._on_upload_to_server_error(tab_key, msg)
+        )
         
-        # 第一步：下载文件
-        self._upload_progress.setLabelText(f"正在下载文件：{asset_name}...")
-        download_worker = _DownloadSingleAssetWorker(asset_url, str(temp_file_path))
+        # 存储worker引用
+        tab_info["worker"] = upload_worker
         
-        def on_download_finished_for_upload(file_path: str):
-            """下载完成后的回调：开始上传"""
-            if not Path(file_path).exists():
-                self._upload_progress.close()
-                self._upload_progress = None
-                QMessageBox.warning(self, "错误", "文件下载失败")
-                return
-            
-            # 第二步：上传文件
-            self._upload_progress.setLabelText(f"正在上传文件到服务器...")
-            self._upload_progress.setValue(50)
-            
-            # 从配置读取上传API地址
-            cfg = ConfigManager.load()
-            upload_api_url = cfg.get("upload_api_url", "http://127.0.0.1:8882/api/upload")
-            
-            # 创建上传Worker
-            self._upload_worker = _UploadFileWorker(file_path, upload_platform, version, upload_api_url)
-            
-            # 连接信号
-            self._upload_worker.signals.finished.connect(self._on_upload_to_server_finished)
-            self._upload_worker.signals.error.connect(self._on_upload_to_server_error)
-            self._upload_progress.canceled.connect(self._on_upload_to_server_canceled)
-            
-            # 启动上传
-            if not hasattr(self, '_thread_pool'):
-                self._thread_pool = QThreadPool()
-            self._thread_pool.start(self._upload_worker)
-            
-            # 启动进度更新定时器
-            if not hasattr(self, '_upload_progress_timer'):
-                self._upload_progress_timer = QTimer(self)
-            self._upload_progress_timer.timeout.connect(self._update_upload_progress_for_server)
-            self._upload_progress_timer.start(100)
-            self._upload_progress_value = 50  # 从50%开始（下载已完成）
-        
-        def on_download_error_for_upload(error_msg: str):
-            """下载失败的回调"""
-            self._upload_progress.close()
-            self._upload_progress = None
-            QMessageBox.warning(self, "下载失败", f"文件下载失败：{error_msg}")
-        
-        def on_download_progress_for_upload(downloaded: int, total: int):
-            """下载进度更新"""
-            if self._upload_progress and not self._upload_progress.wasCanceled():
-                # 下载进度：0-50%
-                if total > 0:
-                    progress = int((downloaded / total) * 50)
-                    self._upload_progress.setValue(progress)
-        
-        download_worker.signals.finished.connect(on_download_finished_for_upload)
-        download_worker.signals.error.connect(on_download_error_for_upload)
-        download_worker.signals.progress.connect(on_download_progress_for_upload)
-        
-        # 启动下载
+        # 启动上传
         if not hasattr(self, '_thread_pool'):
             self._thread_pool = QThreadPool()
-        self._thread_pool.start(download_worker)
+        self._thread_pool.start(upload_worker)
     
-    def _update_upload_progress_for_server(self):
-        """更新上传进度（模拟）"""
-        if self._upload_progress and not self._upload_progress.wasCanceled():
-            # 从50%到90%，剩余10%等待服务器响应
-            if self._upload_progress_value < 90:
-                self._upload_progress_value += 2
-                self._upload_progress.setValue(self._upload_progress_value)
-            else:
-                # 已经到90%，停止定时器，等待实际完成
-                if hasattr(self, '_upload_progress_timer'):
-                    self._upload_progress_timer.stop()
-    
-    def _on_upload_to_server_finished(self, download_url: str):
+    def _on_upload_to_server_finished(self, tab_key: str, download_url: str):
         """上传到服务器完成"""
-        if hasattr(self, '_upload_progress_timer'):
-            self._upload_progress_timer.stop()
+        if tab_key not in self._upload_tabs:
+            return
         
-        if self._upload_progress:
-            self._upload_progress.setValue(100)
-            self._upload_progress.close()
-            self._upload_progress = None
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
         
         # 复制URL到剪贴板
         from PySide6.QtWidgets import QApplication
         clipboard = QApplication.clipboard()
         clipboard.setText(download_url)
+        
+        self._append_output_to_widget(output_text, f"\n✓ 上传成功\n")
+        self._append_output_to_widget(output_text, f"  下载URL: {download_url}\n")
+        self._append_output_to_widget(output_text, f"  URL已复制到剪贴板\n")
         
         # 显示成功消息
         QMessageBox.information(
@@ -6105,45 +6373,24 @@ class PackageTab(QWidget):
             f"URL已复制到剪贴板，可以直接粘贴到版本管理中。"
         )
         
-        self._upload_worker = None
-        
-        # 清理临时文件
-        import tempfile
-        temp_dir = Path(tempfile.gettempdir()) / "ai-perf-upload"
-        if temp_dir.exists():
-            try:
-                for file in temp_dir.glob("*"):
-                    if file.is_file():
-                        file.unlink()
-            except Exception:
-                pass  # 忽略清理错误
+        # 清理worker引用
+        if "worker" in tab_info:
+            del tab_info["worker"]
     
-    def _on_upload_to_server_error(self, error_msg: str):
+    def _on_upload_to_server_error(self, tab_key: str, error_msg: str):
         """上传到服务器错误"""
-        if hasattr(self, '_upload_progress_timer'):
-            self._upload_progress_timer.stop()
+        if tab_key not in self._upload_tabs:
+            return
         
-        if self._upload_progress:
-            self._upload_progress.close()
-            self._upload_progress = None
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        self._append_output_to_widget(output_text, f"\n✗ 上传失败: {error_msg}\n", is_error=True)
         
         QMessageBox.warning(self, "上传失败", f"文件上传失败：{error_msg}")
         
-        self._upload_worker = None
-    
-    def _on_upload_to_server_canceled(self):
-        """取消上传到服务器"""
-        if self._upload_worker:
-            self._upload_worker.stop()
-        
-        if hasattr(self, '_upload_progress_timer'):
-            self._upload_progress_timer.stop()
-        
-        if self._upload_progress:
-            self._upload_progress.close()
-            self._upload_progress = None
-        
-        self._upload_worker = None
+        # 清理worker引用
+        if "worker" in tab_info:
+            del tab_info["worker"]
     
     def _on_download_finished(self, saved_files: List[str]):
         """下载完成"""
