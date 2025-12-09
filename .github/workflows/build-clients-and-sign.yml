@@ -1,8 +1,7 @@
-name: Build Clients
+name: Build Clients (Test Signing & Notarization)
 
 on:
-  release:
-    types: [published]
+  # 仅支持手动触发，用于测试 GitHub Runner 上的签名和公证流程
   workflow_dispatch:
     inputs:
       client_type:
@@ -31,9 +30,8 @@ jobs:
     runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
     timeout-minutes: 180  # 3小时超时
     if: >
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == '')
     strategy:
       matrix:
         client: [employee, admin]
@@ -142,9 +140,7 @@ jobs:
       - name: Check if should build
         id: check_build
         run: |
-          if [ "${{ github.event_name }}" == "release" ] || \
-             [ "${{ github.event_name }}" == "push" ] || \
-             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+          if [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
@@ -208,7 +204,7 @@ jobs:
           LDFLAGS: '-mmacosx-version-min=10.13'
           CPPFLAGS: '-mmacosx-version-min=10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
-          SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
+          # 不设置 SKIP_SIGNING，执行完整的签名和公证流程
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           # 使用 pyenv 的 Python（如果已安装）
@@ -292,9 +288,8 @@ jobs:
     runs-on: macos-13  # macOS 13 (Ventura) Intel 架构 runner
     timeout-minutes: 180  # 3小时超时
     if: >
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == '')
     strategy:
       matrix:
         client: [employee, admin]
@@ -403,9 +398,7 @@ jobs:
       - name: Check if should build
         id: check_build
         run: |
-          if [ "${{ github.event_name }}" == "release" ] || \
-             [ "${{ github.event_name }}" == "push" ] || \
-             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+          if [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
@@ -469,7 +462,7 @@ jobs:
           LDFLAGS: '-mmacosx-version-min=10.13'
           CPPFLAGS: '-mmacosx-version-min=10.13'
           PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
-          SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
+          # 不设置 SKIP_SIGNING，执行完整的签名和公证流程
           GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
         run: |
           # 使用 pyenv 的 Python（如果已安装）
@@ -553,9 +546,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120  # 2小时超时
     if: >
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == '')
     strategy:
       matrix:
         client: [employee, admin]
@@ -635,9 +627,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120  # 2小时超时
     if: >
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == '')
     strategy:
       matrix:
         client: [employee, admin]
@@ -682,9 +673,7 @@ jobs:
       - name: Check if should build
         id: check_build
         run: |
-          if [ "${{ github.event_name }}" == "release" ] || \
-             [ "${{ github.event_name }}" == "push" ] || \
-             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+          if [ "${{ github.event.inputs.client_type }}" == "both" ] || \
              [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
              [ "${{ github.event.inputs.client_type }}" == "" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
@@ -723,7 +712,8 @@ jobs:
     name: Create Release
     needs: [build-macos-arm64, build-macos-intel, build-windows, build-linux-ubuntu]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    # create-release job 不需要，因为这是测试工作流，不创建 Release
+    if: false
     permissions:
       contents: write
     steps:
