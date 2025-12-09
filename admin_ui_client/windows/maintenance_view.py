@@ -5092,7 +5092,8 @@ class PackageTab(QWidget):
         self._push_step = None  # 跟踪 git push 的执行步骤：'check', 'add', 'commit', 'push'
         self._git_status_output = ""  # 存储 git status 的输出
         self._download_progress = None  # 下载进度对话框
-        self._sign_process = None  # 签名脚本进程
+        self._sign_process = None  # 签名脚本进程（保留用于向后兼容）
+        self._sign_tabs = {}  # 存储签名任务TAB：{tab_name: {"widget": QTextEdit, "process": QProcess}}
         self._download_progress_label = None  # 右上角下载进度显示标签
 
         # 获取项目根目录
@@ -5233,22 +5234,28 @@ class PackageTab(QWidget):
         
         splitter.addWidget(left_widget)
         
-        # 右侧：命令行输出
+        # 右侧：命令行输出（使用TAB结构）
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(8, 8, 8, 8)
         right_layout.setSpacing(8)
         
         # 标题
-        output_title = QLabel("Git Push 输出")
+        output_title = QLabel("输出")
         output_title.setFont(QFont("Arial", 14, QFont.Bold))
         right_layout.addWidget(output_title)
         
-        # 输出区域（继承发布/脚本执行的样式）
-        self.output_text = QTextEdit()
-        self.output_text.setReadOnly(True)
+        # 使用 QTabWidget 管理多个输出窗口
+        self.output_tabs = QTabWidget()
+        self.output_tabs.setTabsClosable(True)  # 允许关闭TAB
+        self.output_tabs.tabCloseRequested.connect(self._close_output_tab)  # 关闭TAB时的处理
         
-        # 设置苹果终端 Basic 主题的字体
+        # 创建默认的 "Git Push" TAB
+        self.output_text = self._create_output_text_edit()
+        self.output_text.setPlaceholderText("点击\"git push\"按钮开始推送...")
+        self.output_tabs.addTab(self.output_text, "Git Push")
+        
+        # 初始化默认文本格式（用于Git Push输出）
         font_families = ["Menlo", "Monaco", "Courier New"]
         font_size = 12
         font = None
@@ -5258,34 +5265,12 @@ class PackageTab(QWidget):
             if QFont(font_family).exactMatch() or font_family == "Courier New":
                 break
         
-        if font:
-            self.output_text.setFont(font)
-        
-        # 设置 tab 宽度
-        self.output_text.setTabStopDistance(4 * self.output_text.fontMetrics().averageCharWidth())
-        
-        # 苹果终端 Basic 主题默认样式（完全匹配发布TAB）
-        self.output_text.setStyleSheet("""
-            QTextEdit {
-                background-color: #000000;
-                color: #FFFFFF;
-                border: none;
-                padding: 10px;
-                selection-background-color: #0066CC;
-                selection-color: #FFFFFF;
-                font-family: "Menlo", "Monaco", "Courier New";
-                font-size: 12pt;
-                line-height: 1.2;
-            }
-        """)
-        
-        # 默认文本格式
         self._default_format = QTextCharFormat()
         self._default_format.setForeground(QColor("#FFFFFF"))
         if font:
             self._default_format.setFont(font)
-        self.output_text.setPlaceholderText("点击\"git push\"按钮开始推送...")
-        right_layout.addWidget(self.output_text, 1)
+        
+        right_layout.addWidget(self.output_tabs, 1)
         
         splitter.addWidget(right_widget)
         
@@ -5309,6 +5294,44 @@ class PackageTab(QWidget):
         self._download_progress_label.hide()
         self._download_progress_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标事件
 
+    def _create_output_text_edit(self) -> QTextEdit:
+        """创建输出文本编辑器（统一的样式）"""
+        output_text = QTextEdit()
+        output_text.setReadOnly(True)
+        
+        # 设置苹果终端 Basic 主题的字体
+        font_families = ["Menlo", "Monaco", "Courier New"]
+        font_size = 12
+        font = None
+        for font_family in font_families:
+            font = QFont(font_family, font_size)
+            font.setFixedPitch(True)
+            if QFont(font_family).exactMatch() or font_family == "Courier New":
+                break
+        
+        if font:
+            output_text.setFont(font)
+        
+        # 设置 tab 宽度
+        output_text.setTabStopDistance(4 * output_text.fontMetrics().averageCharWidth())
+        
+        # 苹果终端 Basic 主题默认样式（完全匹配发布TAB）
+        output_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #000000;
+                color: #FFFFFF;
+                border: none;
+                padding: 10px;
+                selection-background-color: #0066CC;
+                selection-color: #FFFFFF;
+                font-family: "Menlo", "Monaco", "Courier New";
+                font-size: 12pt;
+                line-height: 1.2;
+            }
+        """)
+        
+        return output_text
+    
     def _update_sign_script_label(self):
         """更新签名脚本路径显示"""
         display_path = self._sign_script_path
@@ -5766,56 +5789,161 @@ class PackageTab(QWidget):
             return
         
         # 执行脚本（在后台线程中执行，并显示输出）
-        self._execute_sign_script(cmd)
+        # 使用asset名称作为TAB名称（简化显示）
+        tab_name = asset_name
+        if len(tab_name) > 30:
+            tab_name = tab_name[:27] + "..."
+        self._execute_sign_script(cmd, tab_name, asset_name)
     
-    def _execute_sign_script(self, cmd: List[str]):
-        """执行签名脚本并显示输出"""
-        # 清空输出区域
-        self.output_text.clear()
-        self._append_output("=" * 50)
-        self._append_output(f"执行签名和公证脚本...")
-        self._append_output(f"命令: {' '.join(cmd)}")
-        self._append_output("=" * 50)
-        self._append_output("")
+    def _execute_sign_script(self, cmd: List[str], tab_name: str, full_asset_name: str):
+        """执行签名脚本并显示输出（在独立的TAB中）"""
+        # 创建新的输出TAB
+        output_text = self._create_output_text_edit()
+        output_text.setPlaceholderText(f"正在执行签名和公证任务：{full_asset_name}...")
+        
+        # 添加到TAB
+        tab_index = self.output_tabs.addTab(output_text, tab_name)
+        self.output_tabs.setCurrentIndex(tab_index)  # 切换到新TAB
         
         # 创建进程
-        self._sign_process = QProcess(self)
-        self._sign_process.readyReadStandardOutput.connect(
-            lambda: self._append_output(self._sign_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
+        sign_process = QProcess(self)
+        
+        # 存储TAB和进程的映射关系
+        self._sign_tabs[tab_name] = {
+            "widget": output_text,
+            "process": sign_process,
+            "full_name": full_asset_name
+        }
+        
+        # 连接信号（使用lambda捕获tab_name）
+        sign_process.readyReadStandardOutput.connect(
+            lambda: self._append_output_to_tab(tab_name, sign_process.readAllStandardOutput().data().decode('utf-8', errors='replace'))
         )
-        self._sign_process.readyReadStandardError.connect(
-            lambda: self._append_output(self._sign_process.readAllStandardError().data().decode('utf-8', errors='replace'), is_error=True)
+        sign_process.readyReadStandardError.connect(
+            lambda: self._append_output_to_tab(tab_name, sign_process.readAllStandardError().data().decode('utf-8', errors='replace'), is_error=True)
         )
-        self._sign_process.finished.connect(self._on_sign_script_finished)
+        sign_process.finished.connect(
+            lambda exit_code, exit_status: self._on_sign_script_finished(tab_name, exit_code, exit_status)
+        )
+        
+        # 输出初始信息
+        self._append_output_to_tab(tab_name, "=" * 50)
+        self._append_output_to_tab(tab_name, f"执行签名和公证脚本...")
+        self._append_output_to_tab(tab_name, f"文件：{full_asset_name}")
+        self._append_output_to_tab(tab_name, f"命令: {' '.join(cmd)}")
+        self._append_output_to_tab(tab_name, "=" * 50)
+        self._append_output_to_tab(tab_name, "")
         
         # 启动进程
-        self._sign_process.start(cmd[0], cmd[1:])
+        sign_process.start(cmd[0], cmd[1:])
         
-        if not self._sign_process.waitForStarted(5000):
+        if not sign_process.waitForStarted(5000):
             QMessageBox.warning(self, "错误", "无法启动签名脚本")
+            # 移除失败的TAB
+            self._close_sign_tab(tab_name)
             return
     
-    def _on_sign_script_finished(self, exit_code: int, exit_status: int):
+    def _append_output_to_tab(self, tab_name: str, text: str, is_error: bool = False):
+        """向指定TAB输出文本"""
+        if tab_name not in self._sign_tabs:
+            return
+        
+        output_text = self._sign_tabs[tab_name]["widget"]
+        self._append_output_to_widget(output_text, text, is_error)
+    
+    def _append_output_to_widget(self, widget: QTextEdit, text: str, is_error: bool = False):
+        """向指定的QTextEdit输出文本"""
+        cursor = widget.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        
+        if is_error:
+            # 错误信息使用红色
+            error_format = QTextCharFormat()
+            error_format.setForeground(QColor("#FF6B6B"))
+            cursor.setCharFormat(error_format)
+        else:
+            # 正常输出使用默认格式
+            default_format = QTextCharFormat()
+            default_format.setForeground(QColor("#FFFFFF"))
+            cursor.setCharFormat(default_format)
+        
+        cursor.insertText(text)
+        widget.setTextCursor(cursor)
+        
+        # 自动滚动到底部
+        scrollbar = widget.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def _close_output_tab(self, index: int):
+        """关闭输出TAB"""
+        tab_name = self.output_tabs.tabText(index)
+        
+        # 如果是签名任务TAB，需要停止进程
+        if tab_name in self._sign_tabs:
+            self._close_sign_tab(tab_name)
+        else:
+            # 普通TAB（如Git Push），直接移除
+            widget = self.output_tabs.widget(index)
+            self.output_tabs.removeTab(index)
+            if widget:
+                widget.deleteLater()
+    
+    def _close_sign_tab(self, tab_name: str):
+        """关闭签名任务TAB（停止进程并移除TAB）"""
+        if tab_name not in self._sign_tabs:
+            return
+        
+        tab_info = self._sign_tabs[tab_name]
+        process = tab_info["process"]
+        widget = tab_info["widget"]
+        
+        # 停止进程（如果还在运行）
+        if process.state() != QProcess.NotRunning:
+            process.terminate()
+            if not process.waitForFinished(3000):
+                process.kill()
+                process.waitForFinished(1000)
+        
+        # 移除TAB
+        for i in range(self.output_tabs.count()):
+            if self.output_tabs.tabText(i) == tab_name:
+                self.output_tabs.removeTab(i)
+                break
+        
+        # 清理资源
+        widget.deleteLater()
+        process.deleteLater()
+        del self._sign_tabs[tab_name]
+    
+    def _on_sign_script_finished(self, tab_name: str, exit_code: int, exit_status: int):
         """签名脚本执行完成"""
-        self._append_output("")
-        self._append_output("=" * 50)
+        if tab_name not in self._sign_tabs:
+            return
+        
+        self._append_output_to_tab(tab_name, "")
+        self._append_output_to_tab(tab_name, "=" * 50)
+        
+        full_asset_name = self._sign_tabs[tab_name]["full_name"]
+        
         if exit_code == 0:
-            self._append_output("✓ 签名和公证完成")
+            self._append_output_to_tab(tab_name, "✓ 签名和公证完成")
             QMessageBox.information(
                 self,
                 "完成",
-                "签名和公证流程已完成！\n\n"
-                "请查看输出日志了解详细信息。"
+                f"签名和公证流程已完成！\n\n"
+                f"文件：{full_asset_name}\n\n"
+                f"请查看输出日志了解详细信息。"
             )
         else:
-            self._append_output(f"✗ 签名和公证失败（退出码：{exit_code}）")
+            self._append_output_to_tab(tab_name, f"✗ 签名和公证失败（退出码：{exit_code}）")
             QMessageBox.warning(
                 self,
                 "失败",
                 f"签名和公证流程失败（退出码：{exit_code}）\n\n"
-                "请查看输出日志了解错误详情。"
+                f"文件：{full_asset_name}\n\n"
+                f"请查看输出日志了解错误详情。"
             )
-        self._append_output("=" * 50)
+        self._append_output_to_tab(tab_name, "=" * 50)
     
     def _on_upload_to_server(self, asset_data: Dict[str, Any]):
         """上传到服务器：先下载文件，然后上传到服务器"""
@@ -6413,7 +6541,7 @@ class PackageTab(QWidget):
         scrollbar.setValue(scrollbar.maximum())
     
     def _append_output(self, text: str, is_error: bool = False):
-        """追加输出文本"""
+        """向默认的Git Push TAB输出文本（保持向后兼容）"""
         cursor = self.output_text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         

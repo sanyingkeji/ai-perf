@@ -235,9 +235,27 @@ class SSHClient:
         
         return False
     
+    def _is_connected(self) -> bool:
+        """
+        检查SSH连接是否仍然活跃
+        
+        Returns:
+            bool: 连接是否活跃
+        """
+        if not self._client:
+            return False
+        
+        try:
+            transport = self._client.get_transport()
+            if not transport:
+                return False
+            return transport.is_active()
+        except Exception:
+            return False
+    
     def execute(self, command: str, sudo: bool = False) -> Dict[str, Any]:
         """
-        执行远程命令
+        执行远程命令（带自动重连机制）
         
         Args:
             command: 要执行的命令
@@ -252,14 +270,24 @@ class SSHClient:
                 "error": str
             }
         """
-        if not self._client:
+        # 检查连接是否活跃，如果不活跃则重连
+        if not self._is_connected():
+            # 清理旧连接
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            self._client = None
+            
+            # 尝试重连
             if not self.connect():
                 return {
                     "success": False,
                     "stdout": "",
                     "stderr": "",
                     "returncode": -1,
-                    "error": "SSH连接失败"
+                    "error": "SSH连接失败，无法执行命令"
                 }
         
         try:
@@ -281,14 +309,61 @@ class SSHClient:
                 "error": None
             }
         except Exception as e:
-            logger.error(f"执行命令失败: {e}")
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": "",
-                "returncode": -1,
-                "error": str(e)
-            }
+            error_msg = str(e)
+            # 检查是否是连接断开错误
+            if "SSH session not active" in error_msg or "not connected" in error_msg.lower():
+                logger.warning(f"SSH连接已断开，尝试重连: {error_msg}")
+                # 清理旧连接
+                try:
+                    if self._client:
+                        self._client.close()
+                except Exception:
+                    pass
+                self._client = None
+                
+                # 尝试重连并重新执行命令（只重试一次）
+                if self.connect():
+                    try:
+                        if sudo:
+                            command = f"sudo {command}"
+                        stdin, stdout, stderr = self._client.exec_command(command, timeout=30)
+                        returncode = stdout.channel.recv_exit_status()
+                        stdout_text = stdout.read().decode('utf-8', errors='ignore').strip()
+                        stderr_text = stderr.read().decode('utf-8', errors='ignore').strip()
+                        return {
+                            "success": returncode == 0,
+                            "stdout": stdout_text,
+                            "stderr": stderr_text,
+                            "returncode": returncode,
+                            "error": None
+                        }
+                    except Exception as e2:
+                        logger.error(f"重连后执行命令失败: {e2}")
+                        return {
+                            "success": False,
+                            "stdout": "",
+                            "stderr": "",
+                            "returncode": -1,
+                            "error": f"重连后执行命令失败: {e2}"
+                        }
+                else:
+                    logger.error(f"SSH重连失败: {error_msg}")
+                    return {
+                        "success": False,
+                        "stdout": "",
+                        "stderr": "",
+                        "returncode": -1,
+                        "error": f"SSH连接断开且重连失败: {error_msg}"
+                    }
+            else:
+                logger.error(f"执行命令失败: {e}")
+                return {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "",
+                    "returncode": -1,
+                    "error": str(e)
+                }
     
     def close(self):
         """关闭SSH连接"""
@@ -307,7 +382,7 @@ class SSHClient:
 
     def download_file(self, remote_path: str, local_path: str) -> Dict[str, Any]:
         """
-        通过SFTP下载远程文件
+        通过SFTP下载远程文件（带自动重连机制）
         
         Args:
             remote_path: 远程文件路径
@@ -319,7 +394,14 @@ class SSHClient:
                 "error": str
             }
         """
-        if not self._client:
+        # 检查连接是否活跃，如果不活跃则重连
+        if not self._is_connected():
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            self._client = None
             if not self.connect():
                 return {
                     "success": False,
@@ -335,15 +417,45 @@ class SSHClient:
                 "error": None
             }
         except Exception as e:
-            logger.error(f"下载文件失败: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            error_msg = str(e)
+            if "SSH session not active" in error_msg or "not connected" in error_msg.lower():
+                logger.warning(f"SSH连接已断开，尝试重连: {error_msg}")
+                try:
+                    if self._client:
+                        self._client.close()
+                except Exception:
+                    pass
+                self._client = None
+                if self.connect():
+                    try:
+                        sftp = self._client.open_sftp()
+                        sftp.get(remote_path, local_path)
+                        sftp.close()
+                        return {
+                            "success": True,
+                            "error": None
+                        }
+                    except Exception as e2:
+                        logger.error(f"重连后下载文件失败: {e2}")
+                        return {
+                            "success": False,
+                            "error": f"重连后下载文件失败: {e2}"
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"SSH连接断开且重连失败: {error_msg}"
+                    }
+            else:
+                logger.error(f"下载文件失败: {e}")
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
     
     def list_files(self, remote_dir: str, recursive: bool = False) -> Dict[str, Any]:
         """
-        列出远程目录中的文件
+        列出远程目录中的文件（带自动重连机制）
         
         Args:
             remote_dir: 远程目录路径
@@ -356,7 +468,14 @@ class SSHClient:
                 "error": str
             }
         """
-        if not self._client:
+        # 检查连接是否活跃，如果不活跃则重连
+        if not self._is_connected():
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            self._client = None
             if not self.connect():
                 return {
                     "success": False,
@@ -423,7 +542,7 @@ class SSHClient:
     
     def read_file(self, remote_path: str, max_size: int = 10 * 1024 * 1024) -> Dict[str, Any]:
         """
-        读取远程文件内容（如果文件太大则返回错误）
+        读取远程文件内容（如果文件太大则返回错误，带自动重连机制）
         
         Args:
             remote_path: 远程文件路径
@@ -437,7 +556,14 @@ class SSHClient:
                 "error": str
             }
         """
-        if not self._client:
+        # 检查连接是否活跃，如果不活跃则重连
+        if not self._is_connected():
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            self._client = None
             if not self.connect():
                 return {
                     "success": False,
@@ -473,17 +599,64 @@ class SSHClient:
                 "error": None
             }
         except Exception as e:
-            logger.error(f"读取文件失败: {e}")
-            return {
-                "success": False,
-                "content": "",
-                "size": 0,
-                "error": str(e)
-            }
+            error_msg = str(e)
+            if "SSH session not active" in error_msg or "not connected" in error_msg.lower():
+                logger.warning(f"SSH连接已断开，尝试重连: {error_msg}")
+                try:
+                    if self._client:
+                        self._client.close()
+                except Exception:
+                    pass
+                self._client = None
+                if self.connect():
+                    try:
+                        sftp = self._client.open_sftp()
+                        file_attr = sftp.stat(remote_path)
+                        file_size = file_attr.st_size
+                        if file_size > max_size:
+                            sftp.close()
+                            return {
+                                "success": False,
+                                "content": "",
+                                "size": file_size,
+                                "error": f"文件太大（{file_size / 1024 / 1024:.2f} MB），超过最大限制（{max_size / 1024 / 1024:.2f} MB），请下载后查看"
+                            }
+                        with sftp.open(remote_path, 'r') as f:
+                            content = f.read().decode('utf-8', errors='ignore')
+                        sftp.close()
+                        return {
+                            "success": True,
+                            "content": content,
+                            "size": file_size,
+                            "error": None
+                        }
+                    except Exception as e2:
+                        logger.error(f"重连后读取文件失败: {e2}")
+                        return {
+                            "success": False,
+                            "content": "",
+                            "size": 0,
+                            "error": f"重连后读取文件失败: {e2}"
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "content": "",
+                        "size": 0,
+                        "error": f"SSH连接断开且重连失败: {error_msg}"
+                    }
+            else:
+                logger.error(f"读取文件失败: {e}")
+                return {
+                    "success": False,
+                    "content": "",
+                    "size": 0,
+                    "error": str(e)
+                }
     
     def upload_file(self, local_path: str, remote_path: str) -> Dict[str, Any]:
         """
-        通过SFTP上传文件到远程服务器
+        通过SFTP上传文件到远程服务器（带自动重连机制）
         
         Args:
             local_path: 本地文件路径
@@ -495,7 +668,14 @@ class SSHClient:
                 "error": str
             }
         """
-        if not self._client:
+        # 检查连接是否活跃，如果不活跃则重连
+        if not self._is_connected():
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            self._client = None
             if not self.connect():
                 return {
                     "success": False,
@@ -511,15 +691,45 @@ class SSHClient:
                 "error": None
             }
         except Exception as e:
-            logger.error(f"上传文件失败: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            error_msg = str(e)
+            if "SSH session not active" in error_msg or "not connected" in error_msg.lower():
+                logger.warning(f"SSH连接已断开，尝试重连: {error_msg}")
+                try:
+                    if self._client:
+                        self._client.close()
+                except Exception:
+                    pass
+                self._client = None
+                if self.connect():
+                    try:
+                        sftp = self._client.open_sftp()
+                        sftp.put(local_path, remote_path)
+                        sftp.close()
+                        return {
+                            "success": True,
+                            "error": None
+                        }
+                    except Exception as e2:
+                        logger.error(f"重连后上传文件失败: {e2}")
+                        return {
+                            "success": False,
+                            "error": f"重连后上传文件失败: {e2}"
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"SSH连接断开且重连失败: {error_msg}"
+                    }
+            else:
+                logger.error(f"上传文件失败: {e}")
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
     
     def write_file(self, remote_path: str, content: str) -> Dict[str, Any]:
         """
-        通过SFTP写入内容到远程文件
+        通过SFTP写入内容到远程文件（带自动重连机制）
         
         Args:
             remote_path: 远程文件路径
@@ -531,7 +741,14 @@ class SSHClient:
                 "error": str
             }
         """
-        if not self._client:
+        # 检查连接是否活跃，如果不活跃则重连
+        if not self._is_connected():
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            self._client = None
             if not self.connect():
                 return {
                     "success": False,
@@ -549,9 +766,40 @@ class SSHClient:
                 "error": None
             }
         except Exception as e:
-            logger.error(f"写入文件失败: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            error_msg = str(e)
+            if "SSH session not active" in error_msg or "not connected" in error_msg.lower():
+                logger.warning(f"SSH连接已断开，尝试重连: {error_msg}")
+                try:
+                    if self._client:
+                        self._client.close()
+                except Exception:
+                    pass
+                self._client = None
+                if self.connect():
+                    try:
+                        sftp = self._client.open_sftp()
+                        with sftp.open(remote_path, 'w') as f:
+                            f.write(content.encode('utf-8'))
+                        sftp.close()
+                        return {
+                            "success": True,
+                            "error": None
+                        }
+                    except Exception as e2:
+                        logger.error(f"重连后写入文件失败: {e2}")
+                        return {
+                            "success": False,
+                            "error": f"重连后写入文件失败: {e2}"
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"SSH连接断开且重连失败: {error_msg}"
+                    }
+            else:
+                logger.error(f"写入文件失败: {e}")
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
 
