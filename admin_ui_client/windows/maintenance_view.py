@@ -4868,6 +4868,7 @@ class _UploadFileWorkerSignals(QObject):
     finished = Signal(str)  # download_url
     error = Signal(str)
     progress = Signal(int, int)  # 已上传字节数, 总字节数
+    chunk_progress = Signal(int, int, int)  # 当前分片索引, 总分片数, 当前分片进度(0-100)
 
 
 class _DownloadSingleAssetWorkerSignals(QObject):
@@ -5012,19 +5013,63 @@ class _DownloadAssetsWorker(QRunnable):
 
 
 class _UploadFileWorker(QRunnable):
-    """后台线程：上传文件"""
-    def __init__(self, file_path: str, platform: str, version: str, upload_api_url: str):
+    """后台线程：上传文件（支持断点续传）"""
+    def __init__(self, file_path: str, platform: str, version: str, upload_api_url: str, chunk_size: int = 10 * 1024 * 1024):
         super().__init__()
         self.signals = _UploadFileWorkerSignals()
-        self._file_path = file_path
+        self._file_path = Path(file_path)
         self._platform = platform
         self._version = version
         self._upload_api_url = upload_api_url
+        self._chunk_size = chunk_size  # 分片大小，默认10MB
         self._should_stop = False
+        self._upload_id = None
+        self._total_chunks = 0
+        self._uploaded_chunks = set()
+        
+        # 进度文件路径（用于断点续传）
+        self._progress_file = self._file_path.parent / f".{self._file_path.name}.upload_progress"
     
     def stop(self):
         """停止上传"""
         self._should_stop = True
+    
+    def _load_progress(self) -> Optional[Dict]:
+        """加载上传进度"""
+        if self._progress_file.exists():
+            try:
+                import json
+                with open(self._progress_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+    
+    def _save_progress(self, upload_id: str, uploaded_chunks: set):
+        """保存上传进度"""
+        try:
+            import json
+            file_size = self._file_path.stat().st_size if self._file_path.exists() else 0
+            progress_data = {
+                "upload_id": upload_id,
+                "uploaded_chunks": list(uploaded_chunks),
+                "file_path": str(self._file_path),
+                "platform": self._platform,
+                "version": self._version,
+                "file_size": file_size  # 保存文件大小用于验证
+            }
+            with open(self._progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f)
+        except Exception:
+            pass  # 忽略保存错误
+    
+    def _clear_progress(self):
+        """清除上传进度"""
+        try:
+            if self._progress_file.exists():
+                self._progress_file.unlink()
+        except Exception:
+            pass
     
     @Slot()
     def run(self) -> None:
@@ -5032,46 +5077,208 @@ class _UploadFileWorker(QRunnable):
             if self._should_stop:
                 return
             
-            # 读取文件并上传
-            with open(self._file_path, "rb") as f:
-                files = {"file": (os.path.basename(self._file_path), f, "application/octet-stream")}
-                data = {
+            # 检查文件是否存在
+            if not self._file_path.exists():
+                self.signals.error.emit(f"文件不存在：{self._file_path}")
+                return
+            
+            file_size = self._file_path.stat().st_size
+            if file_size == 0:
+                self.signals.error.emit("文件为空")
+                return
+            
+            # 尝试加载之前的进度
+            progress_data = self._load_progress()
+            if progress_data and progress_data.get("upload_id"):
+                # 验证文件路径、大小、平台和版本是否匹配（防止文件被修改）
+                saved_file_path = progress_data.get("file_path")
+                saved_platform = progress_data.get("platform")
+                saved_version = progress_data.get("version")
+                saved_file_size = progress_data.get("file_size", 0)
+                
+                # 如果文件路径、大小、平台或版本不匹配，清除进度并重新开始
+                if (saved_file_path != str(self._file_path) or 
+                    saved_platform != self._platform or 
+                    saved_version != self._version or
+                    saved_file_size != file_size):
+                    self._clear_progress()
+                    progress_data = None
+                else:
+                    # 恢复上传会话
+                    self._upload_id = progress_data["upload_id"]
+                    self._uploaded_chunks = set(progress_data.get("uploaded_chunks", []))
+                    # 查询服务器上的进度
+                    try:
+                        progress_response = httpx.get(
+                            f"{self._upload_api_url}/progress",
+                            params={"upload_id": self._upload_id},
+                            timeout=10.0
+                        )
+                        if progress_response.status_code == 200:
+                            progress_result = progress_response.json()
+                            if progress_result.get("status") == "success":
+                                server_chunks = set(progress_result.get("uploaded_chunks", []))
+                                # 合并本地和服务器进度
+                                self._uploaded_chunks = self._uploaded_chunks.union(server_chunks)
+                                self._total_chunks = progress_result.get("total_chunks", 0)
+                            else:
+                                # 服务器会话已过期或无效，清除本地进度并重新初始化
+                                self._clear_progress()
+                                self._upload_id = None
+                                self._uploaded_chunks = set()
+                        else:
+                            # 服务器返回错误，清除本地进度并重新初始化
+                            self._clear_progress()
+                            self._upload_id = None
+                            self._uploaded_chunks = set()
+                    except Exception:
+                        # 查询失败，清除本地进度并重新初始化（避免使用过期的会话）
+                        self._clear_progress()
+                        self._upload_id = None
+                        self._uploaded_chunks = set()
+            
+            # 如果没有上传ID，初始化上传
+            if not self._upload_id:
+                # 初始化上传
+                init_data = {
+                    "filename": self._file_path.name,
                     "platform": self._platform,
-                    "version": self._version
+                    "version": self._version,
+                    "total_size": file_size
                 }
                 
-                # 使用httpx上传（multipart/form-data）
-                response = httpx.post(
-                    self._upload_api_url,
-                    files=files,
-                    data=data,
-                    timeout=300.0
+                init_response = httpx.post(
+                    f"{self._upload_api_url}/init",
+                    data=init_data,
+                    timeout=30.0
                 )
                 
-                if self._should_stop:
+                if init_response.status_code != 200:
+                    self.signals.error.emit(f"初始化上传失败：HTTP {init_response.status_code}")
                     return
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("status") == "success":
-                        download_url = result.get("url")
-                        if download_url:
-                            self.signals.finished.emit(download_url)
+                init_result = init_response.json()
+                if init_result.get("status") != "success":
+                    self.signals.error.emit(f"初始化上传失败：{init_result.get('message', '未知错误')}")
+                    return
+                
+                self._upload_id = init_result["upload_id"]
+                self._total_chunks = init_result["total_chunks"]
+                self._chunk_size = init_result.get("chunk_size", self._chunk_size)
+            
+            # 计算总分片数（如果还没有）
+            if self._total_chunks == 0:
+                self._total_chunks = (file_size + self._chunk_size - 1) // self._chunk_size
+            
+            # 上传所有分片
+            with open(self._file_path, "rb") as f:
+                uploaded_size = 0
+                
+                for chunk_index in range(self._total_chunks):
+                    if self._should_stop:
+                        return
+                    
+                    # 跳过已上传的分片
+                    if chunk_index in self._uploaded_chunks:
+                        # 计算已上传的字节数
+                        if chunk_index < self._total_chunks - 1:
+                            uploaded_size += self._chunk_size
                         else:
-                            self.signals.error.emit("上传成功但未返回URL")
-                    else:
-                        error_msg = result.get("message", "上传失败")
+                            # 最后一个分片
+                            uploaded_size += file_size - (self._total_chunks - 1) * self._chunk_size
+                        # 发送进度更新
+                        self.signals.progress.emit(uploaded_size, file_size)
+                        self.signals.chunk_progress.emit(chunk_index + 1, self._total_chunks, 100)
+                        continue
+                    
+                    # 读取分片数据
+                    f.seek(chunk_index * self._chunk_size)
+                    chunk_data = f.read(self._chunk_size)
+                    
+                    if not chunk_data:
+                        break
+                    
+                    # 上传分片
+                    chunk_files = {
+                        "chunk": (f"chunk_{chunk_index}", chunk_data, "application/octet-stream")
+                    }
+                    chunk_data_form = {
+                        "upload_id": self._upload_id,
+                        "chunk_index": chunk_index
+                    }
+                    
+                    chunk_response = httpx.post(
+                        f"{self._upload_api_url}/chunk",
+                        files=chunk_files,
+                        data=chunk_data_form,
+                        timeout=300.0
+                    )
+                    
+                    if self._should_stop:
+                        return
+                    
+                    if chunk_response.status_code != 200:
+                        error_msg = f"上传分片 {chunk_index} 失败：HTTP {chunk_response.status_code}"
+                        try:
+                            error_result = chunk_response.json()
+                            if "message" in error_result:
+                                error_msg = f"上传分片 {chunk_index} 失败：{error_result['message']}"
+                        except:
+                            pass
                         self.signals.error.emit(error_msg)
-                else:
-                    try:
-                        error_text = response.text
-                    except:
-                        error_text = "无法读取错误信息"
-                    error_msg = f"HTTP {response.status_code}: {error_text}"
-                    self.signals.error.emit(error_msg)
+                        return
+                    
+                    chunk_result = chunk_response.json()
+                    if chunk_result.get("status") != "success":
+                        self.signals.error.emit(f"上传分片 {chunk_index} 失败：{chunk_result.get('message', '未知错误')}")
+                        return
+                    
+                    # 记录已上传的分片
+                    self._uploaded_chunks.add(chunk_index)
+                    uploaded_size += len(chunk_data)
+                    
+                    # 保存进度
+                    self._save_progress(self._upload_id, self._uploaded_chunks)
+                    
+                    # 发送进度更新
+                    self.signals.progress.emit(uploaded_size, file_size)
+                    self.signals.chunk_progress.emit(chunk_index + 1, self._total_chunks, 100)
+            
+            # 所有分片上传完成，通知服务器合并
+            if self._should_stop:
+                return
+            
+            complete_data = {
+                "upload_id": self._upload_id
+            }
+            
+            complete_response = httpx.post(
+                f"{self._upload_api_url}/complete",
+                data=complete_data,
+                timeout=300.0
+            )
+            
+            if complete_response.status_code != 200:
+                self.signals.error.emit(f"完成上传失败：HTTP {complete_response.status_code}")
+                return
+            
+            complete_result = complete_response.json()
+            if complete_result.get("status") != "success":
+                self.signals.error.emit(f"完成上传失败：{complete_result.get('message', '未知错误')}")
+                return
+            
+            # 清除进度文件
+            self._clear_progress()
+            
+            # 发送完成信号
+            download_url = complete_result.get("url")
+            if download_url:
+                self.signals.finished.emit(download_url)
+            else:
+                self.signals.error.emit("上传成功但未返回URL")
         
         except httpx.TimeoutException:
-            self.signals.error.emit("上传超时，请检查网络连接或文件大小")
+            self.signals.error.emit("上传超时，请检查网络连接。可以稍后继续上传（断点续传）")
         except Exception as e:
             self.signals.error.emit(f"上传失败：{type(e).__name__}: {e}")
 
@@ -5241,12 +5448,7 @@ class PackageTab(QWidget):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(8, 8, 8, 8)
         right_layout.setSpacing(8)
-        
-        # 标题
-        output_title = QLabel("输出")
-        output_title.setFont(QFont("Arial", 14, QFont.Bold))
-        right_layout.addWidget(output_title)
-        
+
         # 使用 QTabWidget 管理多个输出窗口
         self.output_tabs = QTabWidget()
         self.output_tabs.setTabsClosable(True)  # 允许关闭TAB
@@ -5254,6 +5456,8 @@ class PackageTab(QWidget):
         
         # 设置 TAB 标签左对齐
         tab_bar = self.output_tabs.tabBar()
+        # 禁用文字截断，确保完整显示
+        tab_bar.setElideMode(Qt.ElideNone)
         tab_bar.setUsesScrollButtons(False)  # 禁用滚动按钮，让标签自然排列
         tab_bar.setExpanding(False)  # 禁用扩展，确保标签从左边开始排列
         tab_bar.setDocumentMode(False)  # 禁用文档模式，确保标签正常显示
@@ -5266,9 +5470,13 @@ class PackageTab(QWidget):
                 background-color: #000000;
                 border-radius: 0px;
                 border-top: none;
+                top: -1px;
+                padding: 0px;
+                margin: 0px;
             }
             QTabBar {
                 alignment: left;
+                margin-bottom: 0px;
             }
             /* 强制 TAB 标签左对齐（macOS 兼容） */
             QTabBar::scroller {
@@ -5276,36 +5484,40 @@ class PackageTab(QWidget):
             }
             QTabBar::tab {
                 background-color: #2A2B2D;
-                color: #9AA0A6;
+                color: #FFFFFF;
                 border: 1px solid #3A3A3C;
                 border-bottom: none;
-                padding: 8px 16px;
+                padding: 6px 32px 6px 16px;
                 margin-right: 2px;
+                font-size: 12px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
-                min-width: 80px;
+                min-width: 0px;
+                min-height: 28px;
             }
             QTabBar::tab:selected {
                 background-color: #000000;
                 color: #FFFFFF;
-                border-bottom: 2px solid #5C8CFF;
             }
             QTabBar::tab:hover:!selected {
                 background-color: #333436;
-                color: #E8EAED;
+                color: #FFFFFF;
             }
             QTabBar::close-button {
-                image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==);
                 subcontrol-position: right;
                 subcontrol-origin: padding;
                 width: 16px;
                 height: 16px;
+                border: none;
+                background: transparent;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDRMMTAgMTJNMTAgNEwxMiAxMiIgc3Ryb2tlPSIjQUFBQUFBIiBzdHJva2Utd2lkdGg9IjEuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPgo=);
             }
             QTabBar::close-button:hover {
                 background-color: rgba(255, 255, 255, 0.2);
                 border-radius: 3px;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDRMMTAgMTJNMTAgNEwxMiAxMiIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjEuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPgo=);
             }
-            /* 隐藏第一个 TAB（Git Push）的关闭按钮 */
+            /* 隐藏第一个 TAB（Github 输出）的关闭按钮 */
             QTabBar::tab:first-child::close-button {
                 width: 0px;
                 height: 0px;
@@ -5313,13 +5525,21 @@ class PackageTab(QWidget):
             }
         """)
         
-        # 创建默认的 "Git Push" TAB（不可关闭）
+        # 创建默认的 "Github 输出" TAB（不可关闭）
         self.output_text = self._create_output_text_edit()
         self.output_text.setPlaceholderText("点击\"git push\"按钮开始推送...")
-        git_push_index = self.output_tabs.addTab(self.output_text, "Git Push")
-        # Git Push TAB 不显示关闭按钮（通过隐藏关闭按钮）
+        github_output_index = self.output_tabs.addTab(self.output_text, "Github 输出")
+        
+        # 确保 TAB 文字可见：显式设置文字和颜色
+        tab_bar = self.output_tabs.tabBar()
+        # 确保文字正确设置（防止样式表覆盖）
+        tab_bar.setTabText(github_output_index, "Github 输出")
+        # 确保 TAB 有足够宽度显示文字
+        tab_bar.setTabData(github_output_index, None)  # 清除可能的数据
+        
+        # Github 输出 TAB 不显示关闭按钮（通过隐藏关闭按钮）
         # 注意：需要在添加 TAB 后立即设置，否则可能不生效
-        QTimer.singleShot(0, lambda: self._hide_git_push_close_button(git_push_index))
+        QTimer.singleShot(0, lambda: self._hide_git_push_close_button(github_output_index))
         
         # 强制设置 QTabBar 的布局为左对齐（macOS 兼容）
         # 在 macOS 上，QTabBar 默认可能居中显示，需要通过多种方式强制左对齐
@@ -5358,8 +5578,8 @@ class PackageTab(QWidget):
         
         splitter.addWidget(right_widget)
         
-        # 设置分割比例（左侧30%，右侧70%）
-        splitter.setSizes([300, 700])
+        # 设置分割比例（左侧35%，右侧65%）
+        splitter.setSizes([350, 650])
         
         layout.addWidget(splitter, 1)
 
@@ -5379,7 +5599,7 @@ class PackageTab(QWidget):
         self._download_progress_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标事件
     
     def _hide_git_push_close_button(self, index: int):
-        """隐藏 Git Push TAB 的关闭按钮"""
+        """隐藏 Github 输出 TAB 的关闭按钮"""
         tab_bar = self.output_tabs.tabBar()
         close_button = tab_bar.tabButton(index, QTabBar.RightSide)
         if close_button:
@@ -5728,6 +5948,113 @@ class PackageTab(QWidget):
             tab_name = tab_name[:27] + "..."
         self._create_download_tab(tab_name, asset_name, save_path, asset_url)
     
+    def _create_download_tab(self, tab_name: str, full_asset_name: str, save_path: Path, asset_url: str = None, skip_download: bool = False):
+        """创建下载任务TAB并开始下载"""
+        # 创建新的输出TAB
+        output_text = self._create_output_text_edit()
+        if skip_download:
+            output_text.setPlaceholderText(f"文件已存在，跳过下载：{full_asset_name}...")
+        else:
+            output_text.setPlaceholderText(f"正在下载文件：{full_asset_name}...")
+        
+        # 添加到TAB
+        tab_index = self.output_tabs.addTab(output_text, tab_name)
+        self.output_tabs.setCurrentIndex(tab_index)  # 切换到新TAB
+        
+        # 存储TAB信息
+        download_tab_key = f"download_{tab_name}"
+        if not hasattr(self, '_download_tabs'):
+            self._download_tabs = {}
+        self._download_tabs[download_tab_key] = {
+            "widget": output_text,
+            "full_name": full_asset_name,
+            "save_path": save_path
+        }
+        
+        # 输出初始信息
+        self._append_output_to_widget(output_text, "=" * 50 + "\n")
+        self._append_output_to_widget(output_text, f"下载文件：{full_asset_name}\n")
+        self._append_output_to_widget(output_text, f"保存路径：{save_path}\n")
+        self._append_output_to_widget(output_text, "=" * 50 + "\n\n")
+        
+        if skip_download:
+            # 文件已存在，跳过下载
+            file_size = save_path.stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+            self._append_output_to_widget(output_text, f"✓ 文件已存在，跳过下载\n")
+            self._append_output_to_widget(output_text, f"  文件大小: {file_size_mb:.2f} MB\n")
+            self._append_output_to_widget(output_text, f"  文件路径: {save_path}\n")
+            return
+        
+        if not asset_url:
+            self._append_output_to_widget(output_text, "✗ 错误：没有下载链接\n", is_error=True)
+            return
+        
+        # 创建下载 Worker
+        worker = _DownloadSingleAssetWorker(asset_url, str(save_path))
+        worker.signals.finished.connect(
+            lambda path: self._on_download_tab_finished(download_tab_key, path)
+        )
+        worker.signals.error.connect(
+            lambda msg: self._on_download_tab_error(download_tab_key, msg)
+        )
+        worker.signals.progress.connect(
+            lambda downloaded, total: self._on_download_tab_progress(download_tab_key, downloaded, total)
+        )
+        QThreadPool.globalInstance().start(worker)
+    
+    def _on_download_tab_finished(self, tab_key: str, save_path: str):
+        """下载TAB完成"""
+        if tab_key not in self._download_tabs:
+            return
+        
+        tab_info = self._download_tabs[tab_key]
+        output_text = tab_info["widget"]
+        
+        try:
+            file_size = Path(save_path).stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+            self._append_output_to_widget(output_text, f"\n✓ 下载完成\n")
+            self._append_output_to_widget(output_text, f"  文件大小: {file_size_mb:.2f} MB\n")
+            self._append_output_to_widget(output_text, f"  文件路径: {save_path}\n")
+        except Exception as e:
+            self._append_output_to_widget(output_text, f"\n✓ 下载完成\n")
+            self._append_output_to_widget(output_text, f"  文件路径: {save_path}\n")
+    
+    def _on_download_tab_error(self, tab_key: str, error_msg: str):
+        """下载TAB错误"""
+        if tab_key not in self._download_tabs:
+            return
+        
+        tab_info = self._download_tabs[tab_key]
+        output_text = tab_info["widget"]
+        self._append_output_to_widget(output_text, f"\n✗ 下载失败: {error_msg}\n", is_error=True)
+    
+    def _on_download_tab_progress(self, tab_key: str, downloaded_bytes: int, total_bytes: int):
+        """下载TAB进度更新"""
+        if tab_key not in self._download_tabs:
+            return
+        
+        tab_info = self._download_tabs[tab_key]
+        output_text = tab_info["widget"]
+        
+        if total_bytes > 0:
+            percent = (downloaded_bytes / total_bytes) * 100
+            downloaded_mb = downloaded_bytes / (1024 * 1024)
+            total_mb = total_bytes / (1024 * 1024)
+            # 更新最后一行进度信息
+            cursor = output_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
+            progress_text = f"  进度: {percent:.1f}% ({downloaded_mb:.2f}/{total_mb:.2f} MB)\r"
+            cursor.insertText(progress_text)
+            output_text.setTextCursor(cursor)
+            
+            # 自动滚动到底部
+            scrollbar = output_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+    
     def _on_download_single_finished(self, save_path: str, asset_name: str):
         """单个文件下载完成"""
         # 先强制显示100%进度，然后显示完成提示
@@ -6014,8 +6341,8 @@ class PackageTab(QWidget):
         """关闭输出TAB"""
         tab_name = self.output_tabs.tabText(index)
         
-        # Git Push TAB 不能被关闭
-        if tab_name == "Git Push":
+        # Github 输出 TAB 不能被关闭
+        if tab_name == "Github 输出":
             return
         
         # 如果是签名任务TAB，需要停止进程
@@ -6316,6 +6643,30 @@ class PackageTab(QWidget):
         upload_platform = tab_info["upload_platform"]
         version = tab_info["version"]
         
+        # 检查文件是否存在
+        file_path_obj = Path(file_path)
+        if not file_path_obj.exists():
+            self._append_output_to_widget(output_text, f"\n✗ 错误：文件不存在: {file_path}\n", is_error=True)
+            return
+        
+        # 检查文件大小（通常服务器限制为 100MB，这里设置为 90MB 作为警告阈值）
+        file_size = file_path_obj.stat().st_size
+        file_size_mb = file_size / (1024 * 1024)
+        max_size_mb = 1024  # 服务器限制（MB）
+        
+        if file_size_mb > max_size_mb:
+            self._append_output_to_widget(output_text, f"\n✗ 错误：文件过大，无法上传\n", is_error=True)
+            self._append_output_to_widget(output_text, f"  文件大小: {file_size_mb:.2f} MB\n", is_error=True)
+            self._append_output_to_widget(output_text, f"  服务器限制: {max_size_mb} MB\n", is_error=True)
+            self._append_output_to_widget(output_text, f"  建议：请使用其他方式上传大文件\n", is_error=True)
+            QMessageBox.warning(
+                self,
+                "文件过大",
+                f"文件大小 ({file_size_mb:.2f} MB) 超过服务器限制 ({max_size_mb} MB)，无法上传。\n\n"
+                f"请使用其他方式上传大文件。"
+            )
+            return
+        
         # 从配置读取上传API地址
         cfg = ConfigManager.load()
         upload_api_url = cfg.get("upload_api_url", "http://127.0.0.1:8882/api/upload")
@@ -6326,9 +6677,10 @@ class PackageTab(QWidget):
         
         self._append_output_to_widget(output_text, f"  上传API: {upload_api_url}\n")
         self._append_output_to_widget(output_text, f"  平台: {upload_platform}\n")
-        self._append_output_to_widget(output_text, f"  版本: {version}\n\n")
+        self._append_output_to_widget(output_text, f"  版本: {version}\n")
+        self._append_output_to_widget(output_text, f"  文件大小: {file_size_mb:.2f} MB\n\n")
         
-        # 创建上传Worker
+        # 创建上传Worker（使用断点续传）
         upload_worker = _UploadFileWorker(file_path, upload_platform, version, upload_api_url)
         
         # 连接信号
@@ -6337,6 +6689,12 @@ class PackageTab(QWidget):
         )
         upload_worker.signals.error.connect(
             lambda msg: self._on_upload_to_server_error(tab_key, msg)
+        )
+        upload_worker.signals.progress.connect(
+            lambda uploaded, total: self._on_upload_progress(tab_key, uploaded, total)
+        )
+        upload_worker.signals.chunk_progress.connect(
+            lambda current_chunk, total_chunks, chunk_percent: self._on_upload_chunk_progress(tab_key, current_chunk, total_chunks, chunk_percent)
         )
         
         # 存储worker引用
@@ -6347,6 +6705,63 @@ class PackageTab(QWidget):
             self._thread_pool = QThreadPool()
         self._thread_pool.start(upload_worker)
     
+    def _on_upload_progress(self, tab_key: str, uploaded_bytes: int, total_bytes: int):
+        """上传进度更新（总体进度）"""
+        if tab_key not in self._upload_tabs:
+            return
+        
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        
+        if total_bytes > 0:
+            percent = (uploaded_bytes / total_bytes) * 100
+            uploaded_mb = uploaded_bytes / (1024 * 1024)
+            total_mb = total_bytes / (1024 * 1024)
+            
+            # 更新最后一行进度信息
+            cursor = output_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
+            progress_text = f"  总进度: {percent:.1f}% ({uploaded_mb:.2f}/{total_mb:.2f} MB)\r"
+            cursor.insertText(progress_text)
+            output_text.setTextCursor(cursor)
+            
+            # 自动滚动到底部
+            scrollbar = output_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+    
+    def _on_upload_chunk_progress(self, tab_key: str, current_chunk: int, total_chunks: int, chunk_percent: int):
+        """上传分片进度更新"""
+        if tab_key not in self._upload_tabs:
+            return
+        
+        tab_info = self._upload_tabs[tab_key]
+        output_text = tab_info["widget"]
+        
+        # 更新分片进度信息（在总进度下方）
+        cursor = output_text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        
+        # 如果当前行是总进度，先换行
+        cursor.movePosition(QTextCursor.StartOfLine)
+        line_text = cursor.block().text()
+        if "总进度" in line_text:
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText("\n")
+        
+        # 更新分片进度
+        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        chunk_progress_text = f"  分片进度: {current_chunk}/{total_chunks} ({chunk_percent}%)\r"
+        cursor.insertText(chunk_progress_text)
+        output_text.setTextCursor(cursor)
+        
+        # 自动滚动到底部
+        scrollbar = output_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
     def _on_upload_to_server_finished(self, tab_key: str, download_url: str):
         """上传到服务器完成"""
         if tab_key not in self._upload_tabs:
@@ -6354,6 +6769,13 @@ class PackageTab(QWidget):
         
         tab_info = self._upload_tabs[tab_key]
         output_text = tab_info["widget"]
+        
+        # 清除进度行
+        cursor = output_text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertText("\n")
         
         # 复制URL到剪贴板
         from PySide6.QtWidgets import QApplication
@@ -6384,7 +6806,19 @@ class PackageTab(QWidget):
         
         tab_info = self._upload_tabs[tab_key]
         output_text = tab_info["widget"]
+        
+        # 清除进度行
+        cursor = output_text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.StartOfLine, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertText("\n")
+        
         self._append_output_to_widget(output_text, f"\n✗ 上传失败: {error_msg}\n", is_error=True)
+        
+        # 如果错误信息包含"断点续传"，提示用户可以继续上传
+        if "断点续传" in error_msg or "可以稍后继续" in error_msg:
+            self._append_output_to_widget(output_text, f"  提示：可以重新上传，系统会自动从上次中断处继续\n", is_error=False)
         
         QMessageBox.warning(self, "上传失败", f"文件上传失败：{error_msg}")
         

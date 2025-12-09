@@ -1979,33 +1979,50 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 log_step(Step.SIGN_DMG, "DMG 代码签名...")
                 timestamp_max_retries = 3
                 timestamp_retry_delay = 5
+                timestamp_timeout = 180  # 180 秒超时
                 timestamp_success = False
+                timestamp_result = None
                 
                 for timestamp_attempt in range(1, timestamp_max_retries + 1):
-                    log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-                    timestamp_result = subprocess.run([
-                        "codesign", "--force", "--verify", "--verbose",
-                        "--sign", codesign_identity,
-                        "--timestamp",
-                        str(dmg_path)
-                    ], capture_output=True, text=True, check=False)
-                    
-                    if timestamp_result.returncode == 0:
-                        log_info("✓ DMG 代码签名完成（已使用时间戳）")
-                        timestamp_success = True
-                        break
-                    else:
-                        error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
-                        if "timestamp service is not available" in error_msg or "network" in error_msg.lower() or "timeout" in error_msg.lower():
-                            if timestamp_attempt < timestamp_max_retries:
-                                log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
-                                time.sleep(timestamp_retry_delay)
-                                timestamp_retry_delay *= 2
-                            else:
-                                log_warn(f"  ⚠ 时间戳服务不可用（已重试 {timestamp_max_retries} 次），将回退到不使用时间戳")
+                    log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}，超时 {timestamp_timeout} 秒）...")
+                    try:
+                        timestamp_result = subprocess.run([
+                            "codesign", "--force", "--verify", "--verbose",
+                            "--sign", codesign_identity,
+                            "--timestamp",
+                            str(dmg_path)
+                        ], capture_output=True, text=True, check=False, timeout=timestamp_timeout)
+                        
+                        if timestamp_result.returncode == 0:
+                            log_info("✓ DMG 代码签名完成（已使用时间戳）")
+                            timestamp_success = True
+                            break
                         else:
-                            log_error(f"DMG 签名失败: {error_msg[:200]}")
-                            raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
+                            error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                            if "timestamp service is not available" in error_msg or "network" in error_msg.lower() or "timeout" in error_msg.lower():
+                                if timestamp_attempt < timestamp_max_retries:
+                                    log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
+                                    time.sleep(timestamp_retry_delay)
+                                    timestamp_retry_delay *= 2
+                                else:
+                                    log_warn(f"  ⚠ 时间戳服务不可用（已重试 {timestamp_max_retries} 次），将回退到不使用时间戳")
+                            else:
+                                log_error(f"DMG 签名失败: {error_msg[:200]}")
+                                raise subprocess.CalledProcessError(timestamp_result.returncode, timestamp_result.args)
+                    except subprocess.TimeoutExpired:
+                        log_warn(f"  ⚠ DMG 签名超时（{timestamp_timeout} 秒），可能是时间戳服务响应慢")
+                        # 创建一个假的 result 对象以便后续错误处理
+                        class FakeResult:
+                            returncode = 1
+                            stderr = "签名超时：时间戳服务响应超时"
+                            stdout = ""
+                        timestamp_result = FakeResult()
+                        if timestamp_attempt < timestamp_max_retries:
+                            log_warn(f"  ⚠ {timestamp_retry_delay} 秒后重试...")
+                            time.sleep(timestamp_retry_delay)
+                            timestamp_retry_delay *= 2
+                        else:
+                            log_warn(f"  ⚠ DMG 签名超时（已重试 {timestamp_max_retries} 次），将回退到不使用时间戳")
                 
                 if not timestamp_success:
                     log_warn("⚠ 时间戳服务不可用，尝试不使用时间戳签名...")
@@ -2241,34 +2258,51 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                 
                 timestamp_max_retries = 3
                 timestamp_retry_delay = 5
+                timestamp_timeout = 180  # 180 秒超时
                 timestamp_success = False
+                timestamp_result = None
                 
                 for timestamp_attempt in range(1, timestamp_max_retries + 1):
-                    log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-                    timestamp_result = subprocess.run([
-                        "productsign",
-                        "--sign", installer_identity,
-                        "--timestamp",
-                        str(pkg_path),
-                        str(pkg_signed)
-                    ], capture_output=True, text=True, check=False)
-                    
-                    if timestamp_result.returncode == 0:
-                        log_info("  ✓ PKG 签名完成（已使用时间戳）")
-                        timestamp_success = True
-                        break
-                    else:
-                        error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
-                        if "timestamp service is not available" in error_msg or "network" in error_msg.lower():
-                            if timestamp_attempt < timestamp_max_retries:
-                                log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
-                                time.sleep(timestamp_retry_delay)
-                                timestamp_retry_delay *= 2
-                            else:
-                                log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                    log_warn(f"  尝试使用时间戳签名（{timestamp_attempt}/{timestamp_max_retries}，超时 {timestamp_timeout} 秒）...")
+                    try:
+                        timestamp_result = subprocess.run([
+                            "productsign",
+                            "--sign", installer_identity,
+                            "--timestamp",
+                            str(pkg_path),
+                            str(pkg_signed)
+                        ], capture_output=True, text=True, check=False, timeout=timestamp_timeout)
+                        
+                        if timestamp_result.returncode == 0:
+                            log_info("  ✓ PKG 签名完成（已使用时间戳）")
+                            timestamp_success = True
+                            break
                         else:
-                            log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
-                            raise Exception(f"PKG 签名失败: {error_msg[:200]}")
+                            error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                            if "timestamp service is not available" in error_msg or "network" in error_msg.lower():
+                                if timestamp_attempt < timestamp_max_retries:
+                                    log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
+                                    time.sleep(timestamp_retry_delay)
+                                    timestamp_retry_delay *= 2
+                                else:
+                                    log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
+                            else:
+                                log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
+                                raise Exception(f"PKG 签名失败: {error_msg[:200]}")
+                    except subprocess.TimeoutExpired:
+                        log_warn(f"  ⚠ PKG 签名超时（{timestamp_timeout} 秒），可能是时间戳服务响应慢")
+                        # 创建一个假的 result 对象以便后续错误处理
+                        class FakeResult:
+                            returncode = 1
+                            stderr = "签名超时：时间戳服务响应超时"
+                            stdout = ""
+                        timestamp_result = FakeResult()
+                        if timestamp_attempt < timestamp_max_retries:
+                            log_warn(f"  ⚠ {timestamp_retry_delay} 秒后重试...")
+                            time.sleep(timestamp_retry_delay)
+                            timestamp_retry_delay *= 2
+                        else:
+                            log_error(f"  ✗ PKG 签名超时（已重试 {timestamp_max_retries} 次）")
                 
                 if not timestamp_success:
                     error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
