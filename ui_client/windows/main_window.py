@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
         self.DATA_TREND_PAGE_INDEX = None
         self.data_trend_url: Optional[str] = None
         self._data_trend_last_loaded_url: Optional[str] = None
+        self._last_help_text: Optional[str] = None  # 保存上次的 help_text，用于比较
         self.DEFAULT_DATA_TREND_TEXT = "数据趋势"
 
         root = QWidget()
@@ -518,6 +519,8 @@ class MainWindow(QMainWindow):
                 self.refresh_current_page_after_login()
                 # 启动轮询服务
                 self._start_polling_service()
+                # 登录成功后隔1秒打开隔空投送并自动隐藏（与启动时逻辑对齐）
+                QTimer.singleShot(1000, self._open_airdrop_after_login)
             
             def _on_login_error(error_msg: str):
                 self.hide_loading()
@@ -766,8 +769,8 @@ class MainWindow(QMainWindow):
             tray_menu.addSeparator()
             
             # 加载隔空投送图标并转换为黑色
-            app_dir = Path(__file__).parent.parent
-            airdrop_icon_path = app_dir / "resources" / "airdrop.png"
+            from utils.resource_path import get_resource_path
+            airdrop_icon_path = get_resource_path("resources/airdrop.png")
             airdrop_icon = None
             if airdrop_icon_path.exists():
                 pixmap = QPixmap(str(airdrop_icon_path))
@@ -800,8 +803,8 @@ class MainWindow(QMainWindow):
             tray_menu.addAction(show_action)
             
             # 加载隔空投送图标并转换为黑色
-            app_dir = Path(__file__).parent.parent
-            airdrop_icon_path = app_dir / "resources" / "airdrop.png"
+            from utils.resource_path import get_resource_path
+            airdrop_icon_path = get_resource_path("resources/airdrop.png")
             airdrop_icon = None
             if airdrop_icon_path.exists():
                 pixmap = QPixmap(str(airdrop_icon_path))
@@ -864,13 +867,13 @@ class MainWindow(QMainWindow):
             # 0 = NSApplicationActivationPolicyRegular，恢复 Dock 图标
             app.setActivationPolicy_(0)
             # 尝试重新设置应用图标（避免变成默认白图标）
-            app_dir = Path(__file__).parent.parent
+            from utils.resource_path import get_resource_path
             candidates = [
-                app_dir / "resources" / "app_icon.icns",
-                app_dir / "resources" / "app_icon.png",
-                app_dir / "resources" / "app_icon_512x512.png",
-                app_dir / "resources" / "app_icon_256x256.png",
-                app_dir / "resources" / "airdrop.png",
+                get_resource_path("resources/app_icon.icns"),
+                get_resource_path("resources/app_icon.png"),
+                get_resource_path("resources/app_icon_512x512.png"),
+                get_resource_path("resources/app_icon_256x256.png"),
+                get_resource_path("resources/airdrop.png"),
             ]
             for icon_path in candidates:
                 if icon_path.exists():
@@ -914,12 +917,36 @@ class MainWindow(QMainWindow):
             ConfigManager.save(cfg)
         except Exception:
             pass
+    
+    def _open_airdrop_after_login(self):
+        """
+        登录成功后打开隔空投送窗口，1秒后自动隐藏为侧边图标。
+        与启动时的逻辑对齐。
+        """
+        try:
+            self._show_airdrop()
+        except Exception:
+            return
+
+        # 1 秒后自动隐藏到侧边
+        def hide_later():
+            if self._airdrop_window and hasattr(self._airdrop_window, "_animate_to_icon"):
+                try:
+                    self._airdrop_window._animate_to_icon()
+                except Exception:
+                    pass
+        QTimer.singleShot(1000, hide_later)
 
     def _startup_airdrop_with_autohide(self):
         """
         启动时展示隔空投送窗口，1秒后自动隐藏为侧边图标。
         首次启动会发系统通知提示使用方式。
+        只在已登录情况下自动打开（未登录时不打开）。
         """
+        # 检查是否已登录，未登录时不打开
+        if not self._ensure_logged_in():
+            return
+        
         try:
             self._show_airdrop()
         except Exception:
@@ -994,7 +1021,13 @@ class MainWindow(QMainWindow):
     # eventFilter no longer needed
     
     def _show_airdrop(self):
-        """显示隔空投送窗口（从系统托盘菜单调用）"""
+        """显示隔空投送窗口（从系统托盘菜单、快捷键等调用）"""
+        # 检查是否已登录，未登录时提示
+        if not self._ensure_logged_in():
+            from widgets.toast import Toast
+            Toast.show_message(self, "此功能请先登录")
+            return
+        
         system = platform.system()
         
         # Windows/Linux 调试信息
@@ -1021,6 +1054,12 @@ class MainWindow(QMainWindow):
     
     def _show_airdrop_window(self):
         """显示隔空投送窗口（内部方法）"""
+        # 检查是否已登录，未登录时提示
+        if not self._ensure_logged_in():
+            from widgets.toast import Toast
+            Toast.show_message(self, "此功能请先登录")
+            return
+        
         import sys
         import platform
         system = platform.system()
@@ -1835,13 +1874,20 @@ class MainWindow(QMainWindow):
         help_text = health_data.get("help_text")
         # 只有在 help_text 存在、是字符串、且非空时才显示
         # 处理三种情况：不存在、null、空字符串
+        help_text_processed = None
         if help_text and isinstance(help_text, str) and help_text.strip():
-            # 更新帮助中心标签的文字并显示
-            self.help_label.setText(help_text.strip())
-            self.help_label.setVisible(True)
-        else:
-            # 如果没有 help_text、为 null、或为空字符串，隐藏标签
-            self.help_label.setVisible(False)
+            help_text_processed = help_text.strip()
+        
+        # 只有当 help_text 发生变化时才更新
+        if help_text_processed != self._last_help_text:
+            self._last_help_text = help_text_processed
+            if help_text_processed:
+                # 更新帮助中心标签的文字并显示
+                self.help_label.setText(help_text_processed)
+                self.help_label.setVisible(True)
+            else:
+                # 如果没有 help_text、为 null、或为空字符串，隐藏标签
+                self.help_label.setVisible(False)
 
     def _ensure_data_trend_hidden_by_default(self):
         """默认隐藏图文趋势入口，等待接口返回控制显示与文案"""
@@ -1879,11 +1925,21 @@ class MainWindow(QMainWindow):
                 url = candidate
 
         if url:
+            # 只有当 URL 发生变化时才更新和加载
+            url_changed = (self.data_trend_url != url)
             self.data_trend_url = url
-            self._data_trend_last_loaded_url = None  # 触发重新加载
             self.data_trend_item.setHidden(False)
             if hasattr(self, "_adjust_nav_height"):
                 self._adjust_nav_height()
+
+            # 如果 URL 没有变化，且已经加载过，则不重新加载（避免刷新）
+            if not url_changed and self._data_trend_last_loaded_url == url:
+                # URL 没有变化，不需要重新加载
+                return
+            
+            # 如果 URL 变化了，重置已加载标记，这样切换到页面时会加载新 URL
+            if url_changed:
+                self._data_trend_last_loaded_url = None
 
             # 如果当前就在该页面或尚未加载过，则立即加载
             should_load_now = (

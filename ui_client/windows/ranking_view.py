@@ -182,24 +182,8 @@ class RankingView(QWidget):
         month_label.setStyleSheet("background-color: transparent;")
         self.month_combo = QComboBox()
         self.month_combo.setMinimumWidth(150)
-        # 生成从 2025-11 到 2027-11 的所有月份选项
-        months = []
-        for year in range(2025, 2028):  # 2025, 2026, 2027
-            start_month = 11 if year == 2025 else 1
-            end_month = 11 if year == 2027 else 12
-            for month in range(start_month, end_month + 1):
-                months.append(f"{year}-{month:02d}")
-        self.month_combo.addItems(months)
-        # 设置当前月份为默认选中
-        from datetime import date as date_class
-        today = date_class.today()
-        current_month_str = f"{today.year}-{today.month:02d}"
-        if current_month_str in months:
-            index = months.index(current_month_str)
-            self.month_combo.setCurrentIndex(index)
-        else:
-            # 如果当前月份不在范围内，选择最后一个
-            self.month_combo.setCurrentIndex(len(months) - 1)
+        # 填充月份下拉框（从2025-11到当前月份，对齐管理端的逻辑）
+        self._populate_month_combo()
         # 应用主题适配（确保倒三角图标正确显示并支持动态主题切换）
         apply_theme_to_combo_box(self.month_combo)
         
@@ -321,21 +305,78 @@ class RankingView(QWidget):
         # 刷新时，不传日期，让后端返回上一个工作日的数据
         self._load_ranking(date_str=None)
 
+    def _populate_month_combo(self):
+        """填充月份下拉框（从2025-11到当前月份，对齐管理端的逻辑）"""
+        self.month_combo.clear()
+        
+        # 从2025年11月开始
+        start_year = 2025
+        start_month = 11
+        
+        # 当前月份
+        today = date.today()
+        current_year = today.year
+        current_month = today.month
+        
+        # 生成月份列表
+        year = start_year
+        month = start_month
+        while year < current_year or (year == current_year and month <= current_month):
+            month_str = f"{year}-{month:02d}"
+            display_str = f"{year}年{month:02d}月"
+            self.month_combo.addItem(display_str, month_str)
+            
+            # 移动到下一个月
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+        
+        # 默认选中当前月份（最后一个）
+        if self.month_combo.count() > 0:
+            self.month_combo.setCurrentIndex(self.month_combo.count() - 1)
+    
     def _on_month_changed(self, index: int):
-        """月份下拉框改变时重新加载月排名（和历史评分页面一样的实现方式）"""
+        """月份下拉框改变时重新加载月排名（对齐管理端的逻辑）"""
         # 如果正在初始化，不触发加载
         if self._is_initializing:
             return
-        # 用户手动改变月份时，使用下拉框的值
-        month_text = self.month_combo.itemText(index)
-        month_str = f"{month_text}-01"
+        # 用户手动改变月份时，使用下拉框的 itemData（YYYY-MM格式）
+        month_str_data = self.month_combo.itemData(index)
+        if month_str_data:
+            # 拼接 "-01" 转换为 YYYY-MM-DD 格式
+            month_str = f"{month_str_data}-01"
+        else:
+            # 如果没有 itemData，使用 itemText 解析
+            month_text = self.month_combo.itemText(index)
+            # 从 "YYYY年MM月" 格式解析
+            try:
+                year_str, month_str_part = month_text.replace("年", "-").replace("月", "").split("-")
+                month_str = f"{year_str}-{month_str_part}-01"
+            except Exception:
+                # 如果解析失败，使用当前月份
+                today = date.today()
+                month_str = f"{today.year}-{today.month:02d}-01"
         self._load_monthly_ranking(month_str=month_str)
 
     def _on_monthly_refresh_clicked(self):
         """刷新按钮点击事件（月排名）"""
         # 刷新时，使用当前选择的月份
-        month_text = self.month_combo.currentText()
-        month_str = f"{month_text}-01"
+        current_index = self.month_combo.currentIndex()
+        month_str_data = self.month_combo.itemData(current_index)
+        if month_str_data:
+            # 拼接 "-01" 转换为 YYYY-MM-DD 格式
+            month_str = f"{month_str_data}-01"
+        else:
+            # 如果没有 itemData，使用 itemText 解析
+            month_text = self.month_combo.currentText()
+            try:
+                year_str, month_str_part = month_text.replace("年", "-").replace("月", "").split("-")
+                month_str = f"{year_str}-{month_str_part}-01"
+            except Exception:
+                # 如果解析失败，使用当前月份
+                today = date.today()
+                month_str = f"{today.year}-{today.month:02d}-01"
         self._load_monthly_ranking(month_str=month_str)
 
     def _load_ranking(self, date_str: Optional[str] = None):
@@ -428,11 +469,17 @@ class RankingView(QWidget):
             locked = data.get("locked", False)
             if month_str:
                 try:
+                    # 解析月份字符串（可能是 YYYY-MM-DD 或 YYYY-MM 格式）
                     d = date.fromisoformat(month_str)
-                    month_text = f"{d.year}-{d.month:02d}"
+                    month_key = f"{d.year}-{d.month:02d}"  # YYYY-MM 格式
                     # 使用 blockSignals 临时阻止信号，避免触发加载
                     self.month_combo.blockSignals(True)
-                    index = self.month_combo.findText(month_text)
+                    # 通过 itemData 查找匹配的月份
+                    index = -1
+                    for i in range(self.month_combo.count()):
+                        if self.month_combo.itemData(i) == month_key:
+                            index = i
+                            break
                     if index >= 0:
                         self.month_combo.setCurrentIndex(index)
                     self.month_combo.blockSignals(False)
@@ -877,8 +924,21 @@ class RankingView(QWidget):
     
     def _get_current_month_str(self) -> str:
         """获取当前选中的月份字符串（YYYY-MM-DD格式）"""
-        month_text = self.month_combo.currentText()
-        return f"{month_text}-01"
+        current_index = self.month_combo.currentIndex()
+        month_str_data = self.month_combo.itemData(current_index)
+        if month_str_data:
+            # 拼接 "-01" 转换为 YYYY-MM-DD 格式
+            return f"{month_str_data}-01"
+        else:
+            # 如果没有 itemData，使用 itemText 解析
+            month_text = self.month_combo.currentText()
+            try:
+                year_str, month_str_part = month_text.replace("年", "-").replace("月", "").split("-")
+                return f"{year_str}-{month_str_part}-01"
+            except Exception:
+                # 如果解析失败，使用当前月份
+                today = date.today()
+                return f"{today.year}-{today.month:02d}-01"
     
     def _show_monthly_detail(self, month_str: str):
         """显示月排名明细对话框（先弹窗再请求接口）"""

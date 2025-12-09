@@ -1,146 +1,916 @@
-name: Build Clients And Sign (macOS)
+name: Build Clients
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: "GitHub Release 标签，例如 v1.1.0"
-        required: true
-        type: string
       client_type:
-        description: "客户端类型"
+        description: '客户端类型'
         required: true
         type: choice
-        options: [employee, admin, both]
+        options:
+          - employee
+          - admin
+          - both
         default: both
-      download_url_arm64:
-        description: "可选，arm64 .app ZIP 下载地址（不填则从 Release 自动获取）"
-        required: false
-        type: string
-      download_url_intel:
-        description: "可选，intel .app ZIP 下载地址（不填则从 Release 自动获取）"
-        required: false
-        type: string
+      platforms:
+        description: '打包平台'
+        required: true
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
+          - linux
+        default: all
 
 jobs:
-  sign-macos:
-    name: Sign & Notarize (${% raw %}{{ matrix.arch }}{% endraw %})
-    runs-on: ${% raw %}{{ matrix.runner }}{% endraw %}
-    timeout-minutes: 120
+  build-macos-arm64:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-14  # macOS 14 (Sonoma) 支持最低 10.13
+    timeout-minutes: 180  # 3小时超时
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''))
     strategy:
       matrix:
-        include:
-          - arch: arm64
-            runner: macos-14
-          - arch: intel
-            runner: macos-13
-    env:
-      CODESIGN_IDENTITY: ${% raw %}{{ secrets.MACOS_SIGNING_IDENTITY }}{% endraw %}
-      APPLE_ID: ${% raw %}{{ secrets.APPLE_ID }}{% endraw %}
-      TEAM_ID: ${% raw %}{{ secrets.APPLE_TEAM_ID }}{% endraw %}
-      NOTARY_PASSWORD: ${% raw %}{{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}{% endraw %}
-      MACOS_CERT_P12_BASE64: ${% raw %}{{ secrets.MACOS_CERT_P12_BASE64 }}{% endraw %}
-      MACOS_CERT_P12_PASSWORD: ${% raw %}{{ secrets.MACOS_CERT_P12_PASSWORD }}{% endraw %}
-      KEYCHAIN_PASSWORD: temp-keychain-pass
-      GH_API_KEY: ${% raw %}{{ secrets.GH_PAT_FOR_SIGNING || github.token }}{% endraw %}
-      PYTHONUNBUFFERED: "1"
-
+        client: [employee, admin]
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Show inputs
-        shell: bash
+      - name: Install pyenv
         run: |
-          set -euxo pipefail
-          echo "release_tag=${{ inputs.release_tag }}"
-          echo "client_type=${{ inputs.client_type }}"
-          echo "arch=${{ matrix.arch }}"
-          echo "download_url_arm64=${{ inputs.download_url_arm64 }}"
-          echo "download_url_intel=${{ inputs.download_url_intel }}"
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        shell: bash
+          echo "安装 pyenv..."
+          # 安装 pyenv 依赖
+          brew install openssl readline sqlite3 xz zlib tcl-tk || true
+          # 安装 pyenv
+          curl https://pyenv.run | bash || {
+            # 如果 curl 失败，尝试使用 git clone
+            git clone https://github.com/pyenv/pyenv.git ~/.pyenv || true
+          }
+          # 设置 pyenv 环境变量（用于后续步骤）
+          export PYENV_ROOT="$HOME/.pyenv"
+          export PATH="$PYENV_ROOT/bin:$PATH"
+          echo "PYENV_ROOT=$PYENV_ROOT" >> $GITHUB_ENV
+          echo "PATH=$PYENV_ROOT/bin:$PATH" >> $GITHUB_ENV
+          # 验证 pyenv 安装
+          "$PYENV_ROOT/bin/pyenv" --version || echo "警告: pyenv 安装可能失败"
+      
+      - name: Install Python 3.10.4 with pyenv
         run: |
-          set -euxo pipefail
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Prepare signing keychain
-        shell: bash
-        run: |
-          set -euo pipefail
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
-          security set-keychain-settings -lut 21600 build.keychain-db
-          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > /tmp/cert.p12
-          security import /tmp/cert.p12 -k build.keychain-db -P "$MACOS_CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/security
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
-          security list-keychains -d user -s build.keychain-db login.keychain-db
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain-db
-          # 确保有 Apple WWDR 证书（一般系统自带）
-          security find-certificate -c "Apple Worldwide Developer Relations Certification Authority" /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null || true
-
-      - name: Configure notarytool profile
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcrun notarytool store-credentials "AC_CRED" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$TEAM_ID" \
-            --password "$NOTARY_PASSWORD" \
-            --keychain build.keychain-db
-
-      - name: Sign & notarize .app
-        env:
-          REPO_NAME: ${% raw %}{{ github.repository }}{% endraw %}
-          INPUT_CLIENT: ${% raw %}{{ inputs.client_type }}{% endraw %}
-          INPUT_TAG: ${% raw %}{{ inputs.release_tag }}{% endraw %}
-          INPUT_URL_ARM64: ${% raw %}{{ inputs.download_url_arm64 }}{% endraw %}
-          INPUT_URL_INTEL: ${% raw %}{{ inputs.download_url_intel }}{% endraw %}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          REPO_OWNER="${REPO_NAME%%/*}"
-          REPO_SIMPLE="${REPO_NAME##*/}"
-
-          if [ "$INPUT_CLIENT" = "both" ]; then
-            CLIENTS=("employee" "admin")
-          else
-            CLIENTS=("$INPUT_CLIENT")
-          fi
-
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            DL_URL="$INPUT_URL_ARM64"
-          else
-            DL_URL="$INPUT_URL_INTEL"
-          fi
-
-          for CLIENT in "${CLIENTS[@]}"; do
-            echo "=== Signing ${CLIENT} for ${{ matrix.arch }} ==="
-            EXTRA_ARGS=()
-            if [ -n "$DL_URL" ]; then
-              EXTRA_ARGS+=(--download-url "$DL_URL" --arch "${{ matrix.arch }}")
+          export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+          export PATH="$PYENV_ROOT/bin:$PATH"
+          eval "$(pyenv init - bash)"
+          echo "使用 pyenv 安装 Python 3.10.4..."
+          # 设置部署目标为 10.13，确保向后兼容性
+          # 问题分析：
+          # - 之前没有设置 MACOSX_DEPLOYMENT_TARGET，Python 使用了默认值（14.7）
+          # - 导致 Python 库链接了 macOS 13+ 的符号（如 _mkfifoat）
+          # - _mkfifoat 符号在 macOS 13.0+ 才可用，在 macOS 12.7.6 上会找不到
+          # 解决方案：
+          # - 在编译 Python 时设置 MACOSX_DEPLOYMENT_TARGET=10.13
+          # - 编译器会检查符号可用性，避免使用 macOS 13+ 的符号
+          # - 这样既能支持 macOS 10.13+，又能确保在 macOS 12.7.6 上运行
+          export MACOSX_DEPLOYMENT_TARGET=10.13
+          export CFLAGS="-mmacosx-version-min=10.13"
+          export LDFLAGS="-mmacosx-version-min=10.13"
+          export CPPFLAGS="-mmacosx-version-min=10.13"
+          # 确保编译器遵守部署目标，避免使用新版本符号
+          export CC="clang -mmacosx-version-min=10.13"
+          export CXX="clang++ -mmacosx-version-min=10.13"
+          echo "设置部署目标: MACOSX_DEPLOYMENT_TARGET=10.13 (支持 macOS 10.13+，避免使用 macOS 13+ 符号)"
+          # 安装 Python 3.10.4（这可能需要几分钟）
+          pyenv install -s 3.10.4 || {
+            echo "警告: Python 3.10.4 安装失败，尝试继续..."
+            # 如果安装失败，尝试使用系统 Python
+            if [ -f "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" ]; then
+              echo "使用系统 Python 3.10"
+              echo "PYTHON_CMD=/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" >> $GITHUB_ENV
             else
-              EXTRA_ARGS+=(--arch "${{ matrix.arch }}")
+              echo "错误: 无法安装或找到 Python 3.10.4"
+              exit 1
             fi
-            python scripts/sign_and_notarize_from_github.py \
-              "$CLIENT" \
-              "$INPUT_TAG" \
-              "$REPO_OWNER" \
-              "$REPO_SIMPLE" \
-              "$GH_API_KEY" \
-              "${EXTRA_ARGS[@]}"
-            echo "=== Done ${CLIENT} for ${{ matrix.arch }} ==="
-          done
+          }
+          # 设置全局 Python 版本为 3.10.4
+          pyenv global 3.10.4 || echo "警告: 无法设置全局 Python 版本"
+          # 验证 Python 版本
+          pyenv version
+          python3 --version
+          # 将 Python 路径添加到环境变量
+          PYTHON_CMD=$(pyenv which python3)
+          echo "Python 路径: $PYTHON_CMD"
+          echo "PYTHON_CMD=$PYTHON_CMD" >> $GITHUB_ENV
+      
+      - name: Install dependencies
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+            echo "使用 pyenv Python: $PYTHON"
+            # pyenv Python 不需要 --break-system-packages 选项
+            "$PYTHON" -m pip install --upgrade pip
+            "$PYTHON" -m pip install -r requirements.txt
+          else
+            # 回退到系统 Python（需要 --break-system-packages）
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            python3 -m pip install --upgrade pip --break-system-packages
+            pip3 install -r requirements.txt --break-system-packages
+          fi
+      
+      - name: Verify PyInstaller installation
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+          else
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            PYTHON="python3"
+          fi
+          echo "验证 PyInstaller 安装..."
+          "$PYTHON" -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          "$PYTHON" -m pip list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+      
+      - name: Check if should build
+        id: check_build
+        run: |
+          if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event_name }}" == "push" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Upload signed apps
+      - name: Print environment diagnostics
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+          else
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            PYTHON="python3"
+          fi
+          echo "========================================"
+          echo "GitHub Actions 环境诊断信息 (Apple Silicon)"
+          echo "========================================"
+          echo "Python 版本:"
+          "$PYTHON" --version
+          echo "Python 路径:"
+          which "$PYTHON" || echo "$PYTHON"
+          echo "PyInstaller 版本:"
+          "$PYTHON" -m PyInstaller --version || echo "未安装"
+          echo "操作系统信息:"
+          sw_vers
+          echo "系统版本:"
+          uname -a
+          echo "文件系统信息:"
+          df -T $(pwd) || df $(pwd)
+          echo "挂载信息:"
+          mount | grep -E "$(df $(pwd) | tail -1 | awk '{print $1}')" || mount | head -5
+          echo "环境变量:"
+          echo "  MACOSX_DEPLOYMENT_TARGET = ${MACOSX_DEPLOYMENT_TARGET:-未设置}"
+          echo "  TMPDIR = ${TMPDIR:-未设置}"
+          echo "  HOME = ${HOME:-未设置}"
+          echo "  PWD = $(pwd)"
+          echo "工作目录路径长度:"
+          echo $(pwd) | wc -c
+          echo "测试符号链接创建:"
+          mkdir -p .symlink_test
+          echo "test" > .symlink_test/test_file.txt
+          if ln -s test_file.txt .symlink_test/test_link 2>&1; then
+            echo "  ✓ 可以创建符号链接"
+            ls -la .symlink_test/
+          else
+            echo "  ✗ 无法创建符号链接"
+          fi
+          rm -rf .symlink_test
+          echo "========================================"
+
+      - name: Build client (Apple Silicon)
+        if: steps.check_build.outputs.should_build == 'true'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
+          CFLAGS: '-mmacosx-version-min=10.13'
+          LDFLAGS: '-mmacosx-version-min=10.13'
+          CPPFLAGS: '-mmacosx-version-min=10.13'
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+          else
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            PYTHON="python3"
+          fi
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          "$PYTHON" ../scripts/build_client.py ${{ matrix.client }} macos
+      
+      - name: Verify deployment target
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 查找打包后的 .app 文件
+          APP_BUNDLE=$(find dist -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "⚠ 未找到 .app 文件，跳过验证"
+            exit 0
+          fi
+          echo "========================================"
+          echo "验证部署目标: $APP_BUNDLE"
+          echo "========================================"
+          # 检查 Python 库的部署目标
+          PYTHON_LIB="$APP_BUNDLE/Contents/Resources/libpython3.10.dylib"
+          if [ -f "$PYTHON_LIB" ]; then
+            echo "检查 Python 库部署目标:"
+            BUILD_VERSION=$(otool -l "$PYTHON_LIB" 2>/dev/null | grep -A 5 "LC_BUILD_VERSION" | grep "minos" || echo "")
+            if [ -n "$BUILD_VERSION" ]; then
+              echo "  $BUILD_VERSION"
+              if echo "$BUILD_VERSION" | grep -q "minos 1[0-1]\."; then
+                echo "  ✓ 部署目标正确（macOS 10.x 或 11.x）"
+              elif echo "$BUILD_VERSION" | grep -q "minos 12\."; then
+                echo "  ✓ 部署目标正确（macOS 12.x）"
+              else
+                echo "  ⚠ 警告: 部署目标可能过高"
+              fi
+            else
+              echo "  ⚠ 未找到构建版本信息"
+            fi
+            echo "检查是否引用 macOS 13+ 符号 (_mkfifoat):"
+            if nm -u "$PYTHON_LIB" 2>/dev/null | grep -q "_mkfifoat"; then
+              echo "  ⚠ 警告: Python 库仍引用 _mkfifoat 符号（macOS 13+）"
+              echo "  这可能导致在 macOS 12.7.6 上运行时出错"
+            else
+              echo "  ✓ Python 库未引用 _mkfifoat 符号"
+            fi
+          else
+            echo "⚠ 未找到 Python 库，跳过验证"
+          fi
+          echo "========================================"
+      
+      - name: Fix executable permissions
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 修复 .app 包中主可执行文件的权限（GitHub Actions 打包的文件可能没有执行权限）
+          find dist -name "*.app" -type d | while read app_bundle; do
+            app_name=$(basename "$app_bundle" .app)
+            executable="$app_bundle/Contents/MacOS/$app_name"
+            if [ -f "$executable" ]; then
+              chmod +x "$executable"
+              echo "✓ 修复权限: $executable"
+            fi
+          done
+      
+      - name: Upload APP artifact
+        if: steps.check_build.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: signed-${% raw %}{{ matrix.arch }}{% endraw %}
-          path: ui_client/dist/from_github/**/*
-          if-no-files-found: warn
+          name: ${{ matrix.client }}-macos-arm64-app
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.app
+          retention-days: 30
+
+  build-macos-intel:
+    name: Build macOS (Intel)
+    runs-on: macos-13  # macOS 13 (Ventura) Intel 架构 runner
+    timeout-minutes: 180  # 3小时超时
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos' || github.event.inputs.platforms == ''))
+    strategy:
+      matrix:
+        client: [employee, admin]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pyenv
+        run: |
+          echo "安装 pyenv..."
+          # 安装 pyenv 依赖
+          brew install openssl readline sqlite3 xz zlib tcl-tk || true
+          # 安装 pyenv
+          curl https://pyenv.run | bash || {
+            # 如果 curl 失败，尝试使用 git clone
+            git clone https://github.com/pyenv/pyenv.git ~/.pyenv || true
+          }
+          # 设置 pyenv 环境变量（用于后续步骤）
+          export PYENV_ROOT="$HOME/.pyenv"
+          export PATH="$PYENV_ROOT/bin:$PATH"
+          echo "PYENV_ROOT=$PYENV_ROOT" >> $GITHUB_ENV
+          echo "PATH=$PYENV_ROOT/bin:$PATH" >> $GITHUB_ENV
+          # 验证 pyenv 安装
+          "$PYENV_ROOT/bin/pyenv" --version || echo "警告: pyenv 安装可能失败"
+      
+      - name: Install Python 3.10.4 with pyenv
+        run: |
+          export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+          export PATH="$PYENV_ROOT/bin:$PATH"
+          eval "$(pyenv init - bash)"
+          echo "使用 pyenv 安装 Python 3.10.4..."
+          # 设置部署目标为 10.13，确保向后兼容性
+          # 问题分析：
+          # - 之前没有设置 MACOSX_DEPLOYMENT_TARGET，Python 使用了默认值（14.7）
+          # - 导致 Python 库链接了 macOS 13+ 的符号（如 _mkfifoat）
+          # - _mkfifoat 符号在 macOS 13.0+ 才可用，在 macOS 12.7.6 上会找不到
+          # 解决方案：
+          # - 在编译 Python 时设置 MACOSX_DEPLOYMENT_TARGET=10.13
+          # - 编译器会检查符号可用性，避免使用 macOS 13+ 的符号
+          # - 这样既能支持 macOS 10.13+，又能确保在 macOS 12.7.6 上运行
+          export MACOSX_DEPLOYMENT_TARGET=10.13
+          export CFLAGS="-mmacosx-version-min=10.13"
+          export LDFLAGS="-mmacosx-version-min=10.13"
+          export CPPFLAGS="-mmacosx-version-min=10.13"
+          # 确保编译器遵守部署目标，避免使用新版本符号
+          export CC="clang -mmacosx-version-min=10.13"
+          export CXX="clang++ -mmacosx-version-min=10.13"
+          echo "设置部署目标: MACOSX_DEPLOYMENT_TARGET=10.13 (支持 macOS 10.13+，避免使用 macOS 13+ 符号)"
+          # 安装 Python 3.10.4（这可能需要几分钟）
+          pyenv install -s 3.10.4 || {
+            echo "警告: Python 3.10.4 安装失败，尝试继续..."
+            # 如果安装失败，尝试使用系统 Python
+            if [ -f "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" ]; then
+              echo "使用系统 Python 3.10"
+              echo "PYTHON_CMD=/Library/Frameworks/Python.framework/Versions/3.10/bin/python3" >> $GITHUB_ENV
+            else
+              echo "错误: 无法安装或找到 Python 3.10.4"
+              exit 1
+            fi
+          }
+          # 设置全局 Python 版本为 3.10.4
+          pyenv global 3.10.4 || echo "警告: 无法设置全局 Python 版本"
+          # 验证 Python 版本
+          pyenv version
+          python3 --version
+          # 将 Python 路径添加到环境变量
+          PYTHON_CMD=$(pyenv which python3)
+          echo "Python 路径: $PYTHON_CMD"
+          echo "PYTHON_CMD=$PYTHON_CMD" >> $GITHUB_ENV
+      
+      - name: Install dependencies
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+            echo "使用 pyenv Python: $PYTHON"
+            # pyenv Python 不需要 --break-system-packages 选项
+            "$PYTHON" -m pip install --upgrade pip
+            "$PYTHON" -m pip install -r requirements.txt
+          else
+            # 回退到系统 Python（需要 --break-system-packages）
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            python3 -m pip install --upgrade pip --break-system-packages
+            pip3 install -r requirements.txt --break-system-packages
+          fi
+      
+      - name: Verify PyInstaller installation
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+          else
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            PYTHON="python3"
+          fi
+          echo "验证 PyInstaller 安装..."
+          "$PYTHON" -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          "$PYTHON" -m pip list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+      
+      - name: Check if should build
+        id: check_build
+        run: |
+          if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event_name }}" == "push" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Print environment diagnostics
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+          else
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            PYTHON="python3"
+          fi
+          echo "========================================"
+          echo "GitHub Actions 环境诊断信息 (Intel)"
+          echo "========================================"
+          echo "Python 版本:"
+          "$PYTHON" --version
+          echo "Python 路径:"
+          which "$PYTHON" || echo "$PYTHON"
+          echo "PyInstaller 版本:"
+          "$PYTHON" -m PyInstaller --version || echo "未安装"
+          echo "操作系统信息:"
+          sw_vers
+          echo "系统版本:"
+          uname -a
+          echo "文件系统信息:"
+          df -T $(pwd) || df $(pwd)
+          echo "挂载信息:"
+          mount | grep -E "$(df $(pwd) | tail -1 | awk '{print $1}')" || mount | head -5
+          echo "环境变量:"
+          echo "  MACOSX_DEPLOYMENT_TARGET = ${MACOSX_DEPLOYMENT_TARGET:-未设置}"
+          echo "  TMPDIR = ${TMPDIR:-未设置}"
+          echo "  HOME = ${HOME:-未设置}"
+          echo "  PWD = $(pwd)"
+          echo "工作目录路径长度:"
+          echo $(pwd) | wc -c
+          echo "测试符号链接创建:"
+          mkdir -p .symlink_test
+          echo "test" > .symlink_test/test_file.txt
+          if ln -s test_file.txt .symlink_test/test_link 2>&1; then
+            echo "  ✓ 可以创建符号链接"
+            ls -la .symlink_test/
+          else
+            echo "  ✗ 无法创建符号链接"
+          fi
+          rm -rf .symlink_test
+          echo "========================================"
+      
+      - name: Build client (Intel)
+        if: steps.check_build.outputs.should_build == 'true'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
+          CFLAGS: '-mmacosx-version-min=10.13'
+          LDFLAGS: '-mmacosx-version-min=10.13'
+          CPPFLAGS: '-mmacosx-version-min=10.13'
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          SKIP_SIGNING: 'true'  # 跳过签名和公证，仅打包 .app
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
+        run: |
+          # 使用 pyenv 的 Python（如果已安装）
+          if [ -n "${{ env.PYTHON_CMD }}" ] && [ -f "${{ env.PYTHON_CMD }}" ]; then
+            PYTHON="${{ env.PYTHON_CMD }}"
+          else
+            export PYENV_ROOT="${{ env.PYENV_ROOT || '$HOME/.pyenv' }}"
+            export PATH="$PYENV_ROOT/bin:$PATH"
+            eval "$(pyenv init - bash)" || true
+            PYTHON="python3"
+          fi
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          "$PYTHON" ../scripts/build_client.py ${{ matrix.client }} macos
+      
+      - name: Verify deployment target
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 查找打包后的 .app 文件
+          APP_BUNDLE=$(find dist -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "⚠ 未找到 .app 文件，跳过验证"
+            exit 0
+          fi
+          echo "========================================"
+          echo "验证部署目标: $APP_BUNDLE"
+          echo "========================================"
+          # 检查 Python 库的部署目标
+          PYTHON_LIB="$APP_BUNDLE/Contents/Resources/libpython3.10.dylib"
+          if [ -f "$PYTHON_LIB" ]; then
+            echo "检查 Python 库部署目标:"
+            BUILD_VERSION=$(otool -l "$PYTHON_LIB" 2>/dev/null | grep -A 5 "LC_BUILD_VERSION" | grep "minos" || echo "")
+            if [ -n "$BUILD_VERSION" ]; then
+              echo "  $BUILD_VERSION"
+              if echo "$BUILD_VERSION" | grep -q "minos 1[0-1]\."; then
+                echo "  ✓ 部署目标正确（macOS 10.x 或 11.x）"
+              elif echo "$BUILD_VERSION" | grep -q "minos 12\."; then
+                echo "  ✓ 部署目标正确（macOS 12.x）"
+              else
+                echo "  ⚠ 警告: 部署目标可能过高"
+              fi
+            else
+              echo "  ⚠ 未找到构建版本信息"
+            fi
+            echo "检查是否引用 macOS 13+ 符号 (_mkfifoat):"
+            if nm -u "$PYTHON_LIB" 2>/dev/null | grep -q "_mkfifoat"; then
+              echo "  ⚠ 警告: Python 库仍引用 _mkfifoat 符号（macOS 13+）"
+              echo "  这可能导致在 macOS 12.7.6 上运行时出错"
+            else
+              echo "  ✓ Python 库未引用 _mkfifoat 符号"
+            fi
+          else
+            echo "⚠ 未找到 Python 库，跳过验证"
+          fi
+          echo "========================================"
+      
+      - name: Fix executable permissions
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          # 修复 .app 包中主可执行文件的权限（GitHub Actions 打包的文件可能没有执行权限）
+          find dist -name "*.app" -type d | while read app_bundle; do
+            app_name=$(basename "$app_bundle" .app)
+            executable="$app_bundle/Contents/MacOS/$app_name"
+            if [ -f "$executable" ]; then
+              chmod +x "$executable"
+              echo "✓ 修复权限: $executable"
+            fi
+          done
+      
+      - name: Upload APP artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-macos-intel-app
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.app
+          retention-days: 30
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    timeout-minutes: 120  # 2小时超时
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows' || github.event.inputs.platforms == ''))
+    strategy:
+      matrix:
+        client: [employee, admin]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          architecture: 'x64'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Windows 上通常不需要 --break-system-packages，但为了保险起见，如果遇到错误可以添加
+      
+      - name: Verify PyInstaller installation
+        run: |
+          echo "验证 PyInstaller 安装..."
+          python -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          pip list | findstr /i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+      
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+        continue-on-error: true
+      
+      - name: Install WiX Toolset
+        run: |
+          choco install wixtoolset -y
+        continue-on-error: true
+      
+      - name: Check if should build
+        id: check_build
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Build client (Windows)
+        if: steps.check_build.outputs.should_build == 'true'
+        env:
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          python ../scripts/build_client.py ${{ matrix.client }} windows
+      
+      - name: Upload EXE artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-windows-exe
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/*.exe
+          retention-days: 30
+      
+      - name: Upload MSI artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-windows-msi
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/*.msi
+          retention-days: 30
+          if-no-files-found: ignore
+
+  build-linux-ubuntu:
+    name: Build Linux (Ubuntu/Debian)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120  # 2小时超时
+    if: >
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux' || github.event.inputs.platforms == ''))
+    strategy:
+      matrix:
+        client: [employee, admin]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # 安装 DEB 打包工具
+          sudo apt-get install -y \
+            dpkg-dev \
+            fakeroot \
+            build-essential \
+            libgl1-mesa-glx \
+            libxkbcommon-x11-0 \
+            libxcb-xinerama0 \
+            libxcb-cursor0
+          # 安装 RPM 打包工具（rpmbuild 包含在 rpm 包中）
+          # 在 Ubuntu 上，rpm 包提供了 rpmbuild 工具
+          sudo apt-get install -y rpm || echo "警告: rpm 包安装失败，RPM 打包将不可用"
+          # 验证 rpmbuild 是否可用
+          which rpmbuild || echo "警告: rpmbuild 未找到，RPM 打包将不可用"
+      
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r requirements.txt --break-system-packages
+      
+      - name: Verify PyInstaller installation
+        run: |
+          echo "验证 PyInstaller 安装..."
+          python3 -m PyInstaller --version || echo "警告: PyInstaller 未正确安装"
+          pip3 list | grep -i pyinstaller || echo "警告: 未找到 PyInstaller 包"
+      
+      - name: Check if should build
+        id: check_build
+        run: |
+          if [ "${{ github.event_name }}" == "release" ] || \
+             [ "${{ github.event_name }}" == "push" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "both" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "${{ matrix.client }}" ] || \
+             [ "${{ github.event.inputs.client_type }}" == "" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Build client (Linux)
+        if: steps.check_build.outputs.should_build == 'true'
+        env:
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          python3 ../scripts/build_client.py ${{ matrix.client }} linux
+      
+      - name: Upload DEB artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-linux-deb
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/*.deb
+          retention-days: 30
+          if-no-files-found: ignore
+      
+      - name: Upload RPM artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-linux-rpm
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/*.rpm
+          retention-days: 30
+          if-no-files-found: ignore
+
+  create-release:
+    name: Create Release
+    needs: [build-macos-arm64, build-macos-intel, build-windows, build-linux-ubuntu]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Determine tag name
+        id: tag_name
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            # 从 refs/tags/v1.0.0 提取 v1.0.0
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+            echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Filter release files
+        run: |
+          # 创建 release_files 目录
+          mkdir -p release_files
+          
+          # 复制 .app 目录并打包成 ZIP（macOS 应用包是目录，需要打包）
+          # 只保留主应用，过滤掉 QtWebEngineProcess.app 等辅助应用
+          # 根据 artifact 目录名判断架构（格式：{client}-macos-{arch}-app）
+          find artifacts -type d -name "*.app" | while read app_path; do
+            app_name=$(basename "$app_path")
+            # 过滤掉 QtWebEngineProcess.app 等辅助应用
+            if [[ "$app_name" != "QtWebEngineProcess.app" ]]; then
+              # 从完整路径中提取 artifact 目录名
+              # 路径格式：artifacts/{client}-macos-{arch}-app/.../{app_name}.app
+              arch="unknown"
+              
+              # 方法1: 从 artifact 目录名提取（优先级最高）
+              # 查找路径中的 artifact 目录（包含 -macos- 的目录）
+              # 使用 sed 替代 grep -oE，避免兼容性问题
+              artifact_dir=$(echo "$app_path" | sed -n 's|.*\(artifacts/[^/]*-macos-[^/]*-app\).*|\1|p' | head -n 1)
+              if [[ -n "$artifact_dir" ]]; then
+                # 提取架构部分：{client}-macos-{arch}-app
+                artifact_name=$(basename "$artifact_dir")
+                if echo "$artifact_name" | grep -qE "-macos-arm64-app$"; then
+                  arch="arm64"
+                elif echo "$artifact_name" | grep -qE "-macos-intel-app$"; then
+                  arch="intel"
+                fi
+              fi
+              
+              # 方法2: 如果方法1失败，尝试从路径中查找架构目录
+              if [[ "$arch" == "unknown" ]]; then
+                if echo "$app_path" | grep -qE "/(arm64|m)/"; then
+                  arch="arm64"
+                elif echo "$app_path" | grep -q "/intel/"; then
+                  arch="intel"
+                fi
+              fi
+              
+              # 生成带架构信息的 ZIP 文件名
+              # 如果架构未知，尝试从路径中提取更多信息
+              if [[ "$arch" == "unknown" ]]; then
+                # 尝试从完整路径中提取更多信息
+                if echo "$app_path" | grep -q "employee-macos-arm64-app"; then
+                  arch="arm64"
+                elif echo "$app_path" | grep -q "employee-macos-intel-app"; then
+                  arch="intel"
+                elif echo "$app_path" | grep -q "admin-macos-arm64-app"; then
+                  arch="arm64"
+                elif echo "$app_path" | grep -q "admin-macos-intel-app"; then
+                  arch="intel"
+                fi
+              fi
+              
+              # 生成 ZIP 文件名（确保唯一性）
+              if [[ "$arch" != "unknown" ]]; then
+                zip_name="${app_name}-${arch}.zip"
+              else
+                # 如果架构仍然未知，使用路径中的信息生成唯一文件名
+                # 从路径中提取客户端类型和可能的架构
+                if echo "$app_path" | grep -q "employee"; then
+                  client_suffix="employee"
+                elif echo "$app_path" | grep -q "admin"; then
+                  client_suffix="admin"
+                else
+                  client_suffix="unknown"
+                fi
+                zip_name="${app_name}-${client_suffix}.zip"
+                echo "⚠ 警告: 无法确定架构，使用 ${client_suffix} 作为后缀"
+              fi
+              
+              echo "打包 $app_name ($arch) -> $zip_name..."
+              echo "  路径: $app_path"
+              
+              # 检查是否已存在同名文件（避免覆盖）
+              if [[ -f "release_files/${zip_name}" ]]; then
+                echo "⚠ 警告: ${zip_name} 已存在，生成唯一文件名..."
+                # 从路径中提取更多信息生成唯一文件名
+                if echo "$app_path" | grep -q "employee-macos-arm64-app"; then
+                  zip_name="${app_name}-employee-arm64.zip"
+                elif echo "$app_path" | grep -q "employee-macos-intel-app"; then
+                  zip_name="${app_name}-employee-intel.zip"
+                elif echo "$app_path" | grep -q "admin-macos-arm64-app"; then
+                  zip_name="${app_name}-admin-arm64.zip"
+                elif echo "$app_path" | grep -q "admin-macos-intel-app"; then
+                  zip_name="${app_name}-admin-intel.zip"
+                else
+                  # 使用时间戳确保唯一性
+                  zip_name="${app_name}-$(date +%s).zip"
+                fi
+                echo "  使用唯一文件名: $zip_name"
+              fi
+              
+              # 使用最高压缩级别（-9）和排除不必要的文件
+              zip -r -9 "release_files/${zip_name}" "$app_path" -q \
+                -x "*.DS_Store" \
+                -x "*__pycache__*" \
+                -x "*.pyc" \
+                -x "*.pyo" \
+                -x "*.pyd" \
+                -x ".git/*" \
+                -x ".gitignore" \
+                -x "*.log" \
+                -x "*.tmp" \
+                -x "*.bak"
+              
+              # 检查文件大小（GitHub 限制 2 GB = 2147483648 字节）
+              if command -v stat >/dev/null 2>&1; then
+                # macOS 使用 stat -f%z，Linux 使用 stat -c%s
+                file_size=$(stat -f%z "release_files/${zip_name}" 2>/dev/null || stat -c%s "release_files/${zip_name}" 2>/dev/null || echo "0")
+                file_size_mb=$(echo "scale=2; $file_size / 1048576" | bc 2>/dev/null || awk "BEGIN {printf \"%.2f\", $file_size / 1048576}")
+                
+                # 检查是否超过 2 GB（2147483648 字节）
+                if [ "$file_size" -gt 2147483648 ] 2>/dev/null; then
+                  echo "⚠ 警告: $zip_name 大小 ${file_size_mb} MB (${file_size} 字节)，超过 GitHub 2 GB 限制，将跳过上传"
+                  rm -f "release_files/${zip_name}"
+                else
+                  echo "✓ $zip_name 大小: ${file_size_mb} MB"
+                fi
+              else
+                echo "⚠ 无法检查文件大小，继续上传 $zip_name"
+              fi
+            fi
+          done
+          
+          # 复制安装包文件（.dmg, .pkg, .exe, .msi, .deb, .rpm）
+          find artifacts -type f \( \
+            -name "*.dmg" -o \
+            -name "*.pkg" -o \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.deb" -o \
+            -name "*.rpm" \
+          \) -exec cp {} release_files/ \;
+          
+          # 显示要上传的文件
+          echo ""
+          echo "准备上传的文件："
+          ls -lh release_files/ || echo "未找到安装包文件"
+          
+          # 检查是否有文件超过 2 GB
+          echo ""
+          echo "文件大小检查："
+          for file in release_files/*; do
+            if [ -f "$file" ]; then
+              file_name=$(basename "$file")
+              # macOS 使用 stat -f%z，Linux 使用 stat -c%s
+              file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+              file_size_mb=$(echo "scale=2; $file_size / 1048576" | bc 2>/dev/null || awk "BEGIN {printf \"%.2f\", $file_size / 1048576}")
+              
+              # 检查是否超过 2 GB（2147483648 字节）
+              if [ "$file_size" -gt 2147483648 ] 2>/dev/null; then
+                echo "✗ $file_name: ${file_size_mb} MB (超过 2 GB 限制，将被跳过)"
+                rm -f "$file"
+              else
+                echo "✓ $file_name: ${file_size_mb} MB"
+              fi
+            fi
+          done
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag_name.outputs.tag }}
+          name: Release ${{ steps.tag_name.outputs.tag }}
+          files: release_files/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false  # 如果没有文件也不失败
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

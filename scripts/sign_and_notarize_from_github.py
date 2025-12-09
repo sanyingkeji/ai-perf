@@ -513,7 +513,8 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
         for root, dirs, files in os.walk(frameworks_dir):
             root_path = Path(root)
             # 跳过 .framework 目录（这些目录内的文件由框架签名处理）
-            dirs[:] = [d for d in dirs if not d.endswith('.framework')]
+            # 跳过 resources 目录（无论是符号链接还是真实目录，都应该单独处理，避免误删 Resources/resources 下的文件）
+            dirs[:] = [d for d in dirs if not d.endswith('.framework') and d != 'resources']
             
             for file_name in files:
                 file_path = root_path / file_name

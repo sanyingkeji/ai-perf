@@ -613,6 +613,10 @@ class SettingsView(QWidget):
             # 通知主窗口刷新当前页面（如果当前页面需要登录才能加载数据）
             if hasattr(main_window, "refresh_current_page_after_login"):
                 main_window.refresh_current_page_after_login()
+            
+            # 登录成功后隔1秒打开隔空投送并自动隐藏（与启动时逻辑对齐）
+            if hasattr(main_window, "_open_airdrop_after_login"):
+                QTimer.singleShot(1000, main_window._open_airdrop_after_login)
         
         def _on_login_error(error_msg: str):
             """登录失败回调"""
@@ -668,12 +672,20 @@ class SettingsView(QWidget):
         if hasattr(self, "session_edit"):
             self.session_edit.setText("")
 
-        # 停止隔空投送服务（注销 mDNS 服务，让其他端知道设备已离线）
+        # 停止隔空投送服务并真正退出窗口（注销 mDNS 服务，让其他端知道设备已离线）
         try:
             main_window = self.window()
             if main_window and hasattr(main_window, '_airdrop_window') and main_window._airdrop_window:
-                if hasattr(main_window._airdrop_window, '_transfer_manager') and main_window._airdrop_window._transfer_manager:
-                    main_window._airdrop_window._transfer_manager.stop()
+                airdrop_window = main_window._airdrop_window
+                # 停止服务
+                if hasattr(airdrop_window, '_transfer_manager') and airdrop_window._transfer_manager:
+                    airdrop_window._transfer_manager.stop()
+                # 真正退出窗口（不是隐藏到边缘）
+                # 先隐藏窗口，避免触发隐藏到边缘的动画
+                airdrop_window.hide()
+                # 然后销毁窗口
+                airdrop_window.deleteLater()
+                main_window._airdrop_window = None
         except Exception:
             pass
 

@@ -1511,8 +1511,8 @@ class AirDropView(QWidget):
         signal_label = QLabel()
         signal_label.setAlignment(Qt.AlignCenter)
         # 加载图标
-        app_dir = Path(__file__).parent.parent
-        icon_path = app_dir / "resources" / "airdrop.png"
+        from utils.resource_path import get_resource_path
+        icon_path = get_resource_path("resources/airdrop.png")
         if icon_path.exists():
             pixmap = QPixmap(str(icon_path))
             if not pixmap.isNull():
@@ -1553,7 +1553,8 @@ class AirDropView(QWidget):
         self._discover_button.setFlat(True)
         self._discover_button.setStyleSheet(self._discover_button_style(link_color))
         # 设置箭头图标（与文字同色）
-        arrow_path = Path(__file__).parent.parent / "resources" / "arrow_down.png"
+        from utils.resource_path import get_resource_path
+        arrow_path = get_resource_path("resources/arrow_down.png")
         if arrow_path.exists():
             arrow_pix = QPixmap(str(arrow_path))
             if not arrow_pix.isNull():
