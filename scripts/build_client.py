@@ -2392,7 +2392,6 @@ def main():
                 test_pkg = dist_dir / f"{pkg_name}_test.pkg"
                 try:
                     # 先复制 PKG 文件用于测试
-                    import shutil
                     shutil.copy2(pkg_path, test_pkg)
                     
                     test_result = subprocess.run([
