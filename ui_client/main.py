@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
-from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType, QLoggingCategory
+from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType, QLoggingCategory, QLockFile, QSharedMemory
 from utils.theme_manager import ThemeManager
 from utils.config_manager import CONFIG_PATH, ConfigManager
 from windows.main_window import MainWindow
@@ -140,6 +140,29 @@ def exception_handler(exc_type, exc_value, exc_traceback):
 
 
 def main():
+    # 单实例检查：确保应用只能运行一个实例
+    # 使用 QLockFile 在创建 QApplication 之前检查
+    import platform
+    lock_file_path = CONFIG_PATH.parent / "app_instance.lock"
+    lock_file = QLockFile(str(lock_file_path))
+    
+    # 尝试获取锁（非阻塞，等待最多100毫秒）
+    if not lock_file.tryLock(100):
+        # 已有实例在运行，先创建临时 QApplication 以显示消息框
+        try:
+            temp_app = QApplication(sys.argv)
+            QMessageBox.warning(
+                None,
+                "应用已运行",
+                "应用已经在运行中，无法启动多个实例。\n\n"
+                "如果看不到应用窗口，请检查系统托盘图标。"
+            )
+            sys.exit(1)
+        except Exception:
+            # 如果无法创建 QApplication，直接退出
+            print("应用已经在运行中，无法启动多个实例。", file=sys.stderr)
+            sys.exit(1)
+    
     # 设置崩溃日志（可通过 DISABLE_LOGGING 关闭）
     if DISABLE_LOGGING:
         logging.disable(logging.CRITICAL)  # 全局禁用日志
@@ -159,6 +182,8 @@ def main():
     except Exception as e:
         logger.critical(f"QApplication 初始化失败: {e}")
         logger.critical(traceback.format_exc())
+        # 释放锁
+        lock_file.unlock()
         raise
     
     # macOS: 关闭窗口时不退出应用，保留在状态栏
@@ -261,9 +286,16 @@ def main():
         logger.critical(traceback.format_exc())
         raise
     finally:
-        logger.info("=" * 80)
-        logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info("=" * 80)
+        # 释放单实例锁
+        try:
+            if 'lock_file' in locals():
+                lock_file.unlock()
+        except Exception:
+            pass
+        if 'logger' in locals():
+            logger.info("=" * 80)
+            logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 80)
 
 
 if __name__ == "__main__":

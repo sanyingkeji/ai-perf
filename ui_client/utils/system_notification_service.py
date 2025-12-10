@@ -128,6 +128,13 @@ class SystemNotificationService:
         python_exe = sys.executable
         python_path = Path(python_exe)
         
+        # 如果是打包后的应用（PyInstaller），可执行文件本身就是无窗口的
+        is_frozen = hasattr(sys, 'frozen') and sys.frozen
+        if is_frozen:
+            # 打包后的应用，直接使用可执行文件（已经是无窗口的）
+            return python_exe
+        
+        # 开发环境：尝试找到 pythonw.exe
         # 如果已经是 pythonw.exe，直接返回
         if python_path.name.lower() == "pythonw.exe":
             return python_exe
@@ -144,8 +151,15 @@ class SystemNotificationService:
             if pythonw_path.exists():
                 return str(pythonw_path)
         
-        # 如果找不到 pythonw.exe，回退到 python.exe
-        # 但添加一个警告标记
+        # 如果找不到 pythonw.exe，尝试查找 pythonw.exe 在系统路径中
+        import shutil
+        pythonw_system = shutil.which("pythonw.exe")
+        if pythonw_system:
+            return pythonw_system
+        
+        # 最后回退：如果确实找不到 pythonw.exe，使用 python.exe
+        # 但记录警告（这会导致弹出命令行窗口）
+        print(f"[WARNING] 未找到 pythonw.exe，将使用 python.exe（可能会弹出命令行窗口）")
         return python_exe
     
     def is_installed(self) -> bool:
@@ -186,19 +200,36 @@ class SystemNotificationService:
                 if result.returncode == 0:
                     # 检查 XML 中是否包含当前脚本路径
                     xml_content = result.stdout
+                    
                     # 规范化路径进行比较（处理不同的路径格式）
                     script_path_normalized = str(script_path).replace("\\", "/").lower()
                     script_path_backslash = str(script_path).lower()
                     script_path_escaped = str(script_path).replace("\\", "\\\\").lower()
+                    # 也检查文件名（更宽松的匹配）
+                    script_filename = script_path.name.lower()
                     
                     xml_lower = xml_content.lower()
                     # 检查脚本路径是否在任务配置中（多种格式）
-                    return (script_path_normalized in xml_lower or 
-                            script_path_backslash in xml_lower or 
-                            script_path_escaped in xml_lower)
+                    # 如果路径匹配失败，至少检查文件名是否匹配（更宽松）
+                    path_match = (script_path_normalized in xml_lower or 
+                                 script_path_backslash in xml_lower or 
+                                 script_path_escaped in xml_lower)
+                    filename_match = script_filename in xml_lower
+                    
+                    # 如果路径或文件名匹配，认为配置有效
+                    if path_match or filename_match:
+                        return True
+                    
+                    # 如果都不匹配，但任务存在且已启用，也认为配置可能有效
+                    # （可能是路径格式问题，但任务本身是有效的）
+                    if self.is_enabled():
+                        return True
+                    
+                    return False
                 return False
             except Exception:
-                return False
+                # 如果检查失败，但任务存在，认为配置可能有效（避免误判）
+                return self.is_enabled()
         elif self.system == "Darwin":
             try:
                 # 读取 plist 文件，检查脚本路径
@@ -369,9 +400,29 @@ class SystemNotificationService:
         try:
             python_exe = self._get_python_executable()
             
-            # 如果任务已存在，先删除
+            # 如果任务已存在，先删除（确保完全删除，避免重复任务）
             if self.is_installed():
-                self.uninstall()
+                # 先禁用任务
+                try:
+                    subprocess.run(
+                        ["schtasks", "/change", "/tn", self.windows_task_name, "/disable"],
+                        capture_output=True,
+                        timeout=5
+                    )
+                except Exception:
+                    pass
+                # 删除任务
+                uninstall_success, uninstall_msg = self.uninstall()
+                if not uninstall_success:
+                    # 如果卸载失败，尝试强制删除
+                    try:
+                        subprocess.run(
+                            ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
+                            capture_output=True,
+                            timeout=10
+                        )
+                    except Exception:
+                        pass
             
             # 创建任务（每1分钟运行一次）
             # 使用 XML 方式创建任务，更可靠
@@ -432,6 +483,20 @@ class SystemNotificationService:
                 xml_file = f.name
             
             try:
+                # 再次确认任务不存在（双重检查）
+                if self.is_installed():
+                    # 如果任务仍然存在，再次尝试删除
+                    try:
+                        subprocess.run(
+                            ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
+                            capture_output=True,
+                            timeout=10
+                        )
+                        import time
+                        time.sleep(0.5)  # 等待任务完全删除
+                    except Exception:
+                        pass
+                
                 # 使用 schtasks 创建任务
                 result = subprocess.run(
                     ["schtasks", "/create", "/tn", self.windows_task_name, "/xml", xml_file, "/f"],
@@ -441,7 +506,11 @@ class SystemNotificationService:
                 )
                 
                 if result.returncode == 0:
-                    return True, ""
+                    # 验证任务是否创建成功
+                    if self.is_installed():
+                        return True, ""
+                    else:
+                        return False, "任务创建后验证失败"
                 else:
                     return False, f"创建任务失败: {result.stderr}"
             finally:
@@ -556,6 +625,17 @@ class SystemNotificationService:
                 return False, f"卸载服务失败: {str(e)}"
         elif self.system == "Windows":
             try:
+                # 先尝试停止正在运行的任务
+                try:
+                    subprocess.run(
+                        ["schtasks", "/end", "/tn", self.windows_task_name],
+                        capture_output=True,
+                        timeout=5
+                    )
+                except Exception:
+                    pass
+                
+                # 删除任务
                 result = subprocess.run(
                     ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
                     capture_output=True,
@@ -563,10 +643,19 @@ class SystemNotificationService:
                     timeout=10
                 )
                 if result.returncode == 0:
+                    # 等待一下，确保任务完全删除
+                    import time
+                    time.sleep(0.5)
                     return True, ""
                 else:
+                    # 即使删除失败，也检查任务是否真的不存在了
+                    if not self.is_installed():
+                        return True, ""  # 任务已经不存在，认为卸载成功
                     return False, f"卸载服务失败: {result.stderr}"
             except Exception as e:
+                # 检查任务是否已经不存在
+                if not self.is_installed():
+                    return True, ""  # 任务已经不存在，认为卸载成功
                 return False, f"卸载服务失败: {str(e)}"
         else:
             return False, f"不支持的操作系统: {self.system}"

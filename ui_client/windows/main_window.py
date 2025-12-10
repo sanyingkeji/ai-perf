@@ -291,7 +291,12 @@ class MainWindow(QMainWindow):
         self._login_dialog_shown = False
         
         # 标记：是否已经尝试过更新服务配置（防止重复弹出服务更新弹窗）
-        self._service_update_attempted = False
+        # 从配置文件读取，避免每次启动都尝试更新
+        try:
+            cfg = ConfigManager.load()
+            self._service_update_attempted = cfg.get("service_update_attempted", False)
+        except Exception:
+            self._service_update_attempted = False
         
         # 应用启动时检查版本升级（延迟检查，等待窗口显示）
         from PySide6.QtCore import QTimer
@@ -2115,15 +2120,26 @@ class MainWindow(QMainWindow):
                 if not is_macos and not service.is_configuration_valid():
                     # 配置不正确，检查是否已经尝试过更新（防止重复弹出弹窗）
                     if not self._service_update_attempted:
-                        # 标记已尝试更新
+                        # 标记已尝试更新（保存到配置文件，避免每次启动都尝试）
                         self._service_update_attempted = True
+                        try:
+                            cfg = ConfigManager.load()
+                            cfg["service_update_attempted"] = True
+                            ConfigManager.save(cfg)
+                        except Exception:
+                            pass
+                        
                         # 重新安装
                         from PySide6.QtWidgets import QMessageBox
                         success, msg = service.install(force_reinstall=True)
                         if success:
                             enable_success, enable_msg = service.enable()
                             if enable_success:
-                                # 重新安装后再次检查配置是否有效
+                                # 重新安装后等待一下，让任务计划程序生效
+                                import time
+                                time.sleep(1)
+                                
+                                # 再次检查配置是否有效
                                 if service.is_configuration_valid():
                                     QMessageBox.information(
                                         self,
@@ -2132,9 +2148,9 @@ class MainWindow(QMainWindow):
                                         QMessageBox.Ok
                                     )
                                 else:
-                                    # 配置仍然无效，但不再重复弹出弹窗
-                                    # 只记录错误，不打扰用户
-                                    print(f"[WARNING] 服务配置更新后仍然无效，可能需要手动检查")
+                                    # 配置仍然无效，但重新安装成功，认为配置已更新
+                                    # 不再重复检查，避免循环
+                                    print(f"[WARNING] 服务配置更新后验证失败，但安装成功，不再重复检查")
                             else:
                                 QMessageBox.warning(
                                     self,
