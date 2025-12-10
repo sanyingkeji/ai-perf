@@ -148,20 +148,8 @@ def main():
     
     # 尝试获取锁（非阻塞，等待最多100毫秒）
     if not lock_file.tryLock(100):
-        # 已有实例在运行，先创建临时 QApplication 以显示消息框
-        try:
-            temp_app = QApplication(sys.argv)
-            QMessageBox.warning(
-                None,
-                "应用已运行",
-                "应用已经在运行中，无法启动多个实例。\n\n"
-                "如果看不到应用窗口，请检查系统托盘图标。"
-            )
-            sys.exit(1)
-        except Exception:
-            # 如果无法创建 QApplication，直接退出
-            print("应用已经在运行中，无法启动多个实例。", file=sys.stderr)
-            sys.exit(1)
+        # 已有实例在运行，静默退出
+        sys.exit(0)
     
     # 设置崩溃日志（可通过 DISABLE_LOGGING 关闭）
     if DISABLE_LOGGING:
@@ -293,9 +281,9 @@ def main():
         except Exception:
             pass
         if 'logger' in locals():
-            logger.info("=" * 80)
-            logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info("=" * 80)
+        logger.info("=" * 80)
+        logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("=" * 80)
 
 
 if __name__ == "__main__":

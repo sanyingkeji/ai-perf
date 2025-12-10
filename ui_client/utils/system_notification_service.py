@@ -132,7 +132,10 @@ class SystemNotificationService:
         is_frozen = hasattr(sys, 'frozen') and sys.frozen
         if is_frozen:
             # 打包后的应用，直接使用可执行文件（已经是无窗口的）
-            return python_exe
+            # 但需要确保可执行文件确实是 .exe 文件（Windows）
+            if python_path.suffix.lower() == '.exe':
+                return python_exe
+            # 如果不是 .exe 文件，继续查找 pythonw.exe
         
         # 开发环境：尝试找到 pythonw.exe
         # 如果已经是 pythonw.exe，直接返回
@@ -212,8 +215,8 @@ class SystemNotificationService:
                     # 检查脚本路径是否在任务配置中（多种格式）
                     # 如果路径匹配失败，至少检查文件名是否匹配（更宽松）
                     path_match = (script_path_normalized in xml_lower or 
-                                 script_path_backslash in xml_lower or 
-                                 script_path_escaped in xml_lower)
+                            script_path_backslash in xml_lower or 
+                            script_path_escaped in xml_lower)
                     filename_match = script_filename in xml_lower
                     
                     # 如果路径或文件名匹配，认为配置有效
@@ -508,7 +511,7 @@ class SystemNotificationService:
                 if result.returncode == 0:
                     # 验证任务是否创建成功
                     if self.is_installed():
-                        return True, ""
+                    return True, ""
                     else:
                         return False, "任务创建后验证失败"
                 else:
