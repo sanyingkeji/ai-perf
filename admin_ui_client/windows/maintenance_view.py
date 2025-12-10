@@ -5316,7 +5316,7 @@ class PackageTab(QWidget):
         self._version_manager = VersionManager(Path(self._project_root))
         
         # 获取当前版本号
-        self._current_version = self._version_manager.get_current_version() or "1.0.1"
+        self._current_version = self._version_manager.get_current_version() or "0.0.0"
         
         self._init_ui()
     
@@ -7487,7 +7487,7 @@ class PackageTab(QWidget):
                         def on_push_tag_finished(exit_code, exit_status):
                             self._is_running = False
                             # 更新版本号显示（从 VersionManager 重新读取）
-                            self._current_version = self._version_manager.get_current_version() or "1.0.1"
+                            self._current_version = self._version_manager.get_current_version() or "0.0.0"
                             self._update_release_button_text()
                             self.release_btn.setEnabled(True)
                             self.push_btn.setEnabled(True)
@@ -7514,7 +7514,7 @@ class PackageTab(QWidget):
                     else:
                         self._is_running = False
                         # 更新版本号显示
-                        self._current_version = self._version_manager.get_current_version() or "1.0.1"
+                        self._current_version = self._version_manager.get_current_version() or "0.0.0"
                         self._update_release_button_text()
                         self.release_btn.setEnabled(True)
                         self.push_btn.setEnabled(True)
@@ -7929,7 +7929,7 @@ class PackageTab(QWidget):
         """更新 Release 按钮文本（使用 VersionManager 获取最新版本号）"""
         if not hasattr(self, 'release_btn'):
             return
-        self._current_version = self._version_manager.get_current_version() or "1.0.1"
+        self._current_version = self._version_manager.get_current_version() or "0.0.0"
         self.release_btn.setText(f"Release V{self._current_version}")
     
     def _on_version_management_clicked(self):

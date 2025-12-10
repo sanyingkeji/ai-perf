@@ -46,7 +46,7 @@ class VersionManagementDialog(QDialog):
         # 说明
         info_label = QLabel(
             "此功能可以统一更新所有客户端的版本号，避免手动修改多个文件。\n"
-            "版本号格式：x.x.x（例如：1.0.1）"
+            "版本号格式：x.x.x（例如：0.0.0）"
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: #666; padding: 8px;")
@@ -56,7 +56,7 @@ class VersionManagementDialog(QDialog):
         input_layout = QHBoxLayout()
         input_layout.addWidget(QLabel("新版本号："))
         self.version_input = QLineEdit()
-        self.version_input.setPlaceholderText("例如：1.0.1")
+        self.version_input.setPlaceholderText("例如：0.0.0")
         input_layout.addWidget(self.version_input, 1)
         
         update_btn = QPushButton("更新所有")
@@ -185,7 +185,7 @@ class VersionManagementDialog(QDialog):
                 self,
                 "错误",
                 "版本号格式不正确！\n\n"
-                "版本号格式应为：x.x.x（例如：1.0.1）"
+                "版本号格式应为：x.x.x（例如：0.0.0）"
             )
             return
         

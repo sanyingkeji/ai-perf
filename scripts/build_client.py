@@ -479,7 +479,7 @@ def main():
     
     # 如果还是没有，使用默认值
     if not version:
-        version = "1.0.1"  # 默认版本号
+        version = "0.0.0"  # 默认版本号
         log_warn(f"未找到版本号，使用默认值: {version}")
     
     # 如果 config.json 不存在，创建默认配置
@@ -2151,14 +2151,14 @@ def main():
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
     <pkg-ref id="{app_id}"/>
-    <product id="{app_id}" version="1.0.1" />
+    <product id="{app_id}" version="{version}" />
     <choices-outline>
         <line choice="{app_id}"/>
     </choices-outline>
     <choice id="{app_id}" visible="false">
         <pkg-ref id="{app_id}"/>
     </choice>
-    <pkg-ref id="{app_id}" version="1.0.1" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
+    <pkg-ref id="{app_id}" version="{version}" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
 </installer-gui-script>''')
         
         # 使用 pkgbuild 创建组件包
@@ -2203,7 +2203,7 @@ def main():
             "pkgbuild",
             "--root", str(pkg_root),
             "--identifier", app_id,
-            "--version", "1.0.1",
+            "--version", version,
             "--install-location", "/",
             str(component_pkg)
         ], check=True)
@@ -2900,6 +2900,8 @@ def main():
                 
                 content = content.replace("{APP_NAME}", app_name)
                 content = content.replace("{EXE_NAME}", app_name)
+                # 替换版本号占位符
+                content = content.replace("{VERSION}", version)
                 
                 # 如果中文语言文件不存在，移除中文语言配置
                 if not chinese_lang_available:
@@ -2921,7 +2923,7 @@ def main():
                 with open(inno_script, "w", encoding="utf-8") as f:
                     f.write(f'''[Setup]
 AppName={app_name}
-AppVersion=1.0.0
+AppVersion={version}
 AppPublisher=SanYing
 AppPublisherURL=https://perf.sanying.site
 DefaultDirName={{autopf}}\\{app_name}
@@ -3012,7 +3014,7 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
             with open(wxs_file, "w", encoding="utf-8") as f:
                 f.write(f'''<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-    <Package Name="{app_name}" Version="1.0.1" Manufacturer="SanYing" UpgradeCode="{upgrade_code}" Language="2052">
+    <Package Name="{app_name}" Version="{version}" Manufacturer="SanYing" UpgradeCode="{upgrade_code}" Language="2052">
         <MajorUpgrade DowngradeErrorMessage="无法安装旧版本，请先卸载当前版本。" />
         <MediaTemplate EmbedCab="yes" />
         
@@ -3141,7 +3143,7 @@ Filename: "{{app}}\\{app_name}.exe"; Description: "启动 {app_name}"; Flags: no
         control_file = debian_dir / "control"
         with open(control_file, "w", encoding="utf-8") as f:
             f.write(f'''Package: {deb_name}
-Version: 1.0.0
+Version: {version}
 Section: utils
 Priority: optional
 Architecture: amd64
@@ -3162,7 +3164,7 @@ Description: {app_name}
         usr_share.mkdir(parents=True)
         
         # 使用 dpkg-deb 创建 .deb 包
-        deb_package = Path("dist") / f"{deb_name}_1.0.0_amd64.deb"
+        deb_package = Path("dist") / f"{deb_name}_{version}_amd64.deb"
         try:
             subprocess.run([
                 "dpkg-deb",
@@ -3199,7 +3201,7 @@ Description: {app_name}
         spec_file_rpm = rpmbuild_dir / "SPECS" / f"{rpm_name}.spec"
         with open(spec_file_rpm, "w", encoding="utf-8") as f:
             f.write(f'''Name: {rpm_name}
-Version: 1.0.0
+Version: {version}
 Release: 1%{{?dist}}
 Summary: {app_name}
 License: Proprietary
@@ -3225,7 +3227,7 @@ chmod 755 %{{buildroot}}/usr/bin/{exe_name}
 /usr/bin/{exe_name}
 
 %changelog
-* {datetime.now().strftime("%a %b %d %Y")} Ai Perf <support@sanying.site> - 1.0.0-1
+* {datetime.now().strftime("%a %b %d %Y")} Ai Perf <support@sanying.site> - {version}-1
 - Initial release
 ''')
         
@@ -3234,7 +3236,7 @@ chmod 755 %{{buildroot}}/usr/bin/{exe_name}
         os.chmod(rpmbuild_dir / "SOURCES" / exe_name, 0o755)
         
         # 使用 rpmbuild 创建 .rpm 包
-        rpm_package = Path("dist") / f"{rpm_name}-1.0.0-1.x86_64.rpm"
+        rpm_package = Path("dist") / f"{rpm_name}-{version}-1.x86_64.rpm"
         try:
             subprocess.run([
                 "rpmbuild",

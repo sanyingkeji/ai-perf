@@ -496,6 +496,34 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
         app_id = "site.sanying.aiperf.admin"
         client_dir = project_root / "admin_ui_client"
     
+    # 从 spec 文件中读取版本号
+    version = None
+    spec_file = client_dir / "build_macos.spec"
+    if spec_file.exists():
+        try:
+            import re
+            with open(spec_file, 'r', encoding='utf-8') as f:
+                spec_content = f.read()
+            # 查找 version='...' 或 version="..."
+            version_match = re.search(r"version\s*=\s*['\"]([^'\"]+)['\"]", spec_content)
+            if version_match:
+                version = version_match.group(1)
+                log_info(f"从 {spec_file} 读取版本号: {version}")
+        except Exception as e:
+            log_warn(f"无法从 {spec_file} 读取版本号: {e}")
+    
+    # 如果从 spec 文件读取失败，尝试从环境变量读取
+    if not version:
+        import os
+        version = os.environ.get("CLIENT_VERSION")
+        if version:
+            log_info(f"从环境变量 CLIENT_VERSION 读取版本号: {version}")
+    
+    # 如果还是没有，使用默认值
+    if not version:
+        version = "0.0.0"  # 默认版本号
+        log_warn(f"未找到版本号，使用默认值: {version}")
+    
     # 设置输出目录：dist/from_github/{client_type}/{arch}/
     # 例如：dist/from_github/employee/arm64/ 或 dist/from_github/admin/intel/
     dist_dir = client_dir / "dist" / "from_github" / client_type / arch
@@ -2273,14 +2301,14 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
     <pkg-ref id="{app_id}"/>
-    <product id="{app_id}" version="1.0.1" />
+    <product id="{app_id}" version="{version}" />
     <choices-outline>
         <line choice="{app_id}"/>
     </choices-outline>
     <choice id="{app_id}" visible="false">
         <pkg-ref id="{app_id}"/>
     </choice>
-    <pkg-ref id="{app_id}" version="1.0.1" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
+    <pkg-ref id="{app_id}" version="{version}" onConclusion="none">{pkg_name}_component.pkg</pkg-ref>
 </installer-gui-script>''')
                 
                 # 使用 pkgbuild 创建组件包
@@ -2301,7 +2329,7 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                     "pkgbuild",
                     "--root", str(pkg_root),
                     "--identifier", app_id,
-                    "--version", "1.0.1",
+                    "--version", version,
                     "--install-location", "/",
                     str(component_pkg)
                 ], check=True)

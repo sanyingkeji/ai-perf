@@ -22,6 +22,9 @@ class VersionManager:
         "admin_windows_linux": "admin_ui_client/build.spec",
     }
     
+    # Inno Setup 模板文件（Windows 安装器）
+    INNO_SETUP_TEMPLATE = "scripts/inno_setup_template.iss"
+    
     def __init__(self, project_root: Optional[Path] = None):
         """
         初始化版本管理器
@@ -124,6 +127,17 @@ class VersionManager:
         # 同时更新 config.json 文件中的 client_version
         config_results = self._update_config_json_versions(new_version)
         results.update(config_results)
+        
+        # 更新 Inno Setup 模板文件
+        inno_template = self.project_root / self.INNO_SETUP_TEMPLATE
+        if inno_template.exists():
+            try:
+                results["inno_setup_template"] = self._update_version_in_inno_template(inno_template, new_version)
+            except Exception as e:
+                print(f"更新 {self.INNO_SETUP_TEMPLATE} 失败: {e}")
+                results["inno_setup_template"] = False
+        else:
+            results["inno_setup_template"] = False
         
         return results
     
@@ -292,6 +306,42 @@ class VersionManager:
                 return True
         except Exception as e:
             print(f"更新版本号失败: {e}")
+            return False
+    
+    def _update_version_in_inno_template(self, template_file: Path, new_version: str) -> bool:
+        """
+        更新 Inno Setup 模板文件中的版本号
+        
+        Args:
+            template_file: Inno Setup 模板文件路径
+            new_version: 新版本号
+        
+        Returns:
+            是否更新成功
+        """
+        try:
+            with open(template_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            original_content = content
+            
+            # 更新 AppVersion=...
+            content = re.sub(
+                r"AppVersion\s*=\s*[^\n]+",
+                f"AppVersion={new_version}",
+                content
+            )
+            
+            # 如果内容有变化，写回文件
+            if content != original_content:
+                with open(template_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                return True
+            else:
+                # 如果没有变化，可能是版本号已经是新值
+                return True
+        except Exception as e:
+            print(f"更新 Inno Setup 模板版本号失败: {e}")
             return False
     
     def validate_version(self, version: str) -> bool:
