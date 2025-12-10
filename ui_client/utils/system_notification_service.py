@@ -60,8 +60,18 @@ class SystemNotificationService:
             elif self.system == "Windows":
                 # Windows: 应用目录
                 exe_dir = Path(sys.executable).parent
+                # PyInstaller onedir 模式：脚本在 exe 同目录下的 scripts 子目录
                 possible_paths.append(exe_dir / "scripts" / "notification_background_service.py")
-                possible_paths.append(Path.home() / "AppData" / "Local" / "Ai Perf Client" / "scripts" / "notification_background_service.py")
+                # 尝试从 sys._MEIPASS 获取（PyInstaller 临时目录，运行时使用）
+                if hasattr(sys, '_MEIPASS'):
+                    meipass_path = Path(sys._MEIPASS) / "scripts" / "notification_background_service.py"
+                    possible_paths.append(meipass_path)
+                # 常见安装位置
+                possible_paths.extend([
+                    Path.home() / "AppData" / "Local" / "Ai Perf Client" / "scripts" / "notification_background_service.py",
+                    Path("C:/Program Files/Ai Perf Client/scripts/notification_background_service.py"),
+                    Path("C:/Program Files (x86)/Ai Perf Client/scripts/notification_background_service.py"),
+                ])
         else:
             # 开发环境
             possible_paths.append(self.project_root / "scripts" / "notification_background_service.py")
@@ -73,6 +83,16 @@ class SystemNotificationService:
             # 当前可执行文件目录
             Path(sys.executable).parent / "scripts" / "notification_background_service.py",
         ])
+        
+        # 如果是在打包后的应用中，也尝试使用 resource_path 工具
+        if is_frozen:
+            try:
+                from utils.resource_path import get_resource_path
+                resource_path = get_resource_path("scripts/notification_background_service.py")
+                if resource_path.exists():
+                    possible_paths.insert(0, resource_path)  # 优先级最高
+            except Exception:
+                pass
         
         for path in possible_paths:
             if path and path.exists():

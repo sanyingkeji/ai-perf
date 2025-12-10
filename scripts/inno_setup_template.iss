@@ -23,6 +23,9 @@ Name: "quicklaunchicon"; Description: "创建快速启动栏快捷方式"; Group
 
 [Files]
 Source: "dist\{EXE_NAME}.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\{EXE_NAME}\{EXE_NAME}.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\{EXE_NAME}\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{APP_NAME}"; Filename: "{app}\{EXE_NAME}.exe"
