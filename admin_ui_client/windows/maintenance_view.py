@@ -1845,36 +1845,17 @@ class SystemSettingsTab(QWidget):
         if reply != QMessageBox.Yes:
             return
         
-        # 显示loading
-        win = self.window()
-        show_loading = getattr(win, "show_loading", None)
-        hide_loading = getattr(win, "hide_loading", None)
-        if callable(show_loading):
-            show_loading(f"正在启动服务 {service_name}...")
-        
-        # 设置超时，确保遮盖层在3秒后自动消失（即使任务还在执行）
-        # systemctl start是异步的，启动后立即返回，不需要等待任务完成
-        loading_hidden = {"value": False}
-        def auto_hide_loading():
-            if not loading_hidden["value"] and callable(hide_loading):
-                hide_loading()
-                loading_hidden["value"] = True
-        timer = QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(auto_hide_loading)
-        timer.start(3000)  # 3秒后自动隐藏
+        # 由于 systemctl start 是异步的，启动命令会立即返回，不需要等待任务完成
+        # 因此不显示遮盖层，避免阻塞用户操作，只显示简短的Toast提示
+        Toast.show_message(self, f"正在启动服务 {service_name}...")
         
         # 后台执行（通过SSH）
         def on_finished(job_name):
-            if not loading_hidden["value"] and callable(hide_loading):
-                hide_loading()
-                loading_hidden["value"] = True
+            # 命令发送成功，任务已在后台开始执行
             self._on_run_timer_now_finished(service_name)
         
         def on_error(job_name, error_msg):
-            if not loading_hidden["value"] and callable(hide_loading):
-                hide_loading()
-                loading_hidden["value"] = True
+            # 命令发送失败
             self._on_run_timer_now_error(service_name, error_msg)
         
         worker = _CronJobControlWorker(service_name, "start", ssh_config)
@@ -1883,13 +1864,11 @@ class SystemSettingsTab(QWidget):
         QThreadPool.globalInstance().start(worker)
     
     def _on_run_timer_now_finished(self, service_name: str):
-        """立即执行完成"""
-        # hide_loading已经在on_finished中调用了，这里不需要重复调用
+        """立即执行完成（命令发送成功）"""
         Toast.show_message(self, f"服务 {service_name} 已开始执行")
     
     def _on_run_timer_now_error(self, service_name: str, error_msg: str):
-        """立即执行失败"""
-        # hide_loading已经在on_error中调用了，这里不需要重复调用
+        """立即执行失败（命令发送失败）"""
         Toast.show_message(self, f"执行服务 {service_name} 失败：{error_msg}")
     
     def _on_view_timer_command_clicked(self, timer_name: str):
@@ -5935,7 +5914,8 @@ class PackageTab(QWidget):
         # 构建下载路径：dist/from_github/{client_type}/{arch或操作系统}/
         # 对于 macOS: dist/from_github/{client_type}/{arch}/
         # 对于 Windows/Linux: dist/from_github/{client_type}/{platform}/
-        client_dir = Path(self._project_root) / (f"{client_type}_ui_client" if client_type == "employee" else "admin_ui_client")
+        # 员工端使用 ui_client，管理端使用 admin_ui_client（与签名脚本保持一致）
+        client_dir = Path(self._project_root) / ("ui_client" if client_type == "employee" else "admin_ui_client")
         if platform == "macOS" and arch:
             download_dir = client_dir / "dist" / "from_github" / client_type / arch
         else:
@@ -6516,7 +6496,8 @@ class PackageTab(QWidget):
         # 构建下载路径：dist/from_github/{client_type}/{arch或操作系统}/
         # 对于 macOS: dist/from_github/{client_type}/{arch}/
         # 对于 Windows/Linux: dist/from_github/{client_type}/{platform}/
-        client_dir = Path(self._project_root) / (f"{client_type}_ui_client" if client_type == "employee" else "admin_ui_client")
+        # 员工端使用 ui_client，管理端使用 admin_ui_client（与签名脚本保持一致）
+        client_dir = Path(self._project_root) / ("ui_client" if client_type == "employee" else "admin_ui_client")
         if platform == "macOS" and arch:
             download_dir = client_dir / "dist" / "from_github" / client_type / arch
         else:

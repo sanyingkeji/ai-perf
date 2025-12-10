@@ -7,11 +7,12 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
 )
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QCursor
 from PySide6.QtCore import Qt
 import webbrowser
 import platform
 import sys
+import os
 from datetime import date
 from utils.config_manager import ConfigManager
 
@@ -25,6 +26,11 @@ class UpdateDialog(QDialog):
         
         # 根据当前操作系统选择下载地址
         self._download_url = self._get_download_url_for_current_platform(version_info)
+        
+        # 获取内网镜像下载地址（从 version_info 中获取，如果为空则使用默认值）
+        self._mirror_url = version_info.get("mirror_url", "").strip()
+        if not self._mirror_url:
+            self._mirror_url = "http://192.168.2.1/download"
         
         self.setWindowTitle("版本升级")
         self.setModal(True)
@@ -119,6 +125,15 @@ class UpdateDialog(QDialog):
         download_btn.clicked.connect(self._on_download_clicked)
         btn_layout.addWidget(download_btn)
         
+        # 内网镜像下载链接
+        mirror_link = QLabel('<a href="#" style="color: #0066cc; text-decoration: none;">内网镜像下载</a>')
+        mirror_link.setFont(QFont("Arial", 11))
+        mirror_link.setCursor(QCursor(Qt.PointingHandCursor))
+        mirror_link.setOpenExternalLinks(False)  # 禁用默认的打开链接行为，使用自定义处理
+        mirror_link.mousePressEvent = lambda e: self._on_mirror_download_clicked()
+        btn_layout.addSpacing(20)  # 添加间距
+        btn_layout.addWidget(mirror_link)
+        
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
@@ -154,23 +169,40 @@ class UpdateDialog(QDialog):
         return version_info.get("download_url", "")
     
     def _on_download_clicked(self):
-        """点击下载按钮，打开下载链接"""
+        """点击下载按钮，打开下载链接并退出程序"""
         if self._download_url:
             webbrowser.open(self._download_url)
-            # 如果是强制升级，关闭主窗口（必须关闭应用）
-            if self._is_force_update:
-                # 尝试找到主窗口：parent 可能是 MainWindow 或 SettingsView
-                widget = self.parent()
-                while widget:
-                    # 检查是否是主窗口（MainWindow）
-                    if widget.__class__.__name__ == "MainWindow":
-                        widget.close()
-                        break
-                    # 如果不是，继续向上查找
-                    widget = widget.parent()
-            # 非强制升级：只关闭弹窗，不关闭主窗口
+            # 直接退出应用程序（因为要下载后覆盖安装，不能运行应用程序）
+            # 先停止隔空投送服务（注销 mDNS 服务，让其他端知道设备已离线）
+            widget = self.parent()
+            main_window = None
+            while widget:
+                # 检查是否是主窗口（MainWindow）
+                if widget.__class__.__name__ == "MainWindow":
+                    main_window = widget
+                    break
+                # 如果不是，继续向上查找
+                widget = widget.parent()
+            
+            # 停止隔空投送服务
+            if main_window and hasattr(main_window, '_airdrop_window') and main_window._airdrop_window:
+                airdrop_window = main_window._airdrop_window
+                if hasattr(airdrop_window, '_transfer_manager') and airdrop_window._transfer_manager:
+                    try:
+                        airdrop_window._transfer_manager.stop()
+                    except Exception:
+                        pass
+            
+            # 关闭主窗口
+            if main_window:
+                main_window.close()
             else:
-                self.accept()
+                # 如果找不到主窗口，直接退出
+                QApplication = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
+                QApplication.instance().quit()
+            
+            # 强制退出（确保程序完全退出）
+            os._exit(0)
         else:
             # 如果没有找到对应平台的下载地址，显示提示
             from PySide6.QtWidgets import QMessageBox
@@ -179,6 +211,42 @@ class UpdateDialog(QDialog):
                 "下载地址未配置", 
                 f"当前操作系统（{platform.system()}）的下载地址未配置，请联系管理员。"
             )
+    
+    def _on_mirror_download_clicked(self):
+        """点击内网镜像下载链接，打开浏览器并退出程序"""
+        if self._mirror_url:
+            webbrowser.open(self._mirror_url)
+            # 直接退出应用程序（因为要下载后覆盖安装，不能运行应用程序）
+            # 先停止隔空投送服务（注销 mDNS 服务，让其他端知道设备已离线）
+            widget = self.parent()
+            main_window = None
+            while widget:
+                # 检查是否是主窗口（MainWindow）
+                if widget.__class__.__name__ == "MainWindow":
+                    main_window = widget
+                    break
+                # 如果不是，继续向上查找
+                widget = widget.parent()
+            
+            # 停止隔空投送服务
+            if main_window and hasattr(main_window, '_airdrop_window') and main_window._airdrop_window:
+                airdrop_window = main_window._airdrop_window
+                if hasattr(airdrop_window, '_transfer_manager') and airdrop_window._transfer_manager:
+                    try:
+                        airdrop_window._transfer_manager.stop()
+                    except Exception:
+                        pass
+            
+            # 关闭主窗口
+            if main_window:
+                main_window.close()
+            else:
+                # 如果找不到主窗口，直接退出
+                QApplication = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
+                QApplication.instance().quit()
+            
+            # 强制退出（确保程序完全退出）
+            os._exit(0)
     
     def closeEvent(self, event):
         """重写关闭事件，根据是否强制升级决定是否允许关闭"""

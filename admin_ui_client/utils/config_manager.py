@@ -71,12 +71,19 @@ def _deep_merge_defaults(target: dict, defaults: dict) -> bool:
 
 # 用户数据字段列表：这些字段应该保留用户的值，不从项目配置同步
 USER_DATA_FIELDS = {
+    # 登录信息（用户数据）
     "session_token",
     "google_id_token",
     "user_id",
     "user_name",
     "user_email",
     "update_dialog_dismissed_date",  # 用户交互数据
+    # 用户可配置的设置（用户在设置菜单中可以修改，应该保留用户的值）
+    "api_base",  # API地址
+    "theme",  # 主题设置
+    "auto_refresh",  # 自动刷新
+    "notifications",  # 通知设置
+    "log_retention_hours",  # 日志保留时长
     # 管理端特有的用户数据字段
     "ssh_host",
     "ssh_port",
@@ -88,8 +95,16 @@ USER_DATA_FIELDS = {
     "packaging_github_api_key",
     "jira_token",
     "jira_account_email",
+    "jira_base",  # Jira 基础地址
     "figma_api_key",
+    "figma_api_url",  # Figma API URL
+    "github_api_url",  # GitHub API URL
+    "github_org",  # GitHub 组织
+    "upload_api_url",  # 文件上传API地址
 }
+
+# 系统自动管理字段：这些字段会自动从模板配置同步更新
+# 只有不在 USER_DATA_FIELDS 中的字段才会自动同步（如 client_version）
 
 
 def _smart_merge_project_config(user_config: dict, template_config: dict) -> bool:
