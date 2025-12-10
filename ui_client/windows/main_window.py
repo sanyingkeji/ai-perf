@@ -2069,27 +2069,10 @@ class MainWindow(QMainWindow):
                 if success:
                     # 安装成功后启用
                     enable_success, enable_msg = service.enable()
-                    # 只在 Windows 和 Linux 显示提示，macOS 保持静默
-                    if not is_macos:
-                        from PySide6.QtWidgets import QMessageBox
-                        if enable_success:
-                            # 显示成功提示（仅在首次安装时）
-                            QMessageBox.information(
-                                self,
-                                "服务安装成功",
-                                "后台通知服务已成功安装并启用。\n\n"
-                                "即使应用未运行，您也能收到系统通知。",
-                                QMessageBox.Ok
-                            )
-                        else:
-                            # 安装成功但启用失败
-                            QMessageBox.warning(
-                                self,
-                                "服务启用失败",
-                                f"服务已安装，但启用失败：{enable_msg}\n\n"
-                                "您可以在设置中手动启用服务。",
-                                QMessageBox.Ok
-                            )
+                    # 静默安装，不显示提示（与macOS保持一致）
+                    # 如果启用失败，只记录日志，不打扰用户
+                    if not enable_success:
+                        print(f"[WARNING] 服务安装成功但启用失败：{enable_msg}")
                 else:
                     # 安装失败，只在 Windows 和 Linux 显示错误提示
                     if not is_macos:

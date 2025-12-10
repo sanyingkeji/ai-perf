@@ -16,6 +16,15 @@ from datetime import datetime
 from utils.config_manager import CONFIG_PATH
 
 
+def _get_subprocess_kwargs() -> dict:
+    """获取 subprocess 调用的参数，Windows 上避免弹出命令行窗口"""
+    kwargs = {}
+    if platform.system() == "Windows":
+        # Windows: 使用 CREATE_NO_WINDOW 标志避免弹出命令行窗口
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
+
 class SystemNotificationService:
     """系统通知服务管理器"""
     
@@ -174,7 +183,8 @@ class SystemNotificationService:
                 result = subprocess.run(
                     ["schtasks", "/query", "/tn", self.windows_task_name],
                     capture_output=True,
-                    timeout=5
+                    timeout=5,
+                    **_get_subprocess_kwargs()
                 )
                 return result.returncode == 0
             except Exception:
@@ -198,7 +208,8 @@ class SystemNotificationService:
                     ["schtasks", "/query", "/tn", self.windows_task_name, "/xml"],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    **_get_subprocess_kwargs()
                 )
                 if result.returncode == 0:
                     # 检查 XML 中是否包含当前脚本路径
@@ -276,7 +287,8 @@ class SystemNotificationService:
                     ["schtasks", "/query", "/tn", self.windows_task_name, "/fo", "list"],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    **_get_subprocess_kwargs()
                 )
                 if result.returncode == 0:
                     # 检查任务状态（Enabled 或 Disabled）
@@ -402,6 +414,42 @@ class SystemNotificationService:
         """安装 Windows 任务计划程序任务"""
         try:
             python_exe = self._get_python_executable()
+            # 验证并确保使用 pythonw.exe（避免弹出命令行窗口）
+            python_exe_path = Path(python_exe)
+            python_exe_name = python_exe_path.name.lower()
+            
+            # 检查是否已经是 pythonw.exe 或打包后的应用（无窗口）
+            is_pythonw = python_exe_name == "pythonw.exe"
+            is_frozen_app = hasattr(sys, 'frozen') and sys.frozen and python_exe_path.suffix.lower() == '.exe'
+            
+            if not is_pythonw and not is_frozen_app:
+                # 如果不是 pythonw.exe 且不是打包后的应用，强制查找 pythonw.exe
+                import shutil
+                # 尝试多种方式查找 pythonw.exe
+                pythonw_candidates = []
+                
+                # 同目录查找
+                candidate = python_exe_path.parent / "pythonw.exe"
+                if candidate.exists():
+                    pythonw_candidates.append(str(candidate))
+                
+                # 虚拟环境查找
+                if python_exe_path.parent.name.lower() == "scripts":
+                    candidate = python_exe_path.parent.parent / "pythonw.exe"
+                    if candidate.exists():
+                        pythonw_candidates.append(str(candidate))
+                
+                # 系统路径查找
+                pythonw_system = shutil.which("pythonw.exe")
+                if pythonw_system:
+                    pythonw_candidates.append(pythonw_system)
+                
+                # 使用找到的第一个 pythonw.exe
+                if pythonw_candidates:
+                    python_exe = pythonw_candidates[0]
+                    print(f"[INFO] 找到并使用 pythonw.exe: {python_exe}")
+                else:
+                    print(f"[WARNING] 未找到 pythonw.exe，使用: {python_exe}（可能会弹出命令行窗口）")
             
             # 如果任务已存在，先删除（确保完全删除，避免重复任务）
             if self.is_installed():
@@ -410,7 +458,8 @@ class SystemNotificationService:
                     subprocess.run(
                         ["schtasks", "/change", "/tn", self.windows_task_name, "/disable"],
                         capture_output=True,
-                        timeout=5
+                        timeout=5,
+                        **_get_subprocess_kwargs()
                     )
                 except Exception:
                     pass
@@ -422,7 +471,8 @@ class SystemNotificationService:
                         subprocess.run(
                             ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
                             capture_output=True,
-                            timeout=10
+                            timeout=10,
+                            **_get_subprocess_kwargs()
                         )
                     except Exception:
                         pass
@@ -493,7 +543,8 @@ class SystemNotificationService:
                         subprocess.run(
                             ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
                             capture_output=True,
-                            timeout=10
+                            timeout=10,
+                            **_get_subprocess_kwargs()
                         )
                         import time
                         time.sleep(0.5)  # 等待任务完全删除
@@ -505,7 +556,8 @@ class SystemNotificationService:
                     ["schtasks", "/create", "/tn", self.windows_task_name, "/xml", xml_file, "/f"],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
+                    **_get_subprocess_kwargs()
                 )
                 
                 if result.returncode == 0:
@@ -554,7 +606,8 @@ class SystemNotificationService:
                     ["schtasks", "/change", "/tn", self.windows_task_name, "/enable"],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
+                    **_get_subprocess_kwargs()
                 )
                 if result.returncode == 0:
                     return True, ""
@@ -593,7 +646,8 @@ class SystemNotificationService:
                     ["schtasks", "/change", "/tn", self.windows_task_name, "/disable"],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
+                    **_get_subprocess_kwargs()
                 )
                 if result.returncode == 0:
                     return True, ""
@@ -633,7 +687,8 @@ class SystemNotificationService:
                     subprocess.run(
                         ["schtasks", "/end", "/tn", self.windows_task_name],
                         capture_output=True,
-                        timeout=5
+                        timeout=5,
+                        **_get_subprocess_kwargs()
                     )
                 except Exception:
                     pass
@@ -643,7 +698,8 @@ class SystemNotificationService:
                     ["schtasks", "/delete", "/tn", self.windows_task_name, "/f"],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
+                    **_get_subprocess_kwargs()
                 )
                 if result.returncode == 0:
                     # 等待一下，确保任务完全删除
