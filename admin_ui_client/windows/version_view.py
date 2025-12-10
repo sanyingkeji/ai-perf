@@ -8,7 +8,7 @@
 - 删除版本（软删除）
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from functools import partial
 from pathlib import Path
 from PySide6.QtWidgets import (
@@ -98,6 +98,200 @@ class _UploadWorker(QRunnable):
         except Exception:
             pass
     
+    def _upload_chunk_with_retry(self, chunk_index: int, chunk_data: bytes, max_retries: int = 5) -> Tuple[bool, Optional[str]]:
+        """
+        上传分片（带重试机制）
+        
+        Args:
+            chunk_index: 分片索引
+            chunk_data: 分片数据
+            max_retries: 最大重试次数
+        
+        Returns:
+            (success: bool, error_msg: Optional[str])
+        """
+        import time
+        
+        chunk_files = {
+            "chunk": (f"chunk_{chunk_index}", chunk_data, "application/octet-stream")
+        }
+        chunk_data_form = {
+            "upload_id": self._upload_id,
+            "chunk_index": chunk_index
+        }
+        
+        last_error = None
+        for attempt in range(max_retries):
+            if self._should_stop:
+                return False, "上传已取消"
+            
+            try:
+                chunk_response = httpx.post(
+                    f"{self._upload_api_url}/chunk",
+                    files=chunk_files,
+                    data=chunk_data_form,
+                    timeout=300.0
+                )
+                
+                if chunk_response.status_code == 200:
+                    chunk_result = chunk_response.json()
+                    if chunk_result.get("status") == "success":
+                        return True, None
+                    else:
+                        # 服务器返回错误，但这不是网络错误，不重试
+                        error_msg = chunk_result.get('message', '未知错误')
+                        return False, f"上传分片 {chunk_index} 失败：{error_msg}"
+                else:
+                    # HTTP错误，尝试解析错误信息
+                    error_msg = f"上传分片 {chunk_index} 失败：HTTP {chunk_response.status_code}"
+                    try:
+                        error_result = chunk_response.json()
+                        if "message" in error_result:
+                            error_msg = f"上传分片 {chunk_index} 失败：{error_result['message']}"
+                    except:
+                        pass
+                    
+                    # 4xx错误通常不应该重试（客户端错误），5xx错误可以重试
+                    if 400 <= chunk_response.status_code < 500:
+                        return False, error_msg
+                    
+                    last_error = error_msg
+                    
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                # 网络错误，可以重试
+                last_error = f"网络错误：{type(e).__name__}: {e}"
+                if attempt < max_retries - 1:
+                    # 指数退避：1秒, 2秒, 4秒, 8秒, 16秒
+                    wait_time = min(2 ** attempt, 16)
+                    time.sleep(wait_time)
+                    continue
+            except Exception as e:
+                # 其他异常，不重试
+                return False, f"上传分片 {chunk_index} 失败：{type(e).__name__}: {e}"
+        
+        # 所有重试都失败了
+        return False, f"上传分片 {chunk_index} 失败（已重试 {max_retries} 次）：{last_error}"
+    
+    def _init_upload_with_retry(self, file_size: int, max_retries: int = 3) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """
+        初始化上传（带重试机制）
+        
+        Args:
+            file_size: 文件大小
+            max_retries: 最大重试次数
+        
+        Returns:
+            (success: bool, error_msg: Optional[str], result: Optional[Dict])
+        """
+        import time
+        
+        init_data = {
+            "filename": self._file_path.name,
+            "platform": self._platform,
+            "version": self._version,
+            "total_size": file_size
+        }
+        
+        last_error = None
+        for attempt in range(max_retries):
+            if self._should_stop:
+                return False, "上传已取消", None
+            
+            try:
+                init_response = httpx.post(
+                    f"{self._upload_api_url}/init",
+                    data=init_data,
+                    timeout=30.0
+                )
+                
+                if init_response.status_code == 200:
+                    init_result = init_response.json()
+                    if init_result.get("status") == "success":
+                        return True, None, init_result
+                    else:
+                        # 服务器返回错误，不重试
+                        error_msg = init_result.get('message', '未知错误')
+                        return False, f"初始化上传失败：{error_msg}", None
+                else:
+                    # HTTP错误
+                    error_msg = f"初始化上传失败：HTTP {init_response.status_code}"
+                    # 4xx错误通常不应该重试，5xx错误可以重试
+                    if 400 <= init_response.status_code < 500:
+                        return False, error_msg, None
+                    last_error = error_msg
+                    
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                # 网络错误，可以重试
+                last_error = f"网络错误：{type(e).__name__}: {e}"
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 8)
+                    time.sleep(wait_time)
+                    continue
+            except Exception as e:
+                # 其他异常，不重试
+                return False, f"初始化上传失败：{type(e).__name__}: {e}", None
+        
+        # 所有重试都失败了
+        return False, f"初始化上传失败（已重试 {max_retries} 次）：{last_error}", None
+    
+    def _complete_upload_with_retry(self, max_retries: int = 3) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """
+        完成上传（带重试机制）
+        
+        Args:
+            max_retries: 最大重试次数
+        
+        Returns:
+            (success: bool, error_msg: Optional[str], result: Optional[Dict])
+        """
+        import time
+        
+        complete_data = {
+            "upload_id": self._upload_id
+        }
+        
+        last_error = None
+        for attempt in range(max_retries):
+            if self._should_stop:
+                return False, "上传已取消", None
+            
+            try:
+                complete_response = httpx.post(
+                    f"{self._upload_api_url}/complete",
+                    data=complete_data,
+                    timeout=300.0
+                )
+                
+                if complete_response.status_code == 200:
+                    complete_result = complete_response.json()
+                    if complete_result.get("status") == "success":
+                        return True, None, complete_result
+                    else:
+                        # 服务器返回错误，不重试
+                        error_msg = complete_result.get('message', '未知错误')
+                        return False, f"完成上传失败：{error_msg}", None
+                else:
+                    # HTTP错误
+                    error_msg = f"完成上传失败：HTTP {complete_response.status_code}"
+                    # 4xx错误通常不应该重试，5xx错误可以重试
+                    if 400 <= complete_response.status_code < 500:
+                        return False, error_msg, None
+                    last_error = error_msg
+                    
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                # 网络错误，可以重试
+                last_error = f"网络错误：{type(e).__name__}: {e}"
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 8)
+                    time.sleep(wait_time)
+                    continue
+            except Exception as e:
+                # 其他异常，不重试
+                return False, f"完成上传失败：{type(e).__name__}: {e}", None
+        
+        # 所有重试都失败了
+        return False, f"完成上传失败（已重试 {max_retries} 次）：{last_error}", None
+    
     @Slot()
     def run(self) -> None:
         try:
@@ -166,27 +360,10 @@ class _UploadWorker(QRunnable):
             
             # 如果没有上传ID，初始化上传
             if not self._upload_id:
-                # 初始化上传
-                init_data = {
-                    "filename": self._file_path.name,
-                    "platform": self._platform,
-                    "version": self._version,
-                    "total_size": file_size
-                }
-                
-                init_response = httpx.post(
-                    f"{self._upload_api_url}/init",
-                    data=init_data,
-                    timeout=30.0
-                )
-                
-                if init_response.status_code != 200:
-                    self.signals.error.emit(f"初始化上传失败：HTTP {init_response.status_code}")
-                    return
-                
-                init_result = init_response.json()
-                if init_result.get("status") != "success":
-                    self.signals.error.emit(f"初始化上传失败：{init_result.get('message', '未知错误')}")
+                # 初始化上传（带重试机制）
+                success, error_msg, init_result = self._init_upload_with_retry(file_size)
+                if not success:
+                    self.signals.error.emit(error_msg)
                     return
                 
                 self._upload_id = init_result["upload_id"]
@@ -225,39 +402,14 @@ class _UploadWorker(QRunnable):
                     if not chunk_data:
                         break
                     
-                    # 上传分片
-                    chunk_files = {
-                        "chunk": (f"chunk_{chunk_index}", chunk_data, "application/octet-stream")
-                    }
-                    chunk_data_form = {
-                        "upload_id": self._upload_id,
-                        "chunk_index": chunk_index
-                    }
-                    
-                    chunk_response = httpx.post(
-                        f"{self._upload_api_url}/chunk",
-                        files=chunk_files,
-                        data=chunk_data_form,
-                        timeout=300.0
-                    )
+                    # 上传分片（带重试机制）
+                    success, error_msg = self._upload_chunk_with_retry(chunk_index, chunk_data)
                     
                     if self._should_stop:
                         return
                     
-                    if chunk_response.status_code != 200:
-                        error_msg = f"上传分片 {chunk_index} 失败：HTTP {chunk_response.status_code}"
-                        try:
-                            error_result = chunk_response.json()
-                            if "message" in error_result:
-                                error_msg = f"上传分片 {chunk_index} 失败：{error_result['message']}"
-                        except:
-                            pass
+                    if not success:
                         self.signals.error.emit(error_msg)
-                        return
-                    
-                    chunk_result = chunk_response.json()
-                    if chunk_result.get("status") != "success":
-                        self.signals.error.emit(f"上传分片 {chunk_index} 失败：{chunk_result.get('message', '未知错误')}")
                         return
                     
                     # 记录已上传的分片
@@ -275,23 +427,10 @@ class _UploadWorker(QRunnable):
             if self._should_stop:
                 return
             
-            complete_data = {
-                "upload_id": self._upload_id
-            }
-            
-            complete_response = httpx.post(
-                f"{self._upload_api_url}/complete",
-                data=complete_data,
-                timeout=300.0
-            )
-            
-            if complete_response.status_code != 200:
-                self.signals.error.emit(f"完成上传失败：HTTP {complete_response.status_code}")
-                return
-            
-            complete_result = complete_response.json()
-            if complete_result.get("status") != "success":
-                self.signals.error.emit(f"完成上传失败：{complete_result.get('message', '未知错误')}")
+            # 完成上传（带重试机制）
+            success, error_msg, complete_result = self._complete_upload_with_retry()
+            if not success:
+                self.signals.error.emit(error_msg)
                 return
             
             # 清除进度文件

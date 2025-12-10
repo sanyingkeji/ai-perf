@@ -9,7 +9,7 @@
 - 日志查看（TAB 3）：通过SSH获取日志文件列表，支持查看和下载
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 import re
@@ -5050,6 +5050,200 @@ class _UploadFileWorker(QRunnable):
         except Exception:
             pass
     
+    def _upload_chunk_with_retry(self, chunk_index: int, chunk_data: bytes, max_retries: int = 5) -> Tuple[bool, Optional[str]]:
+        """
+        上传分片（带重试机制）
+        
+        Args:
+            chunk_index: 分片索引
+            chunk_data: 分片数据
+            max_retries: 最大重试次数
+        
+        Returns:
+            (success: bool, error_msg: Optional[str])
+        """
+        import time
+        
+        chunk_files = {
+            "chunk": (f"chunk_{chunk_index}", chunk_data, "application/octet-stream")
+        }
+        chunk_data_form = {
+            "upload_id": self._upload_id,
+            "chunk_index": chunk_index
+        }
+        
+        last_error = None
+        for attempt in range(max_retries):
+            if self._should_stop:
+                return False, "上传已取消"
+            
+            try:
+                chunk_response = httpx.post(
+                    f"{self._upload_api_url}/chunk",
+                    files=chunk_files,
+                    data=chunk_data_form,
+                    timeout=300.0
+                )
+                
+                if chunk_response.status_code == 200:
+                    chunk_result = chunk_response.json()
+                    if chunk_result.get("status") == "success":
+                        return True, None
+                    else:
+                        # 服务器返回错误，但这不是网络错误，不重试
+                        error_msg = chunk_result.get('message', '未知错误')
+                        return False, f"上传分片 {chunk_index} 失败：{error_msg}"
+                else:
+                    # HTTP错误，尝试解析错误信息
+                    error_msg = f"上传分片 {chunk_index} 失败：HTTP {chunk_response.status_code}"
+                    try:
+                        error_result = chunk_response.json()
+                        if "message" in error_result:
+                            error_msg = f"上传分片 {chunk_index} 失败：{error_result['message']}"
+                    except:
+                        pass
+                    
+                    # 4xx错误通常不应该重试（客户端错误），5xx错误可以重试
+                    if 400 <= chunk_response.status_code < 500:
+                        return False, error_msg
+                    
+                    last_error = error_msg
+                    
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                # 网络错误，可以重试
+                last_error = f"网络错误：{type(e).__name__}: {e}"
+                if attempt < max_retries - 1:
+                    # 指数退避：1秒, 2秒, 4秒, 8秒, 16秒
+                    wait_time = min(2 ** attempt, 16)
+                    time.sleep(wait_time)
+                    continue
+            except Exception as e:
+                # 其他异常，不重试
+                return False, f"上传分片 {chunk_index} 失败：{type(e).__name__}: {e}"
+        
+        # 所有重试都失败了
+        return False, f"上传分片 {chunk_index} 失败（已重试 {max_retries} 次）：{last_error}"
+    
+    def _init_upload_with_retry(self, file_size: int, max_retries: int = 3) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """
+        初始化上传（带重试机制）
+        
+        Args:
+            file_size: 文件大小
+            max_retries: 最大重试次数
+        
+        Returns:
+            (success: bool, error_msg: Optional[str], result: Optional[Dict])
+        """
+        import time
+        
+        init_data = {
+            "filename": self._file_path.name,
+            "platform": self._platform,
+            "version": self._version,
+            "total_size": file_size
+        }
+        
+        last_error = None
+        for attempt in range(max_retries):
+            if self._should_stop:
+                return False, "上传已取消", None
+            
+            try:
+                init_response = httpx.post(
+                    f"{self._upload_api_url}/init",
+                    data=init_data,
+                    timeout=30.0
+                )
+                
+                if init_response.status_code == 200:
+                    init_result = init_response.json()
+                    if init_result.get("status") == "success":
+                        return True, None, init_result
+                    else:
+                        # 服务器返回错误，不重试
+                        error_msg = init_result.get('message', '未知错误')
+                        return False, f"初始化上传失败：{error_msg}", None
+                else:
+                    # HTTP错误
+                    error_msg = f"初始化上传失败：HTTP {init_response.status_code}"
+                    # 4xx错误通常不应该重试，5xx错误可以重试
+                    if 400 <= init_response.status_code < 500:
+                        return False, error_msg, None
+                    last_error = error_msg
+                    
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                # 网络错误，可以重试
+                last_error = f"网络错误：{type(e).__name__}: {e}"
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 8)
+                    time.sleep(wait_time)
+                    continue
+            except Exception as e:
+                # 其他异常，不重试
+                return False, f"初始化上传失败：{type(e).__name__}: {e}", None
+        
+        # 所有重试都失败了
+        return False, f"初始化上传失败（已重试 {max_retries} 次）：{last_error}", None
+    
+    def _complete_upload_with_retry(self, max_retries: int = 3) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """
+        完成上传（带重试机制）
+        
+        Args:
+            max_retries: 最大重试次数
+        
+        Returns:
+            (success: bool, error_msg: Optional[str], result: Optional[Dict])
+        """
+        import time
+        
+        complete_data = {
+            "upload_id": self._upload_id
+        }
+        
+        last_error = None
+        for attempt in range(max_retries):
+            if self._should_stop:
+                return False, "上传已取消", None
+            
+            try:
+                complete_response = httpx.post(
+                    f"{self._upload_api_url}/complete",
+                    data=complete_data,
+                    timeout=300.0
+                )
+                
+                if complete_response.status_code == 200:
+                    complete_result = complete_response.json()
+                    if complete_result.get("status") == "success":
+                        return True, None, complete_result
+                    else:
+                        # 服务器返回错误，不重试
+                        error_msg = complete_result.get('message', '未知错误')
+                        return False, f"完成上传失败：{error_msg}", None
+                else:
+                    # HTTP错误
+                    error_msg = f"完成上传失败：HTTP {complete_response.status_code}"
+                    # 4xx错误通常不应该重试，5xx错误可以重试
+                    if 400 <= complete_response.status_code < 500:
+                        return False, error_msg, None
+                    last_error = error_msg
+                    
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                # 网络错误，可以重试
+                last_error = f"网络错误：{type(e).__name__}: {e}"
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 8)
+                    time.sleep(wait_time)
+                    continue
+            except Exception as e:
+                # 其他异常，不重试
+                return False, f"完成上传失败：{type(e).__name__}: {e}", None
+        
+        # 所有重试都失败了
+        return False, f"完成上传失败（已重试 {max_retries} 次）：{last_error}", None
+    
     @Slot()
     def run(self) -> None:
         try:
@@ -5118,27 +5312,10 @@ class _UploadFileWorker(QRunnable):
             
             # 如果没有上传ID，初始化上传
             if not self._upload_id:
-                # 初始化上传
-                init_data = {
-                    "filename": self._file_path.name,
-                    "platform": self._platform,
-                    "version": self._version,
-                    "total_size": file_size
-                }
-                
-                init_response = httpx.post(
-                    f"{self._upload_api_url}/init",
-                    data=init_data,
-                    timeout=30.0
-                )
-                
-                if init_response.status_code != 200:
-                    self.signals.error.emit(f"初始化上传失败：HTTP {init_response.status_code}")
-                    return
-                
-                init_result = init_response.json()
-                if init_result.get("status") != "success":
-                    self.signals.error.emit(f"初始化上传失败：{init_result.get('message', '未知错误')}")
+                # 初始化上传（带重试机制）
+                success, error_msg, init_result = self._init_upload_with_retry(file_size)
+                if not success:
+                    self.signals.error.emit(error_msg)
                     return
                 
                 self._upload_id = init_result["upload_id"]
@@ -5177,39 +5354,14 @@ class _UploadFileWorker(QRunnable):
                     if not chunk_data:
                         break
                     
-                    # 上传分片
-                    chunk_files = {
-                        "chunk": (f"chunk_{chunk_index}", chunk_data, "application/octet-stream")
-                    }
-                    chunk_data_form = {
-                        "upload_id": self._upload_id,
-                        "chunk_index": chunk_index
-                    }
-                    
-                    chunk_response = httpx.post(
-                        f"{self._upload_api_url}/chunk",
-                        files=chunk_files,
-                        data=chunk_data_form,
-                        timeout=300.0
-                    )
+                    # 上传分片（带重试机制）
+                    success, error_msg = self._upload_chunk_with_retry(chunk_index, chunk_data)
                     
                     if self._should_stop:
                         return
                     
-                    if chunk_response.status_code != 200:
-                        error_msg = f"上传分片 {chunk_index} 失败：HTTP {chunk_response.status_code}"
-                        try:
-                            error_result = chunk_response.json()
-                            if "message" in error_result:
-                                error_msg = f"上传分片 {chunk_index} 失败：{error_result['message']}"
-                        except:
-                            pass
+                    if not success:
                         self.signals.error.emit(error_msg)
-                        return
-                    
-                    chunk_result = chunk_response.json()
-                    if chunk_result.get("status") != "success":
-                        self.signals.error.emit(f"上传分片 {chunk_index} 失败：{chunk_result.get('message', '未知错误')}")
                         return
                     
                     # 记录已上传的分片
@@ -5227,23 +5379,10 @@ class _UploadFileWorker(QRunnable):
             if self._should_stop:
                 return
             
-            complete_data = {
-                "upload_id": self._upload_id
-            }
-            
-            complete_response = httpx.post(
-                f"{self._upload_api_url}/complete",
-                data=complete_data,
-                timeout=300.0
-            )
-            
-            if complete_response.status_code != 200:
-                self.signals.error.emit(f"完成上传失败：HTTP {complete_response.status_code}")
-                return
-            
-            complete_result = complete_response.json()
-            if complete_result.get("status") != "success":
-                self.signals.error.emit(f"完成上传失败：{complete_result.get('message', '未知错误')}")
+            # 完成上传（带重试机制）
+            success, error_msg, complete_result = self._complete_upload_with_retry()
+            if not success:
+                self.signals.error.emit(error_msg)
                 return
             
             # 清除进度文件
@@ -5865,14 +6004,18 @@ class PackageTab(QWidget):
         download_action = menu.addAction("仅下载")
         download_action.triggered.connect(lambda: self._on_download_only(asset_data))
         
-        # 上传到服务器选项
-        upload_action = menu.addAction("上传到服务器")
+        # 下载并同步到服务器选项
+        upload_action = menu.addAction("下载并同步到服务器")
         upload_action.triggered.connect(lambda: self._on_upload_to_server(asset_data))
         
         # 下载并签名选项（仅 macOS 版本显示）
         if has_macos:
             sign_action = menu.addAction("下载并签名")
             sign_action.triggered.connect(lambda: self._on_download_and_sign(asset_data))
+            
+            # 上传已签名包到服务器选项（仅 macOS 版本显示）
+            upload_signed_action = menu.addAction("上传已签名包到服务器")
+            upload_signed_action.triggered.connect(lambda: self._on_upload_signed_package(asset_data))
         
         # 显示菜单
         menu.exec_(self.version_table.viewport().mapToGlobal(position))
@@ -6261,6 +6404,134 @@ class PackageTab(QWidget):
             tab_name = tab_name[:27] + "..."
         self._execute_sign_script(cmd, tab_name, asset_name)
     
+    def _on_upload_signed_package(self, asset_data: Dict[str, Any]):
+        """上传已签名包到服务器：查找本地已签名的 dmg 包并上传（仅 macOS，仅 dmg，不传 pkg）"""
+        # 获取 asset 信息
+        asset_name = asset_data.get("asset_name", "")
+        platform = asset_data.get("platform", "")
+        version = asset_data.get("version", "")
+        
+        # 检查平台
+        if platform != "macOS":
+            QMessageBox.warning(self, "错误", "此功能仅支持 macOS 平台")
+            return
+        
+        if not version:
+            QMessageBox.warning(self, "错误", "无法获取版本号")
+            return
+        
+        # 从asset名称中提取客户端类型和架构（和"下载并签名"的逻辑一样）
+        asset_name_lower = asset_name.lower()
+        client_type = None
+        arch = None
+        
+        # 检查是否包含employee或client
+        if "employee" in asset_name_lower or "client" in asset_name_lower or "ai.perf.client" in asset_name_lower or "ai-perf-client" in asset_name_lower:
+            client_type = "employee"
+        # 检查是否包含admin
+        elif "admin" in asset_name_lower or "ai-perf-admin" in asset_name_lower or "ai.perf.admin" in asset_name_lower:
+            client_type = "admin"
+        
+        if not client_type:
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"无法从文件名中识别客户端类型：{asset_name}\n\n"
+                f"文件名应包含 'employee'、'client' 或 'admin' 关键字。"
+            )
+            return
+        
+        # 从文件名中提取架构
+        if "-arm64" in asset_name_lower or asset_name_lower.endswith("-arm64.app.zip") or asset_name_lower.endswith("-arm64.zip"):
+            arch = "arm64"
+        elif "-intel" in asset_name_lower or asset_name_lower.endswith("-intel.app.zip") or asset_name_lower.endswith("-intel.zip"):
+            arch = "intel"
+        elif "arm64" in asset_name_lower:
+            arch = "arm64"
+        elif "intel" in asset_name_lower or "x86" in asset_name_lower:
+            arch = "intel"
+        
+        if not arch:
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"无法从文件名中识别架构类型：{asset_name}\n\n"
+                f"文件名应包含 'arm64' 或 'intel' 关键字。"
+            )
+            return
+        
+        # 构建已签名包的路径：{client_dir}/dist/from_github/{client_type}/{arch}/
+        client_dir = Path(self._project_root) / ("ui_client" if client_type == "employee" else "admin_ui_client")
+        signed_package_dir = client_dir / "dist" / "from_github" / client_type / arch
+        
+        if not signed_package_dir.exists():
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"找不到已签名包目录：\n{signed_package_dir}\n\n请先执行'下载并签名'功能生成已签名包。"
+            )
+            return
+        
+        # 查找 dmg 文件（不找 pkg）
+        dmg_files = list(signed_package_dir.glob("*.dmg"))
+        
+        if not dmg_files:
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"在目录中未找到已签名的 dmg 文件：\n{signed_package_dir}\n\n请先执行'下载并签名'功能生成已签名包。"
+            )
+            return
+        
+        # 如果有多个 dmg 文件，选择最新的
+        if len(dmg_files) > 1:
+            # 按修改时间排序，选择最新的
+            dmg_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        dmg_path = dmg_files[0]
+        dmg_name = dmg_path.name
+        
+        # 将平台名称转换为上传接口需要的格式
+        upload_platform = "darwin"  # macOS 对应 darwin
+        
+        # 创建上传TAB
+        tab_name = f"上传已签名包 {dmg_name}"
+        if len(tab_name) > 30:
+            tab_name = tab_name[:27] + "..."
+        
+        # 创建新的输出TAB
+        output_text = self._create_output_text_edit()
+        output_text.setPlaceholderText(f"正在上传已签名包到服务器：{dmg_name}...")
+        
+        # 添加到TAB
+        tab_index = self.output_tabs.addTab(output_text, tab_name)
+        self.output_tabs.setCurrentIndex(tab_index)  # 切换到新TAB
+        
+        # 存储TAB信息
+        upload_tab_key = f"upload_signed_{tab_name}"
+        if not hasattr(self, '_upload_tabs'):
+            self._upload_tabs = {}
+        self._upload_tabs[upload_tab_key] = {
+            "widget": output_text,
+            "full_name": dmg_name,
+            "save_path": dmg_path,
+            "upload_platform": upload_platform,
+            "version": version,
+            "download_dir": signed_package_dir
+        }
+        
+        # 输出初始信息
+        self._append_output_to_widget(output_text, "=" * 50 + "\n")
+        self._append_output_to_widget(output_text, f"上传已签名包到服务器：{dmg_name}\n")
+        self._append_output_to_widget(output_text, f"版本：{version}\n")
+        self._append_output_to_widget(output_text, f"平台：{upload_platform}\n")
+        self._append_output_to_widget(output_text, f"文件路径：{dmg_path}\n")
+        self._append_output_to_widget(output_text, "=" * 50 + "\n\n")
+        
+        # 直接开始上传（不需要下载）
+        self._append_output_to_widget(output_text, "开始上传到服务器...\n")
+        self._start_upload_to_server(upload_tab_key, str(dmg_path))
+    
     def _execute_sign_script(self, cmd: List[str], tab_name: str, full_asset_name: str):
         """执行签名脚本并显示输出（在独立的TAB中）"""
         # 创建新的输出TAB
@@ -6447,7 +6718,7 @@ class PackageTab(QWidget):
         self._append_output_to_tab(tab_name, "=" * 50)
     
     def _on_upload_to_server(self, asset_data: Dict[str, Any]):
-        """上传到服务器：先下载文件，然后上传到服务器（输出到TAB）"""
+        """下载并同步到服务器：先下载文件，然后上传到服务器（输出到TAB）"""
         # 获取 asset 信息
         asset_name = asset_data.get("asset_name", "")
         asset_url = asset_data.get("asset_url", "")

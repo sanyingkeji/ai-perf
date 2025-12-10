@@ -514,7 +514,6 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
     
     # 如果从 spec 文件读取失败，尝试从环境变量读取
     if not version:
-        import os
         version = os.environ.get("CLIENT_VERSION")
         if version:
             log_info(f"从环境变量 CLIENT_VERSION 读取版本号: {version}")
