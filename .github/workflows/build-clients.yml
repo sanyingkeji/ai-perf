@@ -669,13 +669,23 @@ jobs:
           cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
           python ../scripts/build_client.py ${{ matrix.client }} windows
       
-      - name: Upload EXE artifact
+      - name: Upload EXE artifact (Setup installer)
         if: steps.check_build.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.client }}-windows-exe
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/*_Setup.exe
+          retention-days: 30
+          if-no-files-found: ignore
+      
+      - name: Upload EXE artifact (fallback to raw EXE if no Setup)
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-windows-exe-raw
           path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/*.exe
           retention-days: 30
+          if-no-files-found: ignore
       
       - name: Upload MSI artifact
         if: steps.check_build.outputs.should_build == 'true'
@@ -927,14 +937,25 @@ jobs:
           done
           
           # 复制安装包文件（.dmg, .pkg, .exe, .msi, .deb, .rpm）
+          # 优先复制安装器 EXE（*_Setup.exe），如果存在则排除原始 EXE
           find artifacts -type f \( \
             -name "*.dmg" -o \
             -name "*.pkg" -o \
-            -name "*.exe" -o \
             -name "*.msi" -o \
             -name "*.deb" -o \
             -name "*.rpm" \
           \) -exec cp {} release_files/ \;
+          
+          # 优先复制安装器 EXE（*_Setup.exe）
+          find artifacts -type f -name "*_Setup.exe" -exec cp {} release_files/ \;
+          
+          # 如果没有找到安装器，则复制原始 EXE（作为后备）
+          if [ -z "$(find release_files -name "*_Setup.exe" 2>/dev/null)" ]; then
+            echo "⚠ 未找到安装器 EXE，使用原始 EXE 作为后备"
+            find artifacts -type f -name "*.exe" ! -name "*_Setup.exe" -exec cp {} release_files/ \;
+          else
+            echo "✓ 已找到安装器 EXE，跳过原始 EXE"
+          fi
           
           # 显示要上传的文件
           echo ""

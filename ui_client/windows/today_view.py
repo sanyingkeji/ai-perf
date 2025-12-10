@@ -858,10 +858,18 @@ class TodayView(QWidget):
     def refresh_from_api(self, silent: bool = False) -> None:
         """
         入口只负责：
+        - 检查登录状态（未登录时不发起请求）；
         - 显示全局 Loading；
         - 准备并启动后台线程；
         - 其余工作交给 _on_load_finished / _on_load_error。
         """
+        # 检查登录状态，未登录时不发起请求
+        if not ApiClient.is_logged_in():
+            if not silent:
+                from widgets.toast import Toast
+                Toast.show_message(self, "请先登录")
+            return
+        
         win = self.window()
         show_loading = getattr(win, "show_loading", None)
 

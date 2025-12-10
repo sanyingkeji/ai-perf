@@ -57,12 +57,21 @@ class PollingService(QObject):
         self._version_timer.stop()
     
     def _check_notifications(self):
-        """检查新通知"""
+        """检查新通知（需要登录）"""
+        # 首先检查是否已登录，未登录时不发起请求
+        if not ApiClient.is_logged_in():
+            return
+        
         if not self.api_client:
             try:
                 self.api_client = ApiClient.from_config()
             except Exception:
+                # 如果无法创建客户端（比如未登录），直接返回
                 return
+        
+        # 再次验证客户端是否有效（双重检查）
+        if not self.api_client:
+            return
         
         if not self.config.get("notifications", True):
             return
@@ -146,6 +155,14 @@ class _NotificationCheckWorker(QRunnable):
     
     def run(self):
         """执行检查"""
+        # 检查 api_client 是否有效
+        if not self.api_client:
+            return
+        
+        # 再次检查登录状态（双重检查，确保不会在未登录时发起请求）
+        if not ApiClient.is_logged_in():
+            return
+        
         try:
             response = self.api_client._get("/api/notifications", params={"unread_only": True, "limit": 10})
             

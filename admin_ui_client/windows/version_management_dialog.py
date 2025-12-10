@@ -123,6 +123,8 @@ class VersionManagementDialog(QDialog):
             "admin_windows_linux": "管理端 (Windows/Linux)",
             "employee_config": "员工端 config.json",
             "admin_config": "管理端 config.json",
+            "employee_config_manager": "员工端 config_manager.py",
+            "admin_config_manager": "管理端 config_manager.py",
         }
         
         # 更新表格
@@ -141,6 +143,10 @@ class VersionManagementDialog(QDialog):
                 spec_path = "ui_client/config.json"
             elif key == "admin_config":
                 spec_path = "admin_ui_client/config.json"
+            elif key == "employee_config_manager":
+                spec_path = "ui_client/utils/config_manager.py"
+            elif key == "admin_config_manager":
+                spec_path = "admin_ui_client/utils/config_manager.py"
             else:
                 spec_path = ""
             path_item = QTableWidgetItem(spec_path)
@@ -200,7 +206,9 @@ class VersionManagementDialog(QDialog):
             f"- admin_ui_client/build_macos.spec\n"
             f"- admin_ui_client/build.spec\n"
             f"- ui_client/config.json (client_version)\n"
-            f"- admin_ui_client/config.json (client_version)",
+            f"- admin_ui_client/config.json (client_version)\n"
+            f"- ui_client/utils/config_manager.py (DEFAULT_CONFIG)\n"
+            f"- admin_ui_client/utils/config_manager.py (DEFAULT_CONFIG)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )

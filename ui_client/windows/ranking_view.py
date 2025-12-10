@@ -256,6 +256,13 @@ class RankingView(QWidget):
 
     def refresh_from_api(self, silent: bool = False):
         """从API刷新数据（供外部调用，如登录成功后）"""
+        # 检查登录状态，未登录时不发起请求
+        if not ApiClient.is_logged_in():
+            if not silent:
+                from widgets.toast import Toast
+                Toast.show_message(self, "请先登录")
+            return
+        
         # 根据当前TAB加载对应的数据
         if self._current_tab_index == 0:
             # 日排名

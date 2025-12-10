@@ -69,6 +69,75 @@ def _deep_merge_defaults(target: dict, defaults: dict) -> bool:
     return changed
 
 
+# 用户数据字段列表：这些字段应该保留用户的值，不从项目配置同步
+USER_DATA_FIELDS = {
+    "session_token",
+    "google_id_token",
+    "user_id",
+    "user_name",
+    "user_email",
+    "update_dialog_dismissed_date",  # 用户交互数据
+    # 管理端特有的用户数据字段
+    "ssh_host",
+    "ssh_port",
+    "ssh_username",
+    "ssh_password",
+    "ssh_key_path",
+    "openai_session_key",
+    "github_api_key",
+    "packaging_github_api_key",
+    "jira_token",
+    "jira_account_email",
+    "figma_api_key",
+}
+
+
+def _smart_merge_project_config(user_config: dict, template_config: dict) -> bool:
+    """
+    智能合并配置模板到用户配置。
+    系统配置字段会同步更新，用户数据字段会保留用户的值。
+    适用于开发模式和正式版本。
+    
+    Args:
+        user_config: 用户配置字典（会被修改）
+        template_config: 配置模板字典（项目 config.json 或 DEFAULT_CONFIG）
+    
+    Returns:
+        是否有变化
+    """
+    changed = False
+    
+    for key, template_value in template_config.items():
+        # 跳过配置版本号（由迁移系统处理）
+        if key == "config_version":
+            continue
+        
+        # 如果是用户数据字段，保留用户的值
+        if key in USER_DATA_FIELDS:
+            # 如果用户配置中没有这个字段，才从模板配置补充
+            if key not in user_config:
+                user_config[key] = copy.deepcopy(template_value)
+                changed = True
+            # 否则保留用户的值，不更新
+            continue
+        
+        # 对于系统配置字段，如果模板中的值不同，则同步更新
+        if key not in user_config:
+            # 用户配置中没有，直接添加
+            user_config[key] = copy.deepcopy(template_value)
+            changed = True
+        elif isinstance(template_value, dict) and isinstance(user_config.get(key), dict):
+            # 递归处理嵌套字典
+            if _smart_merge_project_config(user_config[key], template_value):
+                changed = True
+        elif user_config[key] != template_value:
+            # 值不同，同步更新为模板配置的值
+            user_config[key] = copy.deepcopy(template_value)
+            changed = True
+    
+    return changed
+
+
 def _migrate_v1_to_v2(data: dict) -> dict:
     """v1 -> v2 迁移：加入 config_version，保留用户自定义。"""
     data.setdefault("config_version", 1)
@@ -86,6 +155,12 @@ class ConfigManager:
         """
         读取配置，执行迁移并补全缺失字段。
         优先使用用户目录配置，如无则尝试从旧路径迁移。
+        
+        配置同步策略：
+        - 系统配置字段（如 client_version, api_base 等）会自动同步更新
+        - 用户数据字段（如 session_token, user_id 等）会保留用户的值
+        - 开发者模式：优先使用项目中的 config.json 作为模板
+        - 正式版本：使用硬编码的 DEFAULT_CONFIG 作为模板
         """
         data = ConfigManager._safe_read(CONFIG_PATH)
         migrated_from_legacy = False
@@ -122,8 +197,17 @@ class ConfigManager:
             current_version = data.get("config_version", current_version + 1)
             changed = True
 
-        # 补全缺失字段
-        if _deep_merge_defaults(data, DEFAULT_CONFIG):
+        # 智能合并配置：系统配置字段会同步更新，用户数据字段会保留用户的值
+        # 优先使用项目中的 config.json（开发者模式），否则使用硬编码的 DEFAULT_CONFIG
+        project_config = None
+        if LEGACY_CONFIG_PATH.exists():
+            project_config = ConfigManager._safe_read(LEGACY_CONFIG_PATH)
+        
+        # 使用项目配置或默认配置作为模板
+        template_config = project_config if project_config else DEFAULT_CONFIG
+        
+        # 智能合并：系统配置同步更新，用户数据保留
+        if _smart_merge_project_config(data, template_config):
             changed = True
 
         # 如需要，写回用户目录

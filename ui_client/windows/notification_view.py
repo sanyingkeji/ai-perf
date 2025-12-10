@@ -540,6 +540,12 @@ class NotificationView(QWidget):
     
     def reload_from_api(self):
         """从 API 重新加载（供外部调用）"""
+        # 检查登录状态，未登录时不发起请求
+        if not ApiClient.is_logged_in():
+            from widgets.toast import Toast
+            Toast.show_message(self, "请先登录")
+            return
+        
         self._load_notifications()
     
     def highlight_notification(self, notification_id: int):

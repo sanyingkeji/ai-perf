@@ -32,6 +32,10 @@ class GoogleLoginError(Exception):
 _login_lock = threading.Lock()
 _login_in_progress = False
 
+# 防止重复打开浏览器的标志（在同一个登录流程中）
+_browser_opened = False
+_browser_lock = threading.Lock()
+
 
 SCOPES = [
     "openid",
@@ -50,28 +54,65 @@ def _open_in_new_window1(auth_url: str):
 
 
 def _open_in_new_window(auth_url: str):
-    # macOS 上可以用 AppleScript 控制 Chrome/Safari 尺寸（之前我说的那个）
+    """打开浏览器进行授权，防止重复打开（在同一个登录流程中只打开一次）
+    
+    此函数使用全局标志和锁机制，确保即使在 run_local_server 多次调用的情况下，
+    也只会打开一次浏览器窗口。适用于所有平台（macOS、Windows、Linux）。
+    """
+    global _browser_opened
+    
+    # 使用锁确保线程安全
+    with _browser_lock:
+        # 如果已经打开过浏览器，直接返回（防止重复打开）
+        if _browser_opened:
+            return
+        _browser_opened = True
+    
+    # macOS 上使用 subprocess 直接调用 open 命令，更可靠且避免重复打开
     if sys.platform == "darwin":
-        # 这里略过：你如果需要我可以再写一版 mac 脚本
         try:
-            webbrowser.open_new(auth_url)
+            # 使用 macOS 的 open 命令，这是最可靠的方式
+            subprocess.Popen(["open", auth_url])
             return
         except Exception:
-            pass
+            # 回退到 webbrowser
+            try:
+                webbrowser.open_new(auth_url)
+                return
+            except Exception:
+                webbrowser.open(auth_url)
+                return
 
     # Windows：优先用 Edge app 模式，接近“无地址栏小窗”
     if sys.platform.startswith("win"):
         try:
+            # 尝试使用 Edge app 模式
             subprocess.Popen([
                 "msedge.exe",
                 f"--app={auth_url}",
                 "--window-size=900,700",
-            ])
+            ], creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
             return
         except Exception:
+            # Edge app 模式失败，尝试使用 start 命令（Windows 原生方式，更可靠）
+            try:
+                subprocess.Popen(["start", auth_url], shell=True)
+                return
+            except Exception:
+                # 如果 start 命令也失败，回退到 webbrowser
+                pass
+
+    # Linux 和其他平台：使用 xdg-open（如果可用）
+    if sys.platform.startswith("linux"):
+        try:
+            subprocess.Popen(["xdg-open", auth_url])
+            return
+        except Exception:
+            # xdg-open 不可用，回退到 webbrowser
             pass
 
-    # 兜底：默认浏览器，普通行为
+    # 兜底：所有平台通用的默认浏览器打开方式
+    # 注意：由于前面已经设置了 _browser_opened = True，即使这里被多次调用也不会重复打开
     try:
         webbrowser.open_new(auth_url)
     except Exception:
@@ -228,13 +269,17 @@ def login_and_get_id_token(callback_received_callback=None) -> str:
     Raises:
         GoogleLoginError: 如果登录过程中出现错误，或已有登录流程在进行中
     """
-    global _login_in_progress
+    global _login_in_progress, _browser_opened
     
     # 检查是否已有登录流程在进行中
     with _login_lock:
         if _login_in_progress:
             raise GoogleLoginError("登录流程正在进行中，请勿重复点击。")
         _login_in_progress = True
+    
+    # 重置浏览器打开标志，允许新的登录流程打开浏览器
+    with _browser_lock:
+        _browser_opened = False
     
     try:
         try:

@@ -3307,16 +3307,23 @@ class AirDropView(QWidget):
     
     def _on_transfer_progress(self, target_name: str, uploaded: int, total: int):
         """传输进度更新"""
-        if self._current_target and target_name == self._current_target.name:
+        if self._current_target and hasattr(self._current_target, 'name') and target_name == self._current_target.name:
             progress = int((uploaded / total) * 100) if total > 0 else 0
             self.status_label.setVisible(False)
             # 更新设备项的头像进度条
-            for i in range(self.devices_list.count()):
-                item = self.devices_list.item(i)
-                widget = self.devices_list.itemWidget(item)
-                if isinstance(widget, DeviceItemWidget) and widget.device.name == target_name:
-                    widget.set_progress(progress)
-                    break
+            try:
+                for i in range(self.devices_list.count()):
+                    item = self.devices_list.item(i)
+                    if item is None:
+                        continue
+                    widget = self.devices_list.itemWidget(item)
+                    if (isinstance(widget, DeviceItemWidget) and 
+                        hasattr(widget, 'device') and widget.device is not None and
+                        hasattr(widget.device, 'name') and widget.device.name == target_name):
+                        widget.set_progress(progress)
+                        break
+            except Exception as e:
+                logger.error(f"更新传输进度时出错: {e}", exc_info=True)
     
     def _on_transfer_completed(self, target_name: str, success: bool, message: str):
         """传输完成"""
@@ -3328,23 +3335,35 @@ class AirDropView(QWidget):
         current_device = self._current_target
         target_user_id = None
         target_device = None
-        for i in range(self.devices_list.count()):
-            item = self.devices_list.item(i)
-            widget = self.devices_list.itemWidget(item)
-            if isinstance(widget, DeviceItemWidget) and widget.device.name == target_name:
-                widget.set_progress(0)
-                widget.set_device_status(None)
-                target_user_id = widget.device.user_id
-                target_device = widget.device
-                break
+        try:
+            for i in range(self.devices_list.count()):
+                item = self.devices_list.item(i)
+                if item is None:
+                    continue
+                widget = self.devices_list.itemWidget(item)
+                if (isinstance(widget, DeviceItemWidget) and 
+                    hasattr(widget, 'device') and widget.device is not None and
+                    hasattr(widget.device, 'name') and widget.device.name == target_name):
+                    widget.set_progress(0)
+                    widget.set_device_status(None)
+                    if hasattr(widget.device, 'user_id'):
+                        target_user_id = widget.device.user_id
+                    target_device = widget.device
+                    break
+        except Exception as e:
+            logger.error(f"处理传输完成时查找设备失败: {e}", exc_info=True)
         
         if success and target_user_id and target_device:
-            # 记录传输时间（按 user_id 记录，同一账号的所有设备共享传输时间）
-            import time
-            self._device_transfer_times[target_user_id] = time.time()
-            # 传输成功后重新排序该账号的所有设备（因为排序是基于 user_id 的）
-            self._reorder_devices_by_user_id(target_user_id)
-            Toast.show_message(self, f"文件已成功发送到 {target_name}")
+            try:
+                # 记录传输时间（按 user_id 记录，同一账号的所有设备共享传输时间）
+                import time
+                self._device_transfer_times[target_user_id] = time.time()
+                # 传输成功后重新排序该账号的所有设备（因为排序是基于 user_id 的）
+                self._reorder_devices_by_user_id(target_user_id)
+                Toast.show_message(self, f"文件已成功发送到 {target_name}")
+            except Exception as e:
+                logger.error(f"处理传输成功时出错: {e}", exc_info=True)
+                Toast.show_message(self, f"文件已成功发送到 {target_name}")
         else:
             Toast.show_message(self, f"发送失败: {message}")
         
@@ -3362,12 +3381,19 @@ class AirDropView(QWidget):
             
             # 更新设备项的头像进度条（如果有对应的设备）
             sender_id = self._pending_requests[request_id].get('sender_id', '')
-            for i in range(self.devices_list.count()):
-                item = self.devices_list.item(i)
-                widget = self.devices_list.itemWidget(item)
-                if isinstance(widget, DeviceItemWidget) and widget.device.user_id == sender_id:
-                    widget.set_progress(progress)
-                    break
+            try:
+                for i in range(self.devices_list.count()):
+                    item = self.devices_list.item(i)
+                    if item is None:
+                        continue
+                    widget = self.devices_list.itemWidget(item)
+                    if (isinstance(widget, DeviceItemWidget) and 
+                        hasattr(widget, 'device') and widget.device is not None and
+                        hasattr(widget.device, 'user_id') and widget.device.user_id == sender_id):
+                        widget.set_progress(progress)
+                        break
+            except Exception as e:
+                logger.error(f"更新接收进度时出错: {e}", exc_info=True)
         else:
             # 如果请求不在_pending_requests中，使用默认值继续更新进度
             progress = int((received / total) * 100) if total > 0 else 0
@@ -3549,62 +3575,78 @@ class AirDropView(QWidget):
     
     def _reorder_devices_by_user_id(self, user_id: str):
         """重新排序指定 user_id 的所有设备（传输后需要移动到前面）"""
-        # 找到所有该 user_id 的设备
-        devices_to_reorder = []
-        for i in range(self.devices_list.count()):
-            item = self.devices_list.item(i)
-            widget = self.devices_list.itemWidget(item)
-            if isinstance(widget, DeviceItemWidget) and widget.device.user_id == user_id:
-                devices_to_reorder.append((i, item, widget))
-        
-        if not devices_to_reorder:
+        if not user_id:
             return
         
-        # 计算新的排序键
-        new_key = self._get_device_sort_key(user_id)
-        
-        # 找到应该插入的位置（第一个设备的位置）
-        first_row = devices_to_reorder[0][0]
-        new_position = 0
-        
-        for i in range(self.devices_list.count()):
-            if i == first_row:
-                continue  # 跳过第一个要移动的设备
-            item = self.devices_list.item(i)
-            widget = self.devices_list.itemWidget(item)
-            if isinstance(widget, DeviceItemWidget):
-                existing_key = self._get_device_sort_key(widget.device.user_id)
-                if new_key < existing_key:
-                    new_position = i
-                    break
-                new_position = i + 1
-        
-        # 如果位置没有变化，不需要移动
-        if new_position == first_row or (new_position == first_row + len(devices_to_reorder)):
-            return
-        
-        # 安全地移动所有设备：先移除，再插入到新位置
-        # 按行号倒序移除，避免索引变化
-        devices_to_reorder.sort(key=lambda x: x[0], reverse=True)
-        
-        # 移除所有设备
-        for row, item, widget in devices_to_reorder:
-            self.devices_list.takeItem(row)
-            # 如果新位置在移除位置之后，需要调整
-            if new_position > row:
-                new_position -= 1
-        
-        # 按原顺序插入到新位置（保持同一账号设备的相对顺序）
-        devices_to_reorder.reverse()  # 恢复原顺序
-        for idx, (_, item, widget) in enumerate(devices_to_reorder):
-            insert_pos = new_position + idx
-            self.devices_list.insertItem(insert_pos, item)
-            # 重新设置widget（takeItem后需要重新设置）
-            self.devices_list.setItemWidget(item, widget)
-        
-        # 更新宽度和大小
-        QTimer.singleShot(0, self._update_item_widths)
-        QTimer.singleShot(0, self._adjust_devices_list_size)
+        try:
+            # 找到所有该 user_id 的设备
+            devices_to_reorder = []
+            for i in range(self.devices_list.count()):
+                item = self.devices_list.item(i)
+                if item is None:
+                    continue
+                widget = self.devices_list.itemWidget(item)
+                if (isinstance(widget, DeviceItemWidget) and 
+                    hasattr(widget, 'device') and widget.device is not None and
+                    hasattr(widget.device, 'user_id') and widget.device.user_id == user_id):
+                    devices_to_reorder.append((i, item, widget))
+            
+            if not devices_to_reorder:
+                return
+            
+            # 计算新的排序键
+            new_key = self._get_device_sort_key(user_id)
+            
+            # 找到应该插入的位置（第一个设备的位置）
+            first_row = devices_to_reorder[0][0]
+            new_position = 0
+            
+            for i in range(self.devices_list.count()):
+                if i == first_row:
+                    continue  # 跳过第一个要移动的设备
+                item = self.devices_list.item(i)
+                if item is None:
+                    continue
+                widget = self.devices_list.itemWidget(item)
+                if (isinstance(widget, DeviceItemWidget) and 
+                    hasattr(widget, 'device') and widget.device is not None and
+                    hasattr(widget.device, 'user_id')):
+                    existing_key = self._get_device_sort_key(widget.device.user_id)
+                    if new_key < existing_key:
+                        new_position = i
+                        break
+                    new_position = i + 1
+            
+            # 如果位置没有变化，不需要移动
+            if new_position == first_row or (new_position == first_row + len(devices_to_reorder)):
+                return
+            
+            # 安全地移动所有设备：先移除，再插入到新位置
+            # 按行号倒序移除，避免索引变化
+            devices_to_reorder.sort(key=lambda x: x[0], reverse=True)
+            
+            # 移除所有设备
+            for row, item, widget in devices_to_reorder:
+                if row < self.devices_list.count():
+                    self.devices_list.takeItem(row)
+                    # 如果新位置在移除位置之后，需要调整
+                    if new_position > row:
+                        new_position -= 1
+            
+            # 按原顺序插入到新位置（保持同一账号设备的相对顺序）
+            devices_to_reorder.reverse()  # 恢复原顺序
+            for idx, (_, item, widget) in enumerate(devices_to_reorder):
+                insert_pos = new_position + idx
+                if insert_pos <= self.devices_list.count():
+                    self.devices_list.insertItem(insert_pos, item)
+                    # 重新设置widget（takeItem后需要重新设置）
+                    self.devices_list.setItemWidget(item, widget)
+            
+            # 更新宽度和大小
+            QTimer.singleShot(0, self._update_item_widths)
+            QTimer.singleShot(0, self._adjust_devices_list_size)
+        except Exception as e:
+            logger.error(f"重新排序设备失败 (user_id={user_id}): {e}", exc_info=True)
     
     def _reorder_device(self, user_id: str):
         """重新排序单个设备（兼容方法，实际调用 _reorder_devices_by_user_id）"""

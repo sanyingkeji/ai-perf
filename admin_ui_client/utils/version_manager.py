@@ -128,6 +128,10 @@ class VersionManager:
         config_results = self._update_config_json_versions(new_version)
         results.update(config_results)
         
+        # 同时更新 config_manager.py 中的 DEFAULT_CONFIG 版本号
+        config_manager_results = self._update_config_manager_defaults(new_version)
+        results.update(config_manager_results)
+        
         # 更新 Inno Setup 模板文件
         inno_template = self.project_root / self.INNO_SETUP_TEMPLATE
         if inno_template.exists():
@@ -202,6 +206,78 @@ class VersionManager:
             return True
         except Exception as e:
             print(f"更新 {config_file} 中的版本号失败: {e}")
+            return False
+    
+    def _update_config_manager_defaults(self, new_version: str) -> Dict[str, bool]:
+        """
+        更新 config_manager.py 文件中的 DEFAULT_CONFIG 的 client_version
+        
+        Args:
+            new_version: 新版本号
+        
+        Returns:
+            字典，键为配置文件路径，值为是否更新成功
+        """
+        results = {}
+        
+        # 更新员工端的 config_manager.py
+        employee_config_manager = self.project_root / "ui_client" / "utils" / "config_manager.py"
+        if employee_config_manager.exists():
+            try:
+                results["employee_config_manager"] = self._update_config_manager_version(employee_config_manager, new_version)
+            except Exception as e:
+                print(f"更新 {employee_config_manager} 失败: {e}")
+                results["employee_config_manager"] = False
+        else:
+            results["employee_config_manager"] = False
+        
+        # 更新管理端的 config_manager.py
+        admin_config_manager = self.project_root / "admin_ui_client" / "utils" / "config_manager.py"
+        if admin_config_manager.exists():
+            try:
+                results["admin_config_manager"] = self._update_config_manager_version(admin_config_manager, new_version)
+            except Exception as e:
+                print(f"更新 {admin_config_manager} 失败: {e}")
+                results["admin_config_manager"] = False
+        else:
+            results["admin_config_manager"] = False
+        
+        return results
+    
+    def _update_config_manager_version(self, config_manager_file: Path, new_version: str) -> bool:
+        """
+        更新单个 config_manager.py 文件中的 DEFAULT_CONFIG 的 client_version
+        
+        Args:
+            config_manager_file: config_manager.py 文件路径
+            new_version: 新版本号
+        
+        Returns:
+            是否更新成功
+        """
+        try:
+            with open(config_manager_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            original_content = content
+            
+            # 使用正则表达式匹配并更新 client_version
+            # 匹配格式: "client_version": "x.x.x",  # 客户端版本号（格式：x.x.x）
+            # 只匹配版本号部分（x.x.x格式），保留引号和后面的内容
+            pattern = r'("client_version":\s*")[0-9]+\.[0-9]+\.[0-9]+(")'
+            replacement = f'\\g<1>{new_version}\\g<2>'
+            new_content = re.sub(pattern, replacement, content)
+            
+            # 如果内容有变化，写回文件
+            if new_content != original_content:
+                with open(config_manager_file, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                return True
+            else:
+                # 如果没有变化，可能是版本号已经是新值
+                return True
+        except Exception as e:
+            print(f"更新 {config_manager_file} 中的版本号失败: {e}")
             return False
     
     def _read_version_from_spec(self, spec_file: Path) -> Optional[str]:
@@ -371,6 +447,10 @@ class VersionManager:
         config_versions = self._get_config_json_versions()
         all_versions.update(config_versions)
         
+        # 获取 config_manager.py 中的版本号
+        config_manager_versions = self._get_config_manager_versions()
+        all_versions.update(config_manager_versions)
+        
         # 检查版本是否一致
         unique_versions = set(v for v in all_versions.values() if v is not None)
         is_consistent = len(unique_versions) <= 1
@@ -416,4 +496,60 @@ class VersionManager:
             versions["admin_config"] = None
         
         return versions
+    
+    def _get_config_manager_versions(self) -> Dict[str, Optional[str]]:
+        """
+        获取 config_manager.py 文件中的版本号
+        
+        Returns:
+            字典，键为配置文件标识，值为版本号
+        """
+        versions = {}
+        
+        # 读取员工端的 config_manager.py
+        employee_config_manager = self.project_root / "ui_client" / "utils" / "config_manager.py"
+        if employee_config_manager.exists():
+            try:
+                version = self._read_version_from_config_manager(employee_config_manager)
+                versions["employee_config_manager"] = version
+            except Exception:
+                versions["employee_config_manager"] = None
+        else:
+            versions["employee_config_manager"] = None
+        
+        # 读取管理端的 config_manager.py
+        admin_config_manager = self.project_root / "admin_ui_client" / "utils" / "config_manager.py"
+        if admin_config_manager.exists():
+            try:
+                version = self._read_version_from_config_manager(admin_config_manager)
+                versions["admin_config_manager"] = version
+            except Exception:
+                versions["admin_config_manager"] = None
+        else:
+            versions["admin_config_manager"] = None
+        
+        return versions
+    
+    def _read_version_from_config_manager(self, config_manager_file: Path) -> Optional[str]:
+        """
+        从 config_manager.py 文件中读取 client_version
+        
+        Args:
+            config_manager_file: config_manager.py 文件路径
+        
+        Returns:
+            版本号字符串，如果未找到则返回 None
+        """
+        try:
+            with open(config_manager_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 查找 "client_version": "x.x.x"
+            match = re.search(r'"client_version":\s*"([0-9]+\.[0-9]+\.[0-9]+)"', content)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            print(f"读取 config_manager.py 版本号失败: {e}")
+        
+        return None
 

@@ -27,6 +27,7 @@ import time
 import uuid
 import signal
 import threading
+import re
 try:
     from urllib.request import urlopen, Request
     from urllib.error import URLError, HTTPError
@@ -2348,14 +2349,100 @@ def main():
         
         if installer_identity:
             log_warn("签名 PKG（使用 Installer 证书）...")
+            
+            # 验证 Installer 证书是否可用
+            log_info("  验证 Installer 证书...")
+            verify_cert_result = subprocess.run([
+                "security", "find-identity", "-v", "-p", "codesigning"
+            ], capture_output=True, text=True, check=False)
+            
+            cert_found = False
+            if verify_cert_result.returncode == 0:
+                if installer_identity in verify_cert_result.stdout:
+                    cert_found = True
+                    log_info(f"  ✓ 找到 Installer 证书: {installer_identity}")
+                else:
+                    log_error(f"  ✗ 未找到 Installer 证书: {installer_identity}")
+                    log_error("     可用的证书列表：")
+                    for line in verify_cert_result.stdout.split('\n'):
+                        if "Developer ID Installer" in line:
+                            log_error(f"        {line.strip()}")
+            else:
+                log_warn(f"  ⚠ 无法验证证书（可能权限问题）: {verify_cert_result.stderr[:200]}")
+            
+            # 验证 productsign 命令是否可用
+            log_info("  验证 productsign 命令...")
+            productsign_check = subprocess.run([
+                "which", "productsign"
+            ], capture_output=True, text=True, check=False)
+            
+            if productsign_check.returncode == 0:
+                log_info(f"  ✓ productsign 命令可用: {productsign_check.stdout.strip()}")
+            else:
+                log_error("  ✗ productsign 命令不可用，PKG 签名将失败")
+                raise Exception("productsign 命令不可用，无法签名 PKG")
+            
+            # 测试不使用时间戳的签名（用于诊断）
+            # 如果时间戳签名失败，可以尝试这个来确认是否是证书问题
+            test_sign_available = False
+            if not cert_found:
+                log_warn("  ⚠ 证书验证失败，将尝试测试签名以确认问题...")
+            else:
+                log_info("  测试不使用时间戳的签名（用于诊断）...")
+                test_pkg = dist_dir / f"{pkg_name}_test.pkg"
+                try:
+                    # 先复制 PKG 文件用于测试
+                    import shutil
+                    shutil.copy2(pkg_path, test_pkg)
+                    
+                    test_result = subprocess.run([
+                        "productsign",
+                        "--sign", installer_identity,
+                        "--timestamp=none",  # 不使用时间戳
+                        str(test_pkg),
+                        str(test_pkg) + ".signed"
+                    ], capture_output=True, text=True, timeout=60, check=False)
+                    
+                    if test_result.returncode == 0:
+                        test_sign_available = True
+                        log_info("  ✓ 不使用时间戳的签名测试成功（证书可用）")
+                        # 清理测试文件
+                        if (test_pkg + ".signed").exists():
+                            (test_pkg + ".signed").unlink()
+                        test_pkg.unlink()
+                    else:
+                        error_msg = test_result.stderr or test_result.stdout or ""
+                        log_error(f"  ✗ 不使用时间戳的签名测试失败: {error_msg[:200]}")
+                        log_error("     这表明可能是 Installer 证书问题，而不是时间戳服务问题")
+                        if test_pkg.exists():
+                            test_pkg.unlink()
+                except subprocess.TimeoutExpired:
+                    log_error("  ✗ 不使用时间戳的签名测试超时（60秒）")
+                    log_error("     这表明可能是 PKG 文件过大或系统问题")
+                    if test_pkg.exists():
+                        test_pkg.unlink()
+                except Exception as e:
+                    log_warn(f"  ⚠ 测试签名时出错（可能不影响正式签名）: {e}")
+                    if test_pkg.exists():
+                        test_pkg.unlink()
+            
             # 使用临时文件进行签名（productsign 不能使用相同的输入和输出路径）
             pkg_signed = dist_dir / f"{pkg_name}_signed.pkg"
+            
+            # 如果测试签名失败，提前终止
+            if not test_sign_available and not cert_found:
+                log_error("  ✗ Installer 证书验证失败，且测试签名也失败")
+                log_error("     请检查：")
+                log_error("       1. Installer 证书是否正确安装到 Keychain")
+                log_error("       2. 证书名称是否与 INSTALLER_CODESIGN_IDENTITY 环境变量匹配")
+                log_error("       3. 证书是否已过期或被撤销")
+                raise Exception("Installer 证书验证失败，无法签名 PKG")
             
             # 尝试使用时间戳签名（带重试机制）
             timestamp_max_retries = 3
             timestamp_retry_delay = 5
-            # PKG 文件可能很大，且时间戳服务可能响应慢，设置较长的超时时间
-            # 使用改进的超时机制后，即使卡住也能强制终止
+            # 如果测试签名成功但时间戳签名失败，可能是时间戳服务问题
+            # 如果测试签名也失败，可能是证书或文件问题
             timestamp_timeout = 600  # 600 秒超时（10分钟，PKG 文件可能很大，需要更长时间）
             timestamp_success = False
             timestamp_result = None
@@ -2378,6 +2465,13 @@ def main():
                         break
                     else:
                         error_msg = timestamp_result.stderr or timestamp_result.stdout or ""
+                        log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
+                        
+                        # 检查是否是证书问题
+                        if "identity" in error_msg.lower() or "certificate" in error_msg.lower() or "keychain" in error_msg.lower():
+                            log_error("     这可能是 Installer 证书问题，而不是时间戳服务问题")
+                            raise Exception(f"PKG 签名失败（可能是证书问题）: {error_msg[:200]}")
+                        
                         if "timestamp service is not available" in error_msg or "network" in error_msg.lower():
                             if timestamp_attempt < timestamp_max_retries:
                                 log_warn(f"  ⚠ 时间戳服务不可用，{timestamp_retry_delay} 秒后重试...")
@@ -2386,10 +2480,14 @@ def main():
                             else:
                                 log_error(f"  ✗ 时间戳服务不可用（已重试 {timestamp_max_retries} 次）")
                         else:
-                            log_error(f"  ✗ PKG 签名失败: {error_msg[:200]}")
                             raise Exception(f"PKG 签名失败: {error_msg[:200]}")
                 except subprocess.TimeoutExpired:
-                    log_warn(f"  ⚠ PKG 签名超时（{timestamp_timeout} 秒），可能是时间戳服务响应慢或 PKG 文件过大")
+                    log_warn(f"  ⚠ PKG 签名超时（{timestamp_timeout} 秒）")
+                    if test_sign_available:
+                        log_warn("     测试签名成功，这表明问题可能是时间戳服务响应慢")
+                        log_warn("     建议：检查网络连接或考虑在本地环境签名")
+                    else:
+                        log_warn("     测试签名也失败，这可能表明是证书或系统问题")
                     # 创建一个假的 result 对象以便后续错误处理
                     class FakeResult:
                         returncode = 1
@@ -2404,24 +2502,23 @@ def main():
                         log_error(f"  ✗ PKG 签名超时（已重试 {timestamp_max_retries} 次）")
                 except Exception as e:
                     log_error(f"  ✗ PKG 签名过程出错: {str(e)}")
-                    # 创建一个假的 result 对象以便后续错误处理
-                    class FakeResult:
-                        returncode = 1
-                        stderr = f"签名过程出错: {str(e)}"
-                        stdout = ""
-                    timestamp_result = FakeResult()
-                    if timestamp_attempt < timestamp_max_retries:
-                        log_warn(f"  ⚠ {timestamp_retry_delay} 秒后重试...")
-                        time.sleep(timestamp_retry_delay)
-                        timestamp_retry_delay *= 2
-                    else:
-                        raise
+                    raise
             
             # 如果时间戳签名失败，终止构建（不使用无时间戳签名，因为无法通过公证）
             if not timestamp_success:
                 error_msg = timestamp_result.stderr or timestamp_result.stdout or "" if timestamp_result else "未知错误"
                 log_error(f"  ✗ PKG 签名失败（已重试 {timestamp_max_retries} 次）: {error_msg[:200]}")
                 log_error("     无时间戳签名无法通过公证，构建终止")
+                log_error("")
+                log_error("  诊断信息：")
+                if test_sign_available:
+                    log_error("     - 不使用时间戳的签名测试成功")
+                    log_error("     - 问题可能是时间戳服务不可访问或响应慢")
+                    log_error("     - 建议：检查网络连接，或在本地环境进行签名")
+                else:
+                    log_error("     - 不使用时间戳的签名测试也失败")
+                    log_error("     - 问题可能是 Installer 证书配置问题")
+                    log_error("     - 建议：检查证书是否正确安装和配置")
                 raise Exception(f"PKG 签名失败：时间戳服务不可用或超时（已重试 {timestamp_max_retries} 次）")
             
             # 替换原文件（如果签名成功）
@@ -2893,6 +2990,18 @@ def main():
                             except:
                                 pass
             
+            # 检查实际的文件结构（单文件模式还是目录模式）
+            dist_dir = client_dir / "dist"
+            exe_single_file = dist_dir / f"{app_name}.exe"
+            exe_dir_mode = dist_dir / app_name / f"{app_name}.exe"
+            scripts_dir_mode = dist_dir / app_name / "scripts"
+            scripts_single_mode = dist_dir / "scripts"
+            
+            is_onefile = exe_single_file.exists()
+            is_onedir = exe_dir_mode.exists()
+            
+            log_info(f"  检测构建模式: {'单文件模式' if is_onefile else '目录模式' if is_onedir else '未知'}")
+            
             # 读取模板或创建基本脚本
             if template_script.exists():
                 with open(template_script, "r", encoding="utf-8") as f:
@@ -2916,12 +3025,99 @@ def main():
                     content = '\n'.join(new_lines)
                     log_warn("  ⚠ 未找到中文语言文件，仅使用英语界面")
                 
+                # 根据实际文件结构过滤 [Files] 部分
+                lines = content.split('\n')
+                new_lines = []
+                in_files_section = False
+                for line in lines:
+                    if line.strip().startswith('[Files]'):
+                        in_files_section = True
+                        new_lines.append(line)
+                    elif line.strip().startswith('[') and line.strip().endswith(']'):
+                        in_files_section = False
+                        new_lines.append(line)
+                    elif in_files_section:
+                        # 检查 Source 路径是否存在
+                        if 'Source:' in line:
+                            # 提取路径（处理引号）
+                            source_match = re.search(r'Source:\s*"([^"]+)"', line)
+                            if source_match:
+                                source_path = source_match.group(1)
+                                # 转换为实际路径进行检查
+                                # 将 Windows 路径分隔符统一为正斜杠，然后使用 Path
+                                normalized_path = source_path.replace('\\', '/')
+                                # 移除开头的 "dist/" 或 "dist\"
+                                if normalized_path.startswith('dist/'):
+                                    relative_path = normalized_path[5:]  # 移除 "dist/"
+                                else:
+                                    relative_path = normalized_path
+                                
+                                # 处理通配符路径（如 scripts/*）
+                                if '*' in relative_path:
+                                    # 对于通配符路径，检查目录是否存在
+                                    dir_path = relative_path.replace('*', '').rstrip('/')
+                                    actual_path = dist_dir / dir_path
+                                    if actual_path.exists() and actual_path.is_dir():
+                                        new_lines.append(line)
+                                        log_info(f"    包含路径: {source_path}")
+                                    else:
+                                        log_info(f"    跳过不存在的路径: {source_path}")
+                                else:
+                                    # 对于具体文件路径，检查文件是否存在
+                                    actual_path = dist_dir / relative_path
+                                    if actual_path.exists():
+                                        new_lines.append(line)
+                                        log_info(f"    包含路径: {source_path}")
+                                    else:
+                                        log_info(f"    跳过不存在的路径: {source_path}")
+                            else:
+                                # 如果无法解析路径，保留该行
+                                new_lines.append(line)
+                        else:
+                            # 非 Source 行，直接保留
+                            new_lines.append(line)
+                    else:
+                        new_lines.append(line)
+                
+                content = '\n'.join(new_lines)
+                
                 with open(inno_script, "w", encoding="utf-8") as f:
                     f.write(content)
             else:
-                # 创建基本脚本
-                with open(inno_script, "w", encoding="utf-8") as f:
-                    f.write(f'''[Setup]
+                # 创建基本脚本，根据实际文件结构生成
+                files_section = []
+                
+                if is_onefile:
+                    files_section.append(f'Source: "dist\\{app_name}.exe"; DestDir: "{{app}}"; Flags: ignoreversion')
+                    log_info(f"    包含单文件: dist\\{app_name}.exe")
+                
+                if is_onedir:
+                    files_section.append(f'Source: "dist\\{app_name}\\{app_name}.exe"; DestDir: "{{app}}"; Flags: ignoreversion')
+                    log_info(f"    包含目录模式: dist\\{app_name}\\{app_name}.exe")
+                
+                if scripts_dir_mode.exists():
+                    files_section.append(f'Source: "dist\\{app_name}\\scripts\\*"; DestDir: "{{app}}\\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs')
+                    log_info(f"    包含脚本目录: dist\\{app_name}\\scripts\\*")
+                
+                if scripts_single_mode.exists():
+                    files_section.append(f'Source: "dist\\scripts\\*"; DestDir: "{{app}}\\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs')
+                    log_info(f"    包含脚本目录: dist\\scripts\\*")
+                
+                if not files_section:
+                    log_error("  错误: 未找到任何可打包的文件")
+                    log_warn("  ⚠ 跳过 EXE 安装器创建")
+                else:
+                    files_content = '\n'.join(files_section)
+                    
+                    # 构建语言部分
+                    languages_content = 'Name: "chinesesimp"; MessagesFile: "compiler:Languages\\ChineseSimplified.isl"\n'
+                    languages_content += 'Name: "english"; MessagesFile: "compiler:Default.isl"'
+                    if not chinese_lang_available:
+                        languages_content = 'Name: "english"; MessagesFile: "compiler:Default.isl"'
+                        log_warn("  ⚠ 未找到中文语言文件，仅使用英语界面")
+                    
+                    with open(inno_script, "w", encoding="utf-8") as f:
+                        f.write(f'''[Setup]
 AppName={app_name}
 AppVersion={version}
 AppPublisher=SanYing
@@ -2937,18 +3133,14 @@ ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\\ChineseSimplified.isl"
-Name: "english"; MessagesFile: "compiler:Default.isl"
+{languages_content}
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"
 Name: "quicklaunchicon"; Description: "创建快速启动栏快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked
 
 [Files]
-Source: "dist\\{app_name}.exe"; DestDir: "{{app}}"; Flags: ignoreversion
-Source: "dist\\{app_name}\\{app_name}.exe"; DestDir: "{{app}}"; Flags: ignoreversion
-Source: "dist\\{app_name}\\scripts\\*"; DestDir: "{{app}}\\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "dist\\scripts\\*"; DestDir: "{{app}}\\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+{files_content}
 
 [Icons]
 Name: "{{group}}\\{app_name}"; Filename: "{{app}}\\{app_name}.exe"

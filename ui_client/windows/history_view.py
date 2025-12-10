@@ -771,10 +771,17 @@ class HistoryView(QWidget):
     # ---- 对外：重新加载（异步） ----
     def reload_from_api(self) -> None:
         """
-        1）重置翻页状态；
-        2）后台线程异步拉取历史记录；
-        3）加载过程中，通过 MainWindow 的 show_loading / hide_loading 显示"加载中"遮罩。
+        1）检查登录状态（未登录时不发起请求）；
+        2）重置翻页状态；
+        3）后台线程异步拉取历史记录；
+        4）加载过程中，通过 MainWindow 的 show_loading / hide_loading 显示"加载中"遮罩。
         """
+        # 检查登录状态，未登录时不发起请求
+        if not ApiClient.is_logged_in():
+            from widgets.toast import Toast
+            Toast.show_message(self, "请先登录")
+            return
+        
         limit = self._current_limit()  # 获取日期范围对应的天数（7或30）
         user_id = self._current_user_id()  # 如果是组长且选择了组员，传递user_id
 

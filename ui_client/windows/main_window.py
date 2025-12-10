@@ -575,7 +575,16 @@ class MainWindow(QMainWindow):
         return bool(result["logged_in"])
 
     def refresh_current_page_after_login(self):
-        """登录成功后刷新当前页面（仅刷新当前页面，不刷新其他页面）"""
+        """
+        登录成功后：
+        1）重置所有需要登录的页面的加载状态（这样切换页面时会自动请求）
+        2）刷新当前页面（并标记为已加载，避免重复加载）
+        """
+        # 重置所有需要登录的页面的加载状态
+        # 这样，登录后切换页面时，如果该页面还没请求过，就会自动请求
+        for page_index in (0, 1, 2, 3, 4, 5):  # 今日评分、历史评分、复评中心、排行榜、消息、我的
+            self._page_first_loaded[page_index] = False
+        
         current_index = self.stack.currentIndex()
         
         # 根据当前页面索引刷新对应的页面
@@ -649,7 +658,8 @@ class MainWindow(QMainWindow):
 
         # 只对业务 Tab 做一次性自动请求（排除设置页和图文趋势页）
         # 判定条件：已登录 且 该页面还没有请求过数据
-        if index in (0, 1, 2, 4, 5, 6) and index != self.DATA_TREND_PAGE_INDEX and not self._page_first_loaded.get(index, False):
+        # 注意：index 3 是排行榜，也需要自动请求
+        if index in (0, 1, 2, 3, 4, 5) and index != self.DATA_TREND_PAGE_INDEX and not self._page_first_loaded.get(index, False):
             # 未登录：只提示，不标记为已加载，方便登录后再自动触发
             if not self._ensure_logged_in():
                 return
