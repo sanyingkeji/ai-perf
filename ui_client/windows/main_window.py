@@ -2130,42 +2130,42 @@ class MainWindow(QMainWindow):
                             pass
                         
                         # 重新安装
-                    from PySide6.QtWidgets import QMessageBox
-                    success, msg = service.install(force_reinstall=True)
-                    if success:
-                        enable_success, enable_msg = service.enable()
-                        if enable_success:
+                        from PySide6.QtWidgets import QMessageBox
+                        success, msg = service.install(force_reinstall=True)
+                        if success:
+                            enable_success, enable_msg = service.enable()
+                            if enable_success:
                                 # 重新安装后等待一下，让任务计划程序生效
                                 import time
                                 time.sleep(1)
                                 
                                 # 再次检查配置是否有效
                                 if service.is_configuration_valid():
-                            QMessageBox.information(
-                                self,
-                                "服务更新成功",
-                                "检测到旧版本服务配置，已自动更新为新版本配置。",
-                                QMessageBox.Ok
-                            )
+                                    QMessageBox.information(
+                                        self,
+                                        "服务更新成功",
+                                        "检测到旧版本服务配置，已自动更新为新版本配置。",
+                                        QMessageBox.Ok
+                                    )
                                 else:
                                     # 配置仍然无效，但重新安装成功，认为配置已更新
                                     # 不再重复检查，避免循环
                                     print(f"[WARNING] 服务配置更新后验证失败，但安装成功，不再重复检查")
+                            else:
+                                QMessageBox.warning(
+                                    self,
+                                    "服务更新失败",
+                                    f"服务配置已更新，但启用失败：{enable_msg}",
+                                    QMessageBox.Ok
+                                )
                         else:
                             QMessageBox.warning(
                                 self,
                                 "服务更新失败",
-                                f"服务配置已更新，但启用失败：{enable_msg}",
+                                f"更新服务配置失败：{msg}\n\n"
+                                "建议手动卸载旧服务后重新安装。",
                                 QMessageBox.Ok
                             )
-                    else:
-                        QMessageBox.warning(
-                            self,
-                            "服务更新失败",
-                            f"更新服务配置失败：{msg}\n\n"
-                            "建议手动卸载旧服务后重新安装。",
-                            QMessageBox.Ok
-                        )
                     # 如果已经尝试过更新，不再重复弹出弹窗（避免循环）
                 elif not service.is_enabled():
                     # 如果已安装但未启用，启用它

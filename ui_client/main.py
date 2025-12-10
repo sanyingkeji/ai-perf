@@ -281,9 +281,9 @@ def main():
         except Exception:
             pass
         if 'logger' in locals():
-        logger.info("=" * 80)
-        logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info("=" * 80)
+            logger.info("=" * 80)
+            logger.info(f"应用结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 80)
 
 
 if __name__ == "__main__":

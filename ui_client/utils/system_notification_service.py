@@ -511,7 +511,7 @@ class SystemNotificationService:
                 if result.returncode == 0:
                     # 验证任务是否创建成功
                     if self.is_installed():
-                    return True, ""
+                        return True, ""
                     else:
                         return False, "任务创建后验证失败"
                 else:
