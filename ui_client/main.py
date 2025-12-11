@@ -147,32 +147,79 @@ def main():
     lock_file = QLockFile(str(lock_file_path))
     
     # 尝试获取锁（非阻塞，等待最多100毫秒）
-    if not lock_file.tryLock(100):
-        # 已有实例在运行，静默退出
-        sys.exit(0)
+    lock_result = lock_file.tryLock(100)
+    if not lock_result:
+        # 检查锁文件错误类型
+        error = lock_file.error()
+        if error == QLockFile.LockFailed:
+            # 已有实例在运行，静默退出
+            # 注意：不创建 QApplication，直接退出，避免显示任何窗口
+            sys.exit(0)
+        elif error == QLockFile.PermissionError:
+            # 权限错误，可能是锁文件权限问题，尝试删除旧锁文件后继续
+            try:
+                if lock_file_path.exists():
+                    lock_file_path.unlink()
+                # 再次尝试获取锁
+                if lock_file.tryLock(100):
+                    # 成功获取锁，继续运行
+                    pass
+                else:
+                    # 仍然失败，可能是真的有实例在运行，退出
+                    sys.exit(0)
+            except Exception:
+                # 如果删除失败，继续运行（可能是权限问题，但不应该阻止应用启动）
+                print(f"[WARNING] 无法处理锁文件，继续运行: {lock_file_path}", file=sys.stderr)
+        else:
+            # 其他错误（如文件系统错误），尝试删除旧锁文件后继续
+            try:
+                if lock_file_path.exists():
+                    lock_file_path.unlink()
+                # 再次尝试获取锁
+                if not lock_file.tryLock(100):
+                    # 仍然失败，退出
+                    sys.exit(0)
+            except Exception:
+                # 如果处理失败，继续运行
+                print(f"[WARNING] 锁文件错误: {error}，尝试继续运行", file=sys.stderr)
     
     # 设置崩溃日志（可通过 DISABLE_LOGGING 关闭）
-    if DISABLE_LOGGING:
-        logging.disable(logging.CRITICAL)  # 全局禁用日志
+    logger = None
+    log_file = None
+    try:
+        if DISABLE_LOGGING:
+            logging.disable(logging.CRITICAL)  # 全局禁用日志
+            logger = logging.getLogger('crash_logger')
+        else:
+            logger, log_file = setup_crash_logging()
+            # 设置全局异常处理器
+            sys.excepthook = exception_handler
+            # 设置 Qt 消息处理器
+            qInstallMessageHandler(qt_message_handler)
+    except Exception as e:
+        # 如果日志初始化失败，至少创建一个基本的 logger
+        logging.basicConfig(level=logging.INFO)
         logger = logging.getLogger('crash_logger')
-        log_file = None
-    else:
-        logger, log_file = setup_crash_logging()
-        # 设置全局异常处理器
-        sys.excepthook = exception_handler
-        # 设置 Qt 消息处理器
-        qInstallMessageHandler(qt_message_handler)
+        logger.warning(f"日志初始化失败，使用基本日志: {e}")
     
     try:
         logger.info("初始化 QApplication...")
         app = QApplication(sys.argv)
         logger.info("QApplication 初始化成功")
     except Exception as e:
-        logger.critical(f"QApplication 初始化失败: {e}")
-        logger.critical(traceback.format_exc())
+        # 如果 logger 还没有初始化，使用 print
+        try:
+            logger.critical(f"QApplication 初始化失败: {e}")
+            logger.critical(traceback.format_exc())
+        except:
+            print(f"QApplication 初始化失败: {e}", file=sys.stderr)
+            traceback.print_exc()
         # 释放锁
-        lock_file.unlock()
-        raise
+        try:
+            lock_file.unlock()
+        except Exception:
+            pass
+        sys.exit(1)
     
     # macOS: 关闭窗口时不退出应用，保留在状态栏
     # 打开时在 Dock 显示，关闭窗口后隐藏 Dock 图标
@@ -214,12 +261,36 @@ def main():
     try:
         logger.info("创建主窗口...")
         win = MainWindow()
+        logger.info("主窗口对象创建成功")
+        
+        # 确保窗口显示
         win.show()
+        win.raise_()  # 确保窗口在最前面
+        win.activateWindow()  # 激活窗口
+        
         logger.info("主窗口创建并显示成功")
     except Exception as e:
         logger.critical(f"主窗口创建失败: {e}")
         logger.critical(traceback.format_exc())
-        raise
+        # 显示错误对话框，而不是直接退出
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None,
+                "应用启动失败",
+                f"应用启动时发生错误：\n\n{str(e)}\n\n"
+                "详细信息已记录到日志文件。"
+            )
+        except Exception:
+            # 如果无法显示对话框，至少输出到控制台
+            print(f"应用启动失败: {e}", file=sys.stderr)
+            traceback.print_exc()
+        # 释放锁后退出
+        try:
+            lock_file.unlock()
+        except Exception:
+            pass
+        sys.exit(1)
     
     # 检查是否有命令行参数
     notification_id = None
