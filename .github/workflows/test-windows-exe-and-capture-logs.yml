@@ -1,13 +1,23 @@
-name: 测试 Windows EXE 并抓取日志
+# 测试 Windows EXE 并抓取日志（员工端）
+# 
+# 用途：用于诊断 Windows 员工端进程启动后消失的问题
+# 
+# 工作流程：
+# 1. 自动打包 Windows 员工端（使用 PyInstaller）
+# 2. 找到打包生成的原始 exe 文件（不是安装器）
+# 3. 运行 exe 并监控进程状态
+# 4. 收集所有日志和诊断信息
+#
+# 使用方法：
+# 1. 在 GitHub Actions 页面选择此 workflow
+# 2. 点击 "Run workflow"
+# 3. 运行完成后，在 Artifacts 中下载日志文件进行分析
+
+name: 测试 Windows EXE 并抓取日志（员工端）
 
 on:
   workflow_dispatch:
     inputs:
-      exe_url:
-        description: 'EXE 文件下载 URL'
-        required: true
-        type: string
-        default: ''
       wait_seconds:
         description: '等待时间（秒）'
         required: false
@@ -20,18 +30,148 @@ on:
         default: 2
 
 jobs:
-  test-and-capture-logs:
-    name: 测试 EXE 并抓取日志
+  build-and-test:
+    name: 打包并测试 Windows EXE（员工端）
     runs-on: windows-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 15
+    
     steps:
       - name: 检查输入参数
         run: |
-          echo "EXE URL: ${{ github.event.inputs.exe_url }}"
-          echo "等待时间: ${{ github.event.inputs.wait_seconds }}秒"
-          echo "检查间隔: ${{ github.event.inputs.check_interval }}秒"
-
+          Write-Host "客户端类型: employee (员工端)"
+          Write-Host "等待时间: ${{ github.event.inputs.wait_seconds }}秒"
+          Write-Host "检查间隔: ${{ github.event.inputs.check_interval }}秒"
+          echo "CLIENT_TYPE=employee" >> $env:GITHUB_ENV
+      
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          architecture: 'x64'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Verify PyInstaller installation
+        run: |
+          Write-Host "验证 PyInstaller 安装..."
+          python -m PyInstaller --version || Write-Host "警告: PyInstaller 未正确安装"
+          pip list | findstr /i pyinstaller || Write-Host "警告: 未找到 PyInstaller 包"
+      
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+        continue-on-error: true
+      
+      - name: Install WiX Toolset
+        run: |
+          # WiX Toolset 6.0 需要从 GitHub releases 下载 MSI 安装包
+          Write-Host "正在下载 WiX Toolset 6.0..."
+          
+          $wixVersion = "6.0.0"
+          # WiX Toolset 6.0 MSI 安装包下载地址
+          $wixUrl = "https://github.com/wixtoolset/wix4/releases/download/v$wixVersion/wix-cli-x64.msi"
+          $wixInstaller = "$env:TEMP\wix$wixVersion.msi"
+          
+          try {
+            Invoke-WebRequest -Uri $wixUrl -OutFile $wixInstaller -ErrorAction Stop
+            Write-Host "下载完成，正在安装..."
+            
+            # 静默安装 WiX Toolset
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$wixInstaller`" /quiet /norestart" -Wait -NoNewWindow
+            
+            # 等待安装完成并刷新环境变量
+            Start-Sleep -Seconds 5
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+            
+            # 验证安装（检查常见安装路径）
+            $wixPaths = @(
+              "${env:ProgramFiles}\WiX Toolset v$wixVersion\bin",
+              "${env:ProgramFiles(x86)}\WiX Toolset v$wixVersion\bin",
+              "${env:ProgramFiles}\WiX Toolset v6.0\bin",
+              "${env:ProgramFiles(x86)}\WiX Toolset v6.0\bin"
+            )
+            
+            $wixFound = $false
+            foreach ($path in $wixPaths) {
+              if (Test-Path "$path\wix.exe") {
+                $env:PATH = "$path;$env:PATH"
+                Write-Host "✓ WiX Toolset 已安装到: $path"
+                & "$path\wix.exe" --version
+                $wixFound = $true
+                break
+              }
+            }
+            
+            if (-not $wixFound) {
+              Write-Host "⚠ WiX Toolset 可能未正确安装到预期路径"
+            }
+          } catch {
+            Write-Host "下载或安装失败: $_"
+            Write-Host "将尝试使用 Chocolatey 安装..."
+            choco install wixtoolset -y
+          } finally {
+            # 清理安装包
+            if (Test-Path $wixInstaller) {
+              Remove-Item $wixInstaller -Force
+            }
+          }
+        continue-on-error: true
+      
+      - name: Build client (Windows)
+        env:
+          PYTHONUNBUFFERED: '1'  # 确保 Python 输出无缓冲，实时显示日志
+          GOOGLE_CLIENT_SECRET_JSON: ${{ secrets.GOOGLE_CLIENT_SECRET_JSON }}
+        run: |
+          Write-Host "正在打包员工端客户端..."
+          cd ui_client
+          python ../scripts/build_client.py employee windows
+          
+          # 设置客户端目录和名称
+          echo "CLIENT_DIR=ui_client" >> $env:GITHUB_ENV
+          echo "CLIENT_TYPE=employee" >> $env:GITHUB_ENV
+      
+      - name: 查找打包生成的 EXE 文件
+        run: |
+          $clientDir = "$env:CLIENT_DIR"
+          $distDir = "$clientDir\dist"
+          
+          Write-Host "查找打包生成的 EXE 文件..."
+          Write-Host "查找目录: $distDir"
+          
+          # 首先查找 PyInstaller 直接生成的 exe（不是安装器）
+          # 排除 *_Setup.exe 和 *.msi 文件
+          $exeFiles = Get-ChildItem -Path $distDir -Filter "*.exe" -Recurse | 
+            Where-Object { 
+              $_.Name -notlike "*_Setup.exe" -and 
+              $_.Name -notlike "*Setup.exe" -and
+              $_.FullName -notlike "*\dist\*_Setup.exe"
+            }
+          
+          if ($exeFiles) {
+            # 选择第一个找到的 exe（通常是主程序）
+            $exeFile = $exeFiles | Select-Object -First 1
+            $exePath = $exeFile.FullName
+            
+            Write-Host "找到 EXE 文件: $exePath"
+            Write-Host "文件名: $($exeFile.Name)"
+            Write-Host "文件大小: $([math]::Round($exeFile.Length / 1MB, 2)) MB"
+            
+            echo "EXE_PATH=$exePath" >> $env:GITHUB_ENV
+            echo "EXE_NAME=$($exeFile.Name)" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "错误: 未找到打包生成的 EXE 文件！"
+            Write-Host "查找的文件模式: *.exe (排除 *_Setup.exe)"
+            Write-Host "目录内容:"
+            Get-ChildItem -Path $distDir -Recurse | Format-Table Name, FullName
+            exit 1
+          }
+      
       - name: 创建测试目录
         run: |
           $testDir = "C:\test-ai-perf"
@@ -40,44 +180,24 @@ jobs:
           }
           New-Item -ItemType Directory -Path $testDir -Force | Out-Null
           echo "TEST_DIR=$testDir" >> $env:GITHUB_ENV
-
-      - name: 下载 EXE 文件
-        run: |
-          $exeUrl = "${{ github.event.inputs.exe_url }}"
-          $exePath = "$env:TEST_DIR\AiPerfClient.exe"
-
-          Write-Host "正在下载: $exeUrl"
-          Write-Host "保存到: $exePath"
-
-          # 下载文件
-          Invoke-WebRequest -Uri $exeUrl -OutFile $exePath -UseBasicParsing
-
-          if (Test-Path $exePath) {
-            $fileSize = (Get-Item $exePath).Length
-            Write-Host "下载成功，文件大小: $fileSize 字节"
-            echo "EXE_PATH=$exePath" >> $env:GITHUB_ENV
-          } else {
-            Write-Host "下载失败！"
-            exit 1
-          }
-
+      
       - name: 清理旧配置和日志
         run: |
           $configDir = "$env:APPDATA\ai-perf"
           $logDir = "$configDir\logs"
-
+          
           Write-Host "清理旧配置和日志..."
           if (Test-Path $configDir) {
             Remove-Item -Recurse -Force $configDir
             Write-Host "已删除: $configDir"
           }
-
+          
           # 确保目录存在
           New-Item -ItemType Directory -Path $logDir -Force | Out-Null
           Write-Host "日志目录: $logDir"
           echo "LOG_DIR=$logDir" >> $env:GITHUB_ENV
           echo "CONFIG_DIR=$configDir" >> $env:GITHUB_ENV
-
+      
       - name: 清理锁文件
         run: |
           $lockFile = "$env:APPDATA\ai-perf\app_instance.lock"
@@ -85,7 +205,7 @@ jobs:
             Remove-Item -Force $lockFile
             Write-Host "已删除锁文件: $lockFile"
           }
-
+      
       - name: 终止可能存在的旧进程
         run: |
           Write-Host "检查是否有旧进程..."
@@ -97,7 +217,7 @@ jobs:
           } else {
             Write-Host "没有发现旧进程"
           }
-
+      
       - name: 启动应用并监控进程
         id: monitor_process
         run: |
@@ -105,16 +225,23 @@ jobs:
           $waitSeconds = ${{ github.event.inputs.wait_seconds }}
           $checkInterval = ${{ github.event.inputs.check_interval }}
           $logFile = "$env:TEST_DIR\process_monitor.log"
-
+          
           Write-Host "启动应用: $exePath"
           Write-Host "监控日志: $logFile"
+          
+          # 验证文件存在且可执行
+          if (-not (Test-Path $exePath)) {
+            Write-Host "错误: EXE 文件不存在: $exePath"
+            exit 1
+          }
 
-          # 启动应用
+          # 启动应用（直接运行，不需要安装）
+          Write-Host "直接运行 EXE 文件（PyInstaller 单文件模式）..."
           $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Normal
           $processId = $process.Id
           Write-Host "进程已启动，PID: $processId"
           echo "PROCESS_ID=$processId" >> $env:GITHUB_ENV
-
+          
           # 记录启动信息
           $startTime = Get-Date
           "=== 进程监控开始 ===" | Out-File -FilePath $logFile -Encoding UTF8
@@ -122,30 +249,32 @@ jobs:
           "进程ID: $processId" | Out-File -FilePath $logFile -Append -Encoding UTF8
           "EXE路径: $exePath" | Out-File -FilePath $logFile -Append -Encoding UTF8
           "" | Out-File -FilePath $logFile -Append -Encoding UTF8
-
+          
           # 监控进程
           $elapsed = 0
           $processFound = $true
-
+          
+          # 员工端进程名称
+          $processName = "Ai Perf Client"
+          
           while ($elapsed -lt $waitSeconds) {
             Start-Sleep -Seconds $checkInterval
             $elapsed += $checkInterval
-
+            
             # 检查进程是否存在
             $currentProcess = Get-Process -Id $processId -ErrorAction SilentlyContinue
-            $processName = "Ai Perf Client"
             $allProcesses = Get-Process -Name $processName -ErrorAction SilentlyContinue
-
+            
             $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $status = if ($currentProcess) { "运行中" } else { "已退出" }
-
+            
             "$timestamp - 经过 $elapsed 秒 - 进程状态: $status (PID: $processId)" | Out-File -FilePath $logFile -Append -Encoding UTF8
-
+            
             if ($currentProcess) {
               $cpu = $currentProcess.CPU
               $memory = [math]::Round($currentProcess.WorkingSet64 / 1MB, 2)
               "  CPU时间: $cpu 秒, 内存: $memory MB" | Out-File -FilePath $logFile -Append -Encoding UTF8
-
+              
               # 检查窗口是否可见
               try {
                 $mainWindow = $currentProcess.MainWindowHandle
@@ -160,7 +289,7 @@ jobs:
             } else {
               "  进程已退出！" | Out-File -FilePath $logFile -Append -Encoding UTF8
               $processFound = $false
-
+              
               # 检查退出码
               try {
                 $exitCode = $process.ExitCode
@@ -168,7 +297,7 @@ jobs:
               } catch {
                 "  无法获取退出码" | Out-File -FilePath $logFile -Append -Encoding UTF8
               }
-
+              
               # 检查是否还有其他同名进程
               if ($allProcesses) {
                 "  发现其他同名进程: $($allProcesses.Count) 个" | Out-File -FilePath $logFile -Append -Encoding UTF8
@@ -176,10 +305,10 @@ jobs:
                   "    PID: $($p.Id), 启动时间: $($p.StartTime)" | Out-File -FilePath $logFile -Append -Encoding UTF8
                 }
               }
-
+              
               break
             }
-
+            
             # 检查是否有其他同名进程（可能是新启动的实例）
             $otherProcesses = $allProcesses | Where-Object { $_.Id -ne $processId }
             if ($otherProcesses) {
@@ -189,7 +318,7 @@ jobs:
               }
             }
           }
-
+          
           $endTime = Get-Date
           $duration = ($endTime - $startTime).TotalSeconds
           "" | Out-File -FilePath $logFile -Append -Encoding UTF8
@@ -197,20 +326,20 @@ jobs:
           "结束时间: $endTime" | Out-File -FilePath $logFile -Append -Encoding UTF8
           "总耗时: $duration 秒" | Out-File -FilePath $logFile -Append -Encoding UTF8
           "最终状态: $(if ($processFound) { '运行中' } else { '已退出' })" | Out-File -FilePath $logFile -Append -Encoding UTF8
-
+          
           # 如果进程还在运行，尝试获取更多信息
           if ($processFound) {
             $currentProcess = Get-Process -Id $processId -ErrorAction SilentlyContinue
             if ($currentProcess) {
               Write-Host "进程仍在运行，正在收集详细信息..."
-
+              
               # 获取进程详细信息
               $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" | Select-Object *
               "进程详细信息:" | Out-File -FilePath $logFile -Append -Encoding UTF8
               $processInfo | Format-List | Out-File -FilePath $logFile -Append -Encoding UTF8
             }
           }
-
+      
       - name: 收集日志文件
         if: always()
         run: |
@@ -218,11 +347,11 @@ jobs:
           $configDir = "$env:CONFIG_DIR"
           $testDir = "$env:TEST_DIR"
           $collectDir = "$env:TEST_DIR\collected_logs"
-
+          
           New-Item -ItemType Directory -Path $collectDir -Force | Out-Null
-
+          
           Write-Host "收集日志文件..."
-
+          
           # 收集应用日志
           if (Test-Path $logDir) {
             Copy-Item -Path "$logDir\*" -Destination $collectDir -Recurse -Force
@@ -230,70 +359,70 @@ jobs:
           } else {
             Write-Host "日志目录不存在: $logDir"
           }
-
+          
           # 收集配置文件
           if (Test-Path $configDir) {
             Copy-Item -Path "$configDir\*" -Destination "$collectDir\config" -Recurse -Force
             Write-Host "已收集配置文件: $configDir"
           }
-
+          
           # 收集进程监控日志
           if (Test-Path "$testDir\process_monitor.log") {
             Copy-Item -Path "$testDir\process_monitor.log" -Destination $collectDir -Force
             Write-Host "已收集进程监控日志"
           }
-
+          
           # 收集 Windows 事件日志（应用相关）
           $eventLogFile = "$collectDir\application_events.log"
-          Get-WinEvent -LogName Application -MaxEvents 50 -ErrorAction SilentlyContinue |
+          Get-WinEvent -LogName Application -MaxEvents 50 -ErrorAction SilentlyContinue | 
             Where-Object { $_.Message -like "*Ai Perf*" -or $_.Message -like "*Python*" } |
-            Format-List TimeCreated, Id, LevelDisplayName, Message |
+            Format-List TimeCreated, Id, LevelDisplayName, Message | 
             Out-File -FilePath $eventLogFile -Encoding UTF8
-
+          
           Write-Host "已收集 Windows 事件日志"
-
+      
       - name: 收集系统信息
         if: always()
         run: |
           $collectDir = "$env:TEST_DIR\collected_logs"
           $sysInfoFile = "$collectDir\system_info.txt"
-
+          
           Write-Host "收集系统信息..."
-
+          
           "=== 系统信息 ===" | Out-File -FilePath $sysInfoFile -Encoding UTF8
           "收集时间: $(Get-Date)" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           "" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
-
+          
           "操作系统:" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture) | Format-List | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
-
+          
           "" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           "Python 进程:" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           Get-Process python*, pythonw* -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, StartTime, CPU, WorkingSet | Format-Table | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
-
+          
           "" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           "所有 Ai Perf 相关进程:" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           Get-Process | Where-Object { $_.ProcessName -like "*Ai*" -or $_.ProcessName -like "*Perf*" } | Select-Object Id, ProcessName, StartTime, CPU, WorkingSet | Format-Table | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
-
+          
           "" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           "环境变量:" | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
           Get-ChildItem Env: | Where-Object { $_.Name -like "*PYTHON*" -or $_.Name -like "*PATH*" } | Format-Table | Out-File -FilePath $sysInfoFile -Append -Encoding UTF8
-
+          
           Write-Host "系统信息已保存到: $sysInfoFile"
-
+      
       - name: 检查锁文件状态
         if: always()
         run: |
           $lockFile = "$env:APPDATA\ai-perf\app_instance.lock"
           $collectDir = "$env:TEST_DIR\collected_logs"
           $lockInfoFile = "$collectDir\lock_file_info.txt"
-
+          
           Write-Host "检查锁文件状态..."
-
+          
           "=== 锁文件信息 ===" | Out-File -FilePath $lockInfoFile -Encoding UTF8
           "检查时间: $(Get-Date)" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
           "" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
-
+          
           if (Test-Path $lockFile) {
             $fileInfo = Get-Item $lockFile
             "锁文件存在: 是" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
@@ -301,10 +430,10 @@ jobs:
             "大小: $($fileInfo.Length) 字节" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
             "创建时间: $($fileInfo.CreationTime)" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
             "修改时间: $($fileInfo.LastWriteTime)" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
-
+            
             $age = (Get-Date) - $fileInfo.LastWriteTime
             "年龄: $([math]::Round($age.TotalSeconds, 2)) 秒" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
-
+            
             # 尝试读取锁文件内容
             try {
               $content = Get-Content $lockFile -Raw -ErrorAction SilentlyContinue
@@ -315,7 +444,7 @@ jobs:
           } else {
             "锁文件存在: 否" | Out-File -FilePath $lockInfoFile -Append -Encoding UTF8
           }
-
+      
       - name: 终止测试进程
         if: always()
         run: |
@@ -326,22 +455,22 @@ jobs:
             $processes | Stop-Process -Force
             Start-Sleep -Seconds 2
           }
-
+      
       - name: 上传收集的日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe-test-logs
+          name: windows-exe-test-logs-employee
           path: ${{ env.TEST_DIR }}/collected_logs/**
           retention-days: 30
           if-no-files-found: warn
-
+      
       - name: 显示监控结果摘要
         if: always()
         run: |
           $logFile = "$env:TEST_DIR\process_monitor.log"
           if (Test-Path $logFile) {
-            Write-Host "=== 进程监控摘要 ==="
+            Write-Host "=== 进程监控摘要 ===" 
             Get-Content $logFile | Select-Object -Last 20
           } else {
             Write-Host "监控日志文件不存在"
