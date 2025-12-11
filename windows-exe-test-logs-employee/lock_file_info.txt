@@ -1,0 +1,15 @@
+=== 锁文件信息 ===
+检查时间: 12/11/2025 09:08:16
+
+锁文件存在: 是
+路径: C:\Users\runneradmin\AppData\Roaming\ai-perf\app_instance.lock
+大小: 73 字节
+创建时间: 12/11/2025 09:07:51
+修改时间: 12/11/2025 09:07:51
+年龄: 25.54 秒
+内容: 10028
+Ai Perf Client
+runnervmue16e
+d6c8052a-2f18-4de6-a54c-d7ab03eece23
+
+

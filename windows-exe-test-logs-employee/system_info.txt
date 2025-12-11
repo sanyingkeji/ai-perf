@@ -1,0 +1,40 @@
+=== 系统信息 ===
+收集时间: 12/11/2025 09:08:15
+
+操作系统:
+
+Caption        : Microsoft Windows Server 2025 Datacenter
+Version        : 10.0.26100
+BuildNumber    : 26100
+OSArchitecture : 64-bit
+
+
+Python 进程:
+
+所有 Ai Perf 相关进程:
+
+   Id ProcessName    StartTime              CPU WorkingSet
+   -- -----------    ---------              --- ----------
+ 6504 Ai Perf Client 12/11/2025 9:07:42 AM 3.72    8720384
+10028 Ai Perf Client 12/11/2025 9:07:49 AM 1.97  206790656
+
+
+环境变量:
+
+Name                           Value
+----                           -----
+EXE_PATH                       D:\a\ai-perf\ai-perf\ui_client\dist\Ai Perf Client.exe
+GITHUB_EVENT_PATH              D:\a\_temp\_github_workflow\event.json
+GITHUB_PATH                    D:\a\_temp\_runner_file_commands\add_path_e6f2153b-7d54-4e36-88af-58f0a01bf8e5
+HOMEPATH                       \Users\runneradmin
+Path                           C:\Program Files\PowerShell\7;C:\Users\runneradmin\AppData\Roaming\Python\Python310\Scri…
+PATHEXT                        .COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL
+PKG_CONFIG_PATH                C:\hostedtoolcache\windows\Python\3.10.11\x64/lib/pkgconfig
+PSModuleAnalysisCachePath      C:\PSModuleAnalysisCachePath\ModuleAnalysisCache
+PSModulePath                   C:\Users\runneradmin\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;c:…
+Python_ROOT_DIR                C:\hostedtoolcache\windows\Python\3.10.11\x64
+Python2_ROOT_DIR               C:\hostedtoolcache\windows\Python\3.10.11\x64
+Python3_ROOT_DIR               C:\hostedtoolcache\windows\Python\3.10.11\x64
+pythonLocation                 C:\hostedtoolcache\windows\Python\3.10.11\x64
+SELENIUM_JAR_PATH              C:\selenium\selenium-server.jar
+
