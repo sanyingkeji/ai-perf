@@ -108,15 +108,10 @@ def send_system_notification(title: str, message: str, subtitle: Optional[str] =
                 script += f' subtitle "{subtitle_escaped}"'
             script += ' sound name "Glass"'
             
-            # 如果指定了通知ID，添加打开应用的命令
-            if notification_id:
-                # 使用 open 命令打开应用，并传递通知ID参数
-                app_path = "/Applications/Ai Perf Client.app"
-                subprocess.Popen(
-                    ["open", "-a", app_path, "--args", f"--notification-id={notification_id}"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
+            # 注意：不要立即打开应用，只发送通知
+            # macOS 的系统通知会在用户点击时自动打开应用（如果应用支持）
+            # 如果需要在点击时打开应用，应该通过应用内的通知处理逻辑实现
+            # 这里只负责发送通知，不主动打开应用
             
             subprocess.Popen(
                 ["osascript", "-e", script],
@@ -126,6 +121,11 @@ def send_system_notification(title: str, message: str, subtitle: Optional[str] =
             
         elif system == "Windows":
             # Windows: 使用 plyer 或 win10toast 或 PowerShell
+            # 注意：不要立即打开应用，只发送通知
+            # Windows 的系统通知会在用户点击时自动打开应用（如果应用支持）
+            # 如果需要在点击时打开应用，应该通过应用内的通知处理逻辑实现
+            # 这里只负责发送通知，不主动打开应用
+            
             notification_sent = False
             
             # 首先尝试使用 plyer（跨平台库）
@@ -179,17 +179,61 @@ def send_system_notification(title: str, message: str, subtitle: Optional[str] =
                 $balloon.Dispose()
                 '''
                 
+                # 获取 subprocess 参数，Windows 上避免弹出命令行窗口
+                subprocess_kwargs = {}
+                if hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                    subprocess_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
                 subprocess.run(
                     ["powershell", "-WindowStyle", "Hidden", "-Command", ps_script],
                     capture_output=True,
                     text=True,
                     timeout=30,
-                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    **subprocess_kwargs
                 )
                     
     except Exception:
         pass
 
+
+def _get_sent_notifications_file() -> Path:
+    """获取已发送通知记录文件路径"""
+    if UI_CONFIG_PATH:
+        base_dir = UI_CONFIG_PATH.parent
+    else:
+        base_dir = Path.home() / ".ai_perf_client"
+    return base_dir / "sent_notifications.json"
+
+def _load_sent_notification_ids() -> set:
+    """加载已发送的通知ID列表"""
+    sent_file = _get_sent_notifications_file()
+    try:
+        if sent_file.exists():
+            with open(sent_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 返回通知ID集合，并限制大小（避免文件过大）
+                ids = set(data.get("ids", []))
+                # 只保留最近1000个通知ID
+                if len(ids) > 1000:
+                    ids = set(list(ids)[-1000:])
+                return ids
+    except Exception:
+        pass
+    return set()
+
+def _save_sent_notification_ids(ids: set):
+    """保存已发送的通知ID列表"""
+    sent_file = _get_sent_notifications_file()
+    try:
+        sent_file.parent.mkdir(parents=True, exist_ok=True)
+        # 只保留最近1000个通知ID
+        ids_list = list(ids)
+        if len(ids_list) > 1000:
+            ids_list = ids_list[-1000:]
+        with open(sent_file, 'w', encoding='utf-8') as f:
+            json.dump({"ids": ids_list}, f, indent=2)
+    except Exception:
+        pass
 
 def check_and_send_notifications():
     """检查并发送通知"""
@@ -248,12 +292,31 @@ def check_and_send_notifications():
         if response.get("status") == "success":
             items = response.get("items", [])
             
+            # 加载已发送的通知ID列表（持久化，避免重复发送）
+            sent_notification_ids = _load_sent_notification_ids()
+            new_sent_ids = set()
+            
+            # 只处理真正未读且未发送过的通知
             for item in items:
                 notification_id = item.get("id")
+                if not notification_id:
+                    continue
+                
+                # 检查是否已经发送过（去重）
+                if notification_id in sent_notification_ids:
+                    continue
+                
+                # 双重检查：确保通知确实是未读的
+                if item.get("is_read", False):
+                    # 如果已读但未在已发送列表中，添加到列表（避免重复检查）
+                    sent_notification_ids.add(notification_id)
+                    new_sent_ids.add(notification_id)
+                    continue
+                
                 title = item.get("title", "系统通知")
                 message = item.get("message", "")
                 
-                # 发送系统通知（带通知ID，用于点击后打开应用）
+                # 发送系统通知（不立即打开应用，只发送通知）
                 send_system_notification(
                     title=title,
                     message=message,
@@ -261,11 +324,19 @@ def check_and_send_notifications():
                     notification_id=notification_id
                 )
                 
+                # 记录已发送的通知ID
+                sent_notification_ids.add(notification_id)
+                new_sent_ids.add(notification_id)
+                
                 # 标记为已读
                 try:
                     api_client._post(f"/api/notifications/{notification_id}/read", {})
                 except Exception:
                     pass
+            
+            # 如果有新的已发送通知ID，保存到文件
+            if new_sent_ids:
+                _save_sent_notification_ids(sent_notification_ids)
             
     except Exception:
         pass
