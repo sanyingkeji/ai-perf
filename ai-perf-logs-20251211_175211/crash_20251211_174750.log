@@ -1,0 +1,220 @@
+2025-12-11 17:47:50,545 [INFO] crash_logger: ================================================================================
+2025-12-11 17:47:50,545 [INFO] crash_logger: 应用启动 - 2025-12-11 17:47:50
+2025-12-11 17:47:50,545 [INFO] crash_logger: Python 版本: 3.10.4 (main, Dec  9 2025, 05:13:55) [Clang 15.0.0 (clang-1500.3.9.4)]
+2025-12-11 17:47:50,545 [INFO] crash_logger: 日志文件: /Users/tingting/Library/Application Support/ai-perf/logs/crash_20251211_174750.log
+2025-12-11 17:47:50,545 [INFO] crash_logger: ================================================================================
+2025-12-11 17:47:50,545 [INFO] crash_logger: 日志保留时长：1 小时
+2025-12-11 17:47:50,545 [INFO] crash_logger: 初始化 QApplication...
+2025-12-11 17:47:50,683 [INFO] crash_logger: QApplication 初始化成功
+2025-12-11 17:47:50,683 [INFO] crash_logger: 应用主题...
+2025-12-11 17:47:50,695 [INFO] crash_logger: 主题应用成功
+2025-12-11 17:47:50,696 [INFO] crash_logger: 创建主窗口...
+2025-12-11 17:47:50,861 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:47:50,861 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:47:50,876 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x17fe88ac0>
+2025-12-11 17:47:50,876 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x17fe89330>
+2025-12-11 17:47:50,876 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x11270f940> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:47:50,876 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x17fcae3c0> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:47:51,004 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=10 socket_options=None
+2025-12-11 17:47:51,110 [WARNING] qt_logger: [Qt Warning] Populating font family aliases took 100 ms. Replace uses of missing font family "Microsoft YaHei" with one that exists to avoid this cost. 
+2025-12-11 17:47:51,111 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x30c677c70>
+2025-12-11 17:47:51,117 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x30c505640> server_hostname='api-perf.sanying.site' timeout=10
+2025-12-11 17:47:51,172 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:47:51,186 [INFO] crash_logger: 主窗口创建并显示成功
+2025-12-11 17:47:51,186 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x31fb5cd30>
+2025-12-11 17:47:51,186 [INFO] crash_logger: 启动应用主循环...
+2025-12-11 17:47:51,186 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x11270f140> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:47:51,262 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:47:51,273 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x31fb5db70>
+2025-12-11 17:47:51,273 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x11270ed40> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:47:51,297 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x17fe89000>
+2025-12-11 17:47:51,297 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,297 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:51,297 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:51,297 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:51,297 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,307 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x17fe88790>
+2025-12-11 17:47:51,307 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,307 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:51,308 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:51,308 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:51,308 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,544 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:51 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=%2FAC7hRTR2YbA%2FnAQY%2BsfWRodHDDcV%2Biqf59DkFBuKV1Hp4%2FPWS%2BbUql41VO5EP7SfUCm4VT%2Bumy5w0MwQcC1oorgkUGFex0INnCBUkXcwCL4B5JIbg%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac4101e3b879887-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:51,545 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/team_leader_info "HTTP/1.1 200 OK"
+2025-12-11 17:47:51,545 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:51,545 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:51,545 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:51,545 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:51,545 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:51,546 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:51,577 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:51 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=UeMNc%2B4S4AM2SjW%2BBs%2FvwG0FMIadjS9lT%2FcU29n%2FvFTWQC%2BK3UNCQ8t%2FlUhpoK%2B0h%2FtcaHZwOWU9ew6EHrmctDJB6sSP75S2He80vgwUstfZwxDgeg%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac4101e4f05796f-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:51,577 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/latest_score "HTTP/1.1 200 OK"
+2025-12-11 17:47:51,578 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:51,578 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:51,578 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:51,578 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:51,578 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:51,578 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:51,583 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:47:51,592 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x31fb5f2b0>
+2025-12-11 17:47:51,592 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x30c507cc0> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:47:51,655 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x31fb5d840>
+2025-12-11 17:47:51,655 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,655 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:51,655 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:51,655 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:51,655 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,801 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x30c677940>
+2025-12-11 17:47:51,801 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,801 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:51,801 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:51,801 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:51,801 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:51,883 [INFO] windows.airdrop_view: [AirDropView] initial layout: bg_top=230, list_top=10, bg_height=140, list_height=208, window_height=370
+2025-12-11 17:47:51,883 [INFO] windows.airdrop_view: [AirDropView] devices_min_height set to 208
+2025-12-11 17:47:51,887 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:47:51,895 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308ccd00>
+2025-12-11 17:47:51,895 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x31fb84ec0> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:47:52,012 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:51 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=6Xn7p1cn35T12GV7eiTLcVX%2BHa6WFULw3oyOtvaIig5lVr9SZR7UmyPEG9197UQormrFi2nqKm%2Fl3jWaK6nJkprFG33%2BhLVwhk5KU982TXKbeN1Z6Q%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac41020697d8869-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:52,012 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/ranking "HTTP/1.1 200 OK"
+2025-12-11 17:47:52,012 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,013 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:52,013 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:52,013 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:52,013 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:52,013 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:52,072 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:51 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=4%2FMNZ9f%2BK6yIBjJao1y%2FsJnlO6tESnftPBLEXasAUTKbsqp7EnZCzT37Sk0anef0%2FGZriwuX3usHVL%2FkNrZ2eU3EBrFroP5B9098Edl0ViKYZpGDpw%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac4102198d7d595-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:52,072 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/health?current_version=1.1.0 "HTTP/1.1 200 OK"
+2025-12-11 17:47:52,072 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,072 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:52,072 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:52,072 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:52,072 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:52,073 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:52,087 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x30ba14940>
+2025-12-11 17:47:52,087 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,087 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:52,087 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,087 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:52,087 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,199 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=10 socket_options=None
+2025-12-11 17:47:52,205 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308cd3c0>
+2025-12-11 17:47:52,205 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x3308455c0> server_hostname='api-perf.sanying.site' timeout=10
+2025-12-11 17:47:52,296 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308cccd0>
+2025-12-11 17:47:52,297 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,297 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:52,297 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,297 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:52,297 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,369 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:52 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=5gOBwDkmlQtxp6sTbNR1UDP4naKV%2BagpGKRN7IkQxDwcA8x%2Fl7gK%2F5htULndD3t0o5AqRj%2Bis7K68UAQt%2FzDJSGIWfK0BMAYujSNkagUOYbX7CELrA%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac4102338184f5f-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:52,369 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/review_status?date=2025-12-10 "HTTP/1.1 200 OK"
+2025-12-11 17:47:52,370 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,370 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:52,370 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:52,370 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:52,370 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:52,370 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:52,552 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:52 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=GCuXPUHPIfHwCPwFQ9s5QmKBckepVuZi52uryJESXMxFrrRNjLEx5bOOjjAvF7hViZbDMGuWQFtnBU51md4O1QmYgkQsEuOsfWTn7iCZ23g4lOlPWQ%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac410247ffb0bab-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:52,553 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/user_info "HTTP/1.1 200 OK"
+2025-12-11 17:47:52,553 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,553 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:52,553 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:52,554 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:52,554 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:52,554 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:52,586 [INFO] utils.lan_transfer.server: 文件传输服务器已启动，监听端口: 8765
+2025-12-11 17:47:52,586 [INFO] utils.lan_transfer.manager: [TransferManager] Registering service: service_name=aiperf-u1022-TingtingdeMacBook-Air.local-192-168-0-128, user_id=u1022, ip=192.168.0.128, scope=all
+2025-12-11 17:47:52,589 [DEBUG] asyncio: Using selector: KqueueSelector
+2025-12-11 17:47:52,714 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x16ff3af50>
+2025-12-11 17:47:52,715 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,716 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:52,716 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,716 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:52,716 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,750 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x30ba14940>
+2025-12-11 17:47:52,750 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,750 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:47:52,750 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,750 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:47:52,750 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:47:52,981 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:52 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=DlK0HzgLzMzIXuHxDDlp9cdghNid3PedUJnVhQKfBWJSZdlRUxxOF6zJEViQPvufzad5Sbv7%2FWuozl%2BGXbeiYgi8cSGvlxX3YOPrchHxJa9DQ4crkw%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac410274810db60-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:52,986 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/health?current_version=1.1.0 "HTTP/1.1 200 OK"
+2025-12-11 17:47:52,986 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:52,986 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:52,986 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:52,987 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:52,987 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:52,987 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:53,109 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:47:52 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=6JpoZ1bcDzgc%2BV2w0Pk3FJk2HKoBQo89TuheAfACP306bQxSfpR1tRmA6EzO7XAjwZ45DdStcVpyC1OomwPJRO6ei4e0gee6fp0OObuUvTXF4BsyKA%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac41027887f3466-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:47:53,118 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/latest_score "HTTP/1.1 200 OK"
+2025-12-11 17:47:53,119 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:47:53,119 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:47:53,119 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:47:53,120 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:47:53,120 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:47:53,120 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:47:55,453 [DEBUG] asyncio: Using selector: KqueueSelector
+2025-12-11 17:47:56,088 [INFO] utils.lan_transfer.discovery: 设备发现服务已启动
+2025-12-11 17:47:56,121 [INFO] utils.lan_transfer.manager: 文件传输管理器已启动
+2025-12-11 17:47:56,188 [WARNING] qt_logger: [Qt Warning] QObject::startTimer: Timers can only be used with threads started with QThread
+2025-12-11 17:47:56,821 [INFO] utils.lan_transfer.discovery: [Discovery] Device found: service_name=aiperf-u1002-PC-202303212326-192-168-0-151._aiperf-transfer._tcp.local., user_id=u1002, ip=192.168.0.151, name=左大双
+2025-12-11 17:47:56,887 [INFO] utils.lan_transfer.discovery: [Discovery] Adding new device: service_name=aiperf-u1002-PC-202303212326-192-168-0-151._aiperf-transfer._tcp.local., user_id=u1002, ip=192.168.0.151
+2025-12-11 17:47:56,956 [INFO] utils.lan_transfer.discovery: [Discovery] Calling _on_device_added callback for: user_id=u1002, ip=192.168.0.151
+2025-12-11 17:47:56,986 [INFO] utils.lan_transfer.manager: [TransferManager] Device discovered: 左大双 (192.168.0.151:8765) user_id=u1002, current_user_id=u1022, local_ip=192.168.0.128
+2025-12-11 17:47:57,054 [INFO] utils.lan_transfer.discovery: 发现设备: 左大双 (192.168.0.151:8765)
+2025-12-11 17:47:57,321 [INFO] utils.lan_transfer.discovery: [Discovery] Device found: service_name=aiperf-u1019-xiaozhangdeMacBook-Air.local-192-168-0-150._aiperf-transfer._tcp.local., user_id=u1019, ip=192.168.0.150, name=章志豪
+2025-12-11 17:47:57,387 [INFO] utils.lan_transfer.discovery: [Discovery] Adding new device: service_name=aiperf-u1019-xiaozhangdeMacBook-Air.local-192-168-0-150._aiperf-transfer._tcp.local., user_id=u1019, ip=192.168.0.150
+2025-12-11 17:47:57,388 [INFO] utils.lan_transfer.discovery: [Discovery] Calling _on_device_added callback for: user_id=u1019, ip=192.168.0.150
+2025-12-11 17:47:57,487 [INFO] utils.lan_transfer.manager: [TransferManager] Device discovered: 章志豪 (192.168.0.150:8765) user_id=u1019, current_user_id=u1022, local_ip=192.168.0.128
+2025-12-11 17:47:57,588 [INFO] utils.lan_transfer.discovery: 发现设备: 章志豪 (192.168.0.150:8765)
+2025-12-11 17:47:57,854 [INFO] utils.lan_transfer.discovery: [Discovery] Device found: service_name=aiperf-u1022-TingtingdeMacBook-Air.local-192-168-0-128._aiperf-transfer._tcp.local., user_id=u1022, ip=192.168.0.128, name=李婷婷
+2025-12-11 17:47:57,921 [INFO] utils.lan_transfer.discovery: [Discovery] Adding new device: service_name=aiperf-u1022-TingtingdeMacBook-Air.local-192-168-0-128._aiperf-transfer._tcp.local., user_id=u1022, ip=192.168.0.128
+2025-12-11 17:47:57,987 [INFO] utils.lan_transfer.discovery: [Discovery] Calling _on_device_added callback for: user_id=u1022, ip=192.168.0.128
+2025-12-11 17:47:58,054 [INFO] utils.lan_transfer.manager: [TransferManager] Ignoring self device: 李婷婷 (192.168.0.128) user_id=u1022
+2025-12-11 17:47:58,120 [INFO] utils.lan_transfer.discovery: 发现设备: 李婷婷 (192.168.0.128:8765)
+2025-12-11 17:47:58,387 [INFO] utils.lan_transfer.discovery: [Discovery] Device found: service_name=aiperf-u1008-DESKTOP-4BVG6JG-192-168-0-141._aiperf-transfer._tcp.local., user_id=u1008, ip=192.168.0.141, name=杨彬
+2025-12-11 17:47:58,454 [INFO] utils.lan_transfer.discovery: [Discovery] Adding new device: service_name=aiperf-u1008-DESKTOP-4BVG6JG-192-168-0-141._aiperf-transfer._tcp.local., user_id=u1008, ip=192.168.0.141
+2025-12-11 17:47:58,521 [INFO] utils.lan_transfer.discovery: [Discovery] Calling _on_device_added callback for: user_id=u1008, ip=192.168.0.141
+2025-12-11 17:47:58,587 [INFO] utils.lan_transfer.manager: [TransferManager] Device discovered: 杨彬 (192.168.0.141:8765) user_id=u1008, current_user_id=u1022, local_ip=192.168.0.128
+2025-12-11 17:47:58,687 [INFO] utils.lan_transfer.discovery: 发现设备: 杨彬 (192.168.0.141:8765)
+2025-12-11 17:48:00,265 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=10 socket_options=None
+2025-12-11 17:48:00,275 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308cd780>
+2025-12-11 17:48:00,275 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x331121c40> server_hostname='api-perf.sanying.site' timeout=10
+2025-12-11 17:48:00,307 [DEBUG] httpcore.connection: connect_tcp.started host='api-perf.sanying.site' port=443 local_address=None timeout=15 socket_options=None
+2025-12-11 17:48:00,314 [DEBUG] httpcore.connection: connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308cf490>
+2025-12-11 17:48:00,314 [DEBUG] httpcore.connection: start_tls.started ssl_context=<ssl.SSLContext object at 0x331121a40> server_hostname='api-perf.sanying.site' timeout=15
+2025-12-11 17:48:00,678 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308cdae0>
+2025-12-11 17:48:00,679 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:48:00,679 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:48:00,679 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:48:00,680 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:48:00,680 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:48:00,728 [DEBUG] httpcore.connection: start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x3308cf460>
+2025-12-11 17:48:00,729 [DEBUG] httpcore.http11: send_request_headers.started request=<Request [b'GET']>
+2025-12-11 17:48:00,729 [DEBUG] httpcore.http11: send_request_headers.complete
+2025-12-11 17:48:00,730 [DEBUG] httpcore.http11: send_request_body.started request=<Request [b'GET']>
+2025-12-11 17:48:00,730 [DEBUG] httpcore.http11: send_request_body.complete
+2025-12-11 17:48:00,730 [DEBUG] httpcore.http11: receive_response_headers.started request=<Request [b'GET']>
+2025-12-11 17:48:00,909 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:48:00 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=YJ%2BgLcx0H0eu%2Fg5IjFz0mDkKTyOQ8xUVZ7CUtvEtTCdVoNxdnBDeT9ThB%2F3iM%2BsUy66GgiT2GYTMZLeQgSJZaXinFakLzdBrsdRfd6cnOhP9Tyl1zQ%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac41058eb3d6697-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:48:00,910 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/health "HTTP/1.1 200 OK"
+2025-12-11 17:48:00,910 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:48:00,911 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:48:00,911 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:48:00,911 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:48:00,911 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:48:00,912 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:48:00,981 [DEBUG] httpcore.http11: receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Date', b'Thu, 11 Dec 2025 09:48:00 GMT'), (b'Content-Type', b'application/json'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Server', b'cloudflare'), (b'cf-cache-status', b'DYNAMIC'), (b'Nel', b'{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'), (b'Report-To', b'{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=qKxNVpNT11hFsuYvF%2Fupwu5J9WXgy2mulKA9sIV603eEzet4%2BGERt%2B8RXROQyCAmDbbmOFChXqihU%2F2Lxnx%2BJF4lJn6G4rSNwakz1XBu1T85ztbXHg%3D%3D"}]}'), (b'Content-Encoding', b'br'), (b'CF-RAY', b'9ac410592a2a9f64-AMS'), (b'alt-svc', b'h3=":443"; ma=86400')])
+2025-12-11 17:48:00,982 [INFO] httpx: HTTP Request: GET https://api-perf.sanying.site/api/notifications?unread_only=true&limit=10 "HTTP/1.1 200 OK"
+2025-12-11 17:48:00,982 [DEBUG] httpcore.http11: receive_response_body.started request=<Request [b'GET']>
+2025-12-11 17:48:00,983 [DEBUG] httpcore.http11: receive_response_body.complete
+2025-12-11 17:48:00,983 [DEBUG] httpcore.http11: response_closed.started
+2025-12-11 17:48:00,983 [DEBUG] httpcore.http11: response_closed.complete
+2025-12-11 17:48:00,983 [DEBUG] httpcore.connection: close.started
+2025-12-11 17:48:00,983 [DEBUG] httpcore.connection: close.complete
+2025-12-11 17:48:13,068 [INFO] utils.lan_transfer.discovery: 设备发现服务已停止
+2025-12-11 17:48:13,607 [INFO] utils.lan_transfer.server: 文件传输服务器已停止
+2025-12-11 17:48:13,607 [INFO] utils.lan_transfer.manager: 文件传输管理器已停止
+2025-12-11 17:48:13,609 [INFO] crash_logger: 应用退出，退出码: 0
+2025-12-11 17:48:13,610 [INFO] crash_logger: ================================================================================
+2025-12-11 17:48:13,610 [INFO] crash_logger: 应用结束 - 2025-12-11 17:48:13
+2025-12-11 17:48:13,610 [INFO] crash_logger: ================================================================================
