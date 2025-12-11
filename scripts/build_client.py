@@ -2435,15 +2435,33 @@ def main():
             
             cert_found = False
             if verify_cert_result.returncode == 0:
+                # 显示 keychain 中所有证书（用于诊断）
+                all_certs = verify_cert_result.stdout.strip()
+                if all_certs:
+                    log_info("  Keychain 中的所有证书：")
+                    for line in all_certs.split('\n'):
+                        if line.strip():
+                            log_info(f"    {line.strip()}")
+                else:
+                    log_error("  ✗ Keychain 中没有任何证书！")
+                    log_error("     可能的原因：")
+                    log_error("       1. p12 文件导入失败（检查 GitHub Actions 日志中的导入步骤）")
+                    log_error("       2. p12 文件不包含 Installer 证书（可能是 Application 证书）")
+                    log_error("       3. p12 文件密码错误")
+                
                 if installer_identity in verify_cert_result.stdout:
                     cert_found = True
                     log_info(f"  ✓ 找到 Installer 证书: {installer_identity}")
                 else:
                     log_error(f"  ✗ 未找到 Installer 证书: {installer_identity}")
-                    log_error("     可用的证书列表：")
+                    log_error("     可用的 Installer 证书列表：")
+                    installer_certs_found = False
                     for line in verify_cert_result.stdout.split('\n'):
                         if "Developer ID Installer" in line:
+                            installer_certs_found = True
                             log_error(f"        {line.strip()}")
+                    if not installer_certs_found:
+                        log_error("       （没有找到任何 Developer ID Installer 证书）")
             else:
                 log_warn(f"  ⚠ 无法验证证书（可能权限问题）: {verify_cert_result.stderr[:200]}")
             
