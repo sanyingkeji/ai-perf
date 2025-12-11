@@ -1061,14 +1061,27 @@ def main():
             installer_p12_path = None
             installer_p12_password = None
         
+        # 获取 keychain 路径（支持 GitHub Actions 环境）
+        keychain_path = os.environ.get("KEYCHAIN_PATH", None)
+        if not keychain_path:
+            # 尝试从 KEYCHAIN_NAME 构建路径
+            keychain_name = os.environ.get("KEYCHAIN_NAME", None)
+            if keychain_name:
+                keychain_path = os.path.expanduser(f"~/Library/Keychains/{keychain_name}-db")
+                if not Path(keychain_path).exists():
+                    keychain_path = os.path.expanduser(f"~/Library/Keychains/{keychain_name}")
+        
         # 导入 Application p12 证书（如果提供了 p12 文件路径）
         if application_p12_path and Path(application_p12_path).exists():
             log_warn(f"导入 Application p12 证书: {application_p12_path}")
             try:
+                # 确定导入到哪个 keychain
+                import_keychain = keychain_path if keychain_path and Path(keychain_path).exists() else os.path.expanduser("~/Library/Keychains/login.keychain-db")
+                
                 # 构建 security import 命令
                 import_cmd = [
                     "security", "import", application_p12_path,
-                    "-k", os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+                    "-k", import_keychain,
                     "-T", "/usr/bin/codesign",
                     "-T", "/usr/bin/productsign",
                     "-P", application_p12_password if application_p12_password else ""
@@ -1086,10 +1099,16 @@ def main():
                     log_info("  ✓ Application p12 证书导入成功")
                     # 如果未设置 CODESIGN_IDENTITY，尝试从证书中提取
                     if not codesign_identity or codesign_identity.startswith("Developer ID Application: wei liu"):
-                        # 查找证书名称
-                        find_result = subprocess.run([
-                            "security", "find-identity", "-v", "-p", "codesigning"
-                        ], capture_output=True, text=True, check=False)
+                        # 查找证书名称（如果指定了 keychain，则在该 keychain 中查找）
+                        find_cmd = ["security", "find-identity", "-v", "-p", "codesigning"]
+                        if keychain_path and Path(keychain_path).exists():
+                            find_cmd.extend([keychain_path])
+                        find_result = subprocess.run(
+                            find_cmd,
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
                         
                         if find_result.returncode == 0:
                             for line in find_result.stdout.split('\n'):
@@ -1110,10 +1129,14 @@ def main():
         if installer_p12_path and Path(installer_p12_path).exists():
             log_warn(f"导入 Installer p12 证书: {installer_p12_path}")
             try:
+                # 确定导入到哪个 keychain
+                import_keychain = keychain_path if keychain_path and Path(keychain_path).exists() else os.path.expanduser("~/Library/Keychains/login.keychain-db")
+                
                 # 构建 security import 命令
                 import_cmd = [
                     "security", "import", installer_p12_path,
-                    "-k", os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+                    "-k", import_keychain,
+                    "-T", "/usr/bin/codesign",
                     "-T", "/usr/bin/productsign",
                     "-P", installer_p12_password if installer_p12_password else ""
                 ]
@@ -1130,10 +1153,16 @@ def main():
                     log_info("  ✓ Installer p12 证书导入成功")
                     # 如果未设置 INSTALLER_CODESIGN_IDENTITY，尝试从证书中提取
                     if not installer_identity:
-                        # 查找证书名称
-                        find_result = subprocess.run([
-                            "security", "find-identity", "-v", "-p", "codesigning"
-                        ], capture_output=True, text=True, check=False)
+                        # 查找证书名称（如果指定了 keychain，则在该 keychain 中查找）
+                        find_cmd = ["security", "find-identity", "-v", "-p", "codesigning"]
+                        if keychain_path and Path(keychain_path).exists():
+                            find_cmd.extend([keychain_path])
+                        find_result = subprocess.run(
+                            find_cmd,
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
                         
                         if find_result.returncode == 0:
                             for line in find_result.stdout.split('\n'):
@@ -2332,9 +2361,24 @@ def main():
             else:
                 # 尝试查找所有可用的 Installer 证书
                 log_warn("  查找可用的 Installer 证书...")
-                find_result = subprocess.run([
-                    "security", "find-identity", "-v", "-p", "codesigning"
-                ], capture_output=True, text=True, check=False)
+                # 如果指定了 keychain，则在指定的 keychain 中查找（支持 GitHub Actions 环境）
+                find_cmd = ["security", "find-identity", "-v", "-p", "codesigning"]
+                keychain_path = os.environ.get("KEYCHAIN_PATH", None)
+                if not keychain_path:
+                    # 尝试从 KEYCHAIN_NAME 构建路径
+                    keychain_name = os.environ.get("KEYCHAIN_NAME", None)
+                    if keychain_name:
+                        keychain_path = os.path.expanduser(f"~/Library/Keychains/{keychain_name}-db")
+                        if not Path(keychain_path).exists():
+                            keychain_path = os.path.expanduser(f"~/Library/Keychains/{keychain_name}")
+                if keychain_path and Path(keychain_path).exists():
+                    find_cmd.append(keychain_path)
+                find_result = subprocess.run(
+                    find_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
                 
                 if find_result.returncode == 0:
                     for line in find_result.stdout.split('\n'):
@@ -2350,11 +2394,44 @@ def main():
         if installer_identity:
             log_warn("签名 PKG（使用 Installer 证书）...")
             
+            # 在 GitHub Actions 环境中，确保 keychain 已解锁（支持 productsign 访问）
+            keychain_path = os.environ.get("KEYCHAIN_PATH", None)
+            keychain_password = os.environ.get("KEYCHAIN_PASSWORD", None)
+            if not keychain_path:
+                # 尝试从 KEYCHAIN_NAME 构建路径
+                keychain_name = os.environ.get("KEYCHAIN_NAME", None)
+                if keychain_name:
+                    keychain_path = os.path.expanduser(f"~/Library/Keychains/{keychain_name}-db")
+                    if not Path(keychain_path).exists():
+                        keychain_path = os.path.expanduser(f"~/Library/Keychains/{keychain_name}")
+            
+            if keychain_path and Path(keychain_path).exists() and keychain_password:
+                log_info(f"  确保 keychain 已解锁: {keychain_path}")
+                try:
+                    # 解锁 keychain（允许 productsign 访问）
+                    unlock_result = subprocess.run([
+                        "security", "unlock-keychain", "-p", keychain_password, keychain_path
+                    ], capture_output=True, text=True, check=False)
+                    if unlock_result.returncode == 0:
+                        log_info("  ✓ Keychain 已解锁")
+                    else:
+                        log_warn(f"  ⚠ Keychain 解锁失败（可能已经解锁）: {unlock_result.stderr[:100]}")
+                except Exception as e:
+                    log_warn(f"  ⚠ Keychain 解锁时出错（可能不影响签名）: {e}")
+            
             # 验证 Installer 证书是否可用
             log_info("  验证 Installer 证书...")
-            verify_cert_result = subprocess.run([
-                "security", "find-identity", "-v", "-p", "codesigning"
-            ], capture_output=True, text=True, check=False)
+            # 如果指定了 keychain，则在指定的 keychain 中查找（支持 GitHub Actions 环境）
+            verify_cert_cmd = ["security", "find-identity", "-v", "-p", "codesigning"]
+            if keychain_path and Path(keychain_path).exists():
+                verify_cert_cmd.append(keychain_path)
+                log_info(f"  在 keychain 中查找证书: {keychain_path}")
+            verify_cert_result = subprocess.run(
+                verify_cert_cmd,
+                capture_output=True,
+                text=True,
+                check=False
+            )
             
             cert_found = False
             if verify_cert_result.returncode == 0:
