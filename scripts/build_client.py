@@ -2449,19 +2449,63 @@ def main():
                     log_error("       2. p12 文件不包含 Installer 证书（可能是 Application 证书）")
                     log_error("       3. p12 文件密码错误")
                 
+                # 尝试匹配证书（可能名称被隐藏为 ***，所以需要更灵活的匹配）
+                cert_found = False
+                cert_hash = None
+                
+                # 方法1：直接字符串匹配（如果名称没有被隐藏）
                 if installer_identity in verify_cert_result.stdout:
                     cert_found = True
                     log_info(f"  ✓ 找到 Installer 证书: {installer_identity}")
                 else:
-                    log_error(f"  ✗ 未找到 Installer 证书: {installer_identity}")
-                    log_error("     可用的 Installer 证书列表：")
-                    installer_certs_found = False
-                    for line in verify_cert_result.stdout.split('\n'):
-                        if "Developer ID Installer" in line:
-                            installer_certs_found = True
-                            log_error(f"        {line.strip()}")
-                    if not installer_certs_found:
-                        log_error("       （没有找到任何 Developer ID Installer 证书）")
+                    # 方法2：尝试从输出中提取证书哈希，然后使用 security find-certificate 获取完整信息
+                    import re
+                    # 查找所有证书行（格式：数字) 哈希 "名称"）
+                    cert_lines = verify_cert_result.stdout.split('\n')
+                    for line in cert_lines:
+                        if line.strip() and ')' in line:
+                            # 尝试提取哈希值（40字符的十六进制字符串）
+                            hash_match = re.search(r'([0-9A-F]{40})', line)
+                            if hash_match:
+                                cert_hash = hash_match.group(1)
+                                # 使用 security find-certificate 获取证书的完整信息
+                                cert_info_cmd = [
+                                    "security", "find-certificate", "-c", installer_identity,
+                                    "-p", keychain_path if keychain_path and Path(keychain_path).exists() else ""
+                                ]
+                                if keychain_path and Path(keychain_path).exists():
+                                    cert_info_cmd.extend([keychain_path])
+                                else:
+                                    cert_info_cmd = ["security", "find-certificate", "-c", installer_identity, "-p"]
+                                
+                                cert_info_result = subprocess.run(
+                                    cert_info_cmd,
+                                    capture_output=True,
+                                    text=True,
+                                    check=False
+                                )
+                                
+                                if cert_info_result.returncode == 0:
+                                    # 找到了证书，即使名称被隐藏
+                                    cert_found = True
+                                    log_info(f"  ✓ 找到 Installer 证书（通过证书哈希匹配）: {installer_identity}")
+                                    log_info(f"    证书哈希: {cert_hash}")
+                                    break
+                    
+                    if not cert_found:
+                        log_error(f"  ✗ 未找到 Installer 证书: {installer_identity}")
+                        log_error("     可用的证书列表：")
+                        installer_certs_found = False
+                        for line in verify_cert_result.stdout.split('\n'):
+                            if line.strip() and ')' in line:
+                                log_error(f"        {line.strip()}")
+                                # 检查是否可能是 Installer 证书（即使名称被隐藏）
+                                if "Developer ID Installer" in line or "Installer" in line:
+                                    installer_certs_found = True
+                        if not installer_certs_found:
+                            log_error("       （没有找到任何 Developer ID Installer 证书）")
+                            log_error("      注意：证书名称可能被隐藏（显示为 ***）")
+                            log_error("      将尝试直接使用证书名称进行签名测试...")
             else:
                 log_warn(f"  ⚠ 无法验证证书（可能权限问题）: {verify_cert_result.stderr[:200]}")
             
@@ -2479,11 +2523,17 @@ def main():
             
             # 测试不使用时间戳的签名（用于诊断）
             # 如果时间戳签名失败，可以尝试这个来确认是否是证书问题
+            # 即使 cert_found 为 False，如果 keychain 中有证书，也尝试测试签名
+            # （因为证书名称可能被隐藏，但证书本身可能可用）
             test_sign_available = False
             if not cert_found:
-                log_warn("  ⚠ 证书验证失败，将尝试测试签名以确认问题...")
+                log_warn("  ⚠ 证书验证失败，但 keychain 中有证书，将尝试测试签名以确认问题...")
+                log_warn("     （证书名称可能被隐藏，但证书本身可能可用）")
             else:
                 log_info("  测试不使用时间戳的签名（用于诊断）...")
+            
+            # 如果 keychain 中有证书（即使名称被隐藏），尝试测试签名
+            if verify_cert_result.returncode == 0 and verify_cert_result.stdout.strip():
                 test_pkg = dist_dir / f"{pkg_name}_test.pkg"
                 try:
                     # 先复制 PKG 文件用于测试
@@ -2500,6 +2550,10 @@ def main():
                     if test_result.returncode == 0:
                         test_sign_available = True
                         log_info("  ✓ 不使用时间戳的签名测试成功（证书可用）")
+                        # 如果之前没找到证书，现在标记为找到
+                        if not cert_found:
+                            cert_found = True
+                            log_info(f"  ✓ 通过签名测试确认证书可用: {installer_identity}")
                         # 清理测试文件
                         if (test_pkg + ".signed").exists():
                             (test_pkg + ".signed").unlink()
@@ -2507,7 +2561,10 @@ def main():
                     else:
                         error_msg = test_result.stderr or test_result.stdout or ""
                         log_error(f"  ✗ 不使用时间戳的签名测试失败: {error_msg[:200]}")
-                        log_error("     这表明可能是 Installer 证书问题，而不是时间戳服务问题")
+                        if "identity" in error_msg.lower() or "certificate" in error_msg.lower():
+                            log_error("     这表明可能是 Installer 证书问题（证书名称不匹配或证书不可用）")
+                        else:
+                            log_error("     这可能是其他问题（文件、权限等）")
                         if test_pkg.exists():
                             test_pkg.unlink()
                 except subprocess.TimeoutExpired:
@@ -2523,6 +2580,11 @@ def main():
             # 使用临时文件进行签名（productsign 不能使用相同的输入和输出路径）
             pkg_signed = dist_dir / f"{pkg_name}_signed.pkg"
             
+            # 如果测试签名成功，即使之前 cert_found 为 False，也认为证书可用（名称可能被隐藏）
+            if test_sign_available and not cert_found:
+                cert_found = True
+                log_info(f"  ✓ 通过签名测试确认证书可用（证书名称可能被隐藏）: {installer_identity}")
+            
             # 如果测试签名失败，提前终止
             if not test_sign_available and not cert_found:
                 log_error("  ✗ Installer 证书验证失败，且测试签名也失败")
@@ -2530,6 +2592,7 @@ def main():
                 log_error("       1. Installer 证书是否正确安装到 Keychain")
                 log_error("       2. 证书名称是否与 INSTALLER_CODESIGN_IDENTITY 环境变量匹配")
                 log_error("       3. 证书是否已过期或被撤销")
+                log_error("       4. 证书类型是否正确（必须是 Developer ID Installer，不是 Application）")
                 raise Exception("Installer 证书验证失败，无法签名 PKG")
             
             # 尝试使用时间戳签名（带重试机制）
