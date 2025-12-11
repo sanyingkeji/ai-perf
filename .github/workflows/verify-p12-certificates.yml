@@ -41,22 +41,24 @@ jobs:
           
           # 解码 p12 文件
           echo "$APPLICATION_P12_BASE64" | base64 --decode > /tmp/application.p12
-          echo "✓ P12 文件已解码（大小: $(stat -f%z /tmp/application.p12) 字节）"
+          FILE_SIZE=$(stat -f%z /tmp/application.p12 2>/dev/null || echo "未知")
+          echo "✓ P12 文件已解码（大小: $FILE_SIZE 字节）"
           
-          # 验证文件格式
-          if ! file /tmp/application.p12 | grep -q "PKCS"; then
-            echo "✗ 文件格式错误：不是有效的 PKCS#12 文件"
+          # 验证文件是否为空
+          if [ ! -s /tmp/application.p12 ]; then
+            echo "✗ 文件为空或解码失败"
             exit 1
           fi
-          echo "✓ 文件格式正确（PKCS#12）"
           
-          # 尝试读取证书信息
+          # 尝试读取证书信息（使用 openssl 验证格式）
           echo ""
           echo "尝试读取证书信息..."
           if [ -n "$APPLICATION_P12_PASSWORD" ]; then
             CERT_INFO=$(openssl pkcs12 -in /tmp/application.p12 -passin pass:"$APPLICATION_P12_PASSWORD" -nokeys -clcerts 2>&1)
-            if [ $? -eq 0 ]; then
-              echo "✓ 成功读取证书（密码正确）"
+            OPENSSL_EXIT_CODE=$?
+            if [ $OPENSSL_EXIT_CODE -eq 0 ]; then
+              echo "✓ 文件格式正确（PKCS#12）"
+              echo "✓ 密码正确，成功读取证书"
               
               # 提取证书主题和颁发者
               CERT_SUBJECT=$(echo "$CERT_INFO" | openssl x509 -noout -subject 2>/dev/null)
@@ -94,12 +96,31 @@ jobs:
               fi
               
             else
-              echo "✗ 无法读取证书（密码可能错误）"
+              echo "✗ 无法读取证书"
               echo "错误信息: $CERT_INFO"
+              echo ""
+              echo "可能的原因："
+              if echo "$CERT_INFO" | grep -qi "mac verify failure\|bad password"; then
+                echo "  1. 密码错误"
+              elif echo "$CERT_INFO" | grep -qi "invalid format\|bad magic number"; then
+                echo "  1. 文件格式错误（不是有效的 PKCS#12 文件）"
+                echo "  2. base64 解码可能有问题"
+              else
+                echo "  1. 文件格式错误或密码错误"
+                echo "  2. 请检查 base64 编码是否正确"
+              fi
               exit 1
             fi
           else
-            echo "⚠ 未提供 APPLICATION_P12_PASSWORD，跳过证书内容验证"
+            echo "⚠ 未提供 APPLICATION_P12_PASSWORD，尝试无密码读取..."
+            CERT_INFO=$(openssl pkcs12 -in /tmp/application.p12 -nokeys -clcerts 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "✓ 文件格式正确（PKCS#12，无密码）"
+            else
+              echo "✗ 无法读取证书（可能需要密码或文件格式错误）"
+              echo "错误信息: $CERT_INFO"
+              exit 1
+            fi
           fi
           
           # 创建临时 keychain 测试导入
@@ -163,22 +184,24 @@ jobs:
           
           # 解码 p12 文件
           echo "$INSTALLER_P12_BASE64" | base64 --decode > /tmp/installer.p12
-          echo "✓ P12 文件已解码（大小: $(stat -f%z /tmp/installer.p12) 字节）"
+          FILE_SIZE=$(stat -f%z /tmp/installer.p12 2>/dev/null || echo "未知")
+          echo "✓ P12 文件已解码（大小: $FILE_SIZE 字节）"
           
-          # 验证文件格式
-          if ! file /tmp/installer.p12 | grep -q "PKCS"; then
-            echo "✗ 文件格式错误：不是有效的 PKCS#12 文件"
+          # 验证文件是否为空
+          if [ ! -s /tmp/installer.p12 ]; then
+            echo "✗ 文件为空或解码失败"
             exit 1
           fi
-          echo "✓ 文件格式正确（PKCS#12）"
           
-          # 尝试读取证书信息
+          # 尝试读取证书信息（使用 openssl 验证格式）
           echo ""
           echo "尝试读取证书信息..."
           if [ -n "$INSTALLER_P12_PASSWORD" ]; then
             CERT_INFO=$(openssl pkcs12 -in /tmp/installer.p12 -passin pass:"$INSTALLER_P12_PASSWORD" -nokeys -clcerts 2>&1)
-            if [ $? -eq 0 ]; then
-              echo "✓ 成功读取证书（密码正确）"
+            OPENSSL_EXIT_CODE=$?
+            if [ $OPENSSL_EXIT_CODE -eq 0 ]; then
+              echo "✓ 文件格式正确（PKCS#12）"
+              echo "✓ 密码正确，成功读取证书"
               
               # 提取证书主题和颁发者
               CERT_SUBJECT=$(echo "$CERT_INFO" | openssl x509 -noout -subject 2>/dev/null)
@@ -222,12 +245,31 @@ jobs:
               fi
               
             else
-              echo "✗ 无法读取证书（密码可能错误）"
+              echo "✗ 无法读取证书"
               echo "错误信息: $CERT_INFO"
+              echo ""
+              echo "可能的原因："
+              if echo "$CERT_INFO" | grep -qi "mac verify failure\|bad password"; then
+                echo "  1. 密码错误"
+              elif echo "$CERT_INFO" | grep -qi "invalid format\|bad magic number"; then
+                echo "  1. 文件格式错误（不是有效的 PKCS#12 文件）"
+                echo "  2. base64 解码可能有问题"
+              else
+                echo "  1. 文件格式错误或密码错误"
+                echo "  2. 请检查 base64 编码是否正确"
+              fi
               exit 1
             fi
           else
-            echo "⚠ 未提供 INSTALLER_P12_PASSWORD，跳过证书内容验证"
+            echo "⚠ 未提供 INSTALLER_P12_PASSWORD，尝试无密码读取..."
+            CERT_INFO=$(openssl pkcs12 -in /tmp/installer.p12 -nokeys -clcerts 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "✓ 文件格式正确（PKCS#12，无密码）"
+            else
+              echo "✗ 无法读取证书（可能需要密码或文件格式错误）"
+              echo "错误信息: $CERT_INFO"
+              exit 1
+            fi
           fi
           
           # 创建临时 keychain 测试导入
