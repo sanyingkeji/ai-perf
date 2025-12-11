@@ -255,6 +255,16 @@ jobs:
             
             if [ $IMPORT_EXIT_CODE -eq 0 ]; then
               echo "✓ Installer p12 证书导入成功"
+              
+              # 立即设置 keychain 访问权限（确保 productsign 可以访问）
+              echo "设置 Installer 证书的 keychain 访问权限..."
+              security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" || true
+              
+              # 将 keychain 添加到搜索列表（确保证书可以被找到）
+              security list-keychains -d user -s "$KEYCHAIN_PATH" || true
+              
+              # 等待一下，确保证书被索引
+              sleep 1
             else
               echo "✗ Installer p12 证书导入失败（退出码: $IMPORT_EXIT_CODE）"
               echo "错误信息: $IMPORT_RESULT"
@@ -269,7 +279,8 @@ jobs:
             echo "⚠ 未提供 INSTALLER_P12_BASE64，跳过 Installer 证书导入"
           fi
           
-          # 允许 codesign 和 productsign 访问 keychain
+          # 允许 codesign 和 productsign 访问 keychain（对所有证书）
+          echo "设置所有证书的 keychain 访问权限..."
           security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" || true
           
           # 列出可用的签名身份
@@ -644,6 +655,16 @@ jobs:
             
             if [ $IMPORT_EXIT_CODE -eq 0 ]; then
               echo "✓ Installer p12 证书导入成功"
+              
+              # 立即设置 keychain 访问权限（确保 productsign 可以访问）
+              echo "设置 Installer 证书的 keychain 访问权限..."
+              security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" || true
+              
+              # 将 keychain 添加到搜索列表（确保证书可以被找到）
+              security list-keychains -d user -s "$KEYCHAIN_PATH" || true
+              
+              # 等待一下，确保证书被索引
+              sleep 1
             else
               echo "✗ Installer p12 证书导入失败（退出码: $IMPORT_EXIT_CODE）"
               echo "错误信息: $IMPORT_RESULT"
@@ -658,7 +679,8 @@ jobs:
             echo "⚠ 未提供 INSTALLER_P12_BASE64，跳过 Installer 证书导入"
           fi
           
-          # 允许 codesign 和 productsign 访问 keychain
+          # 允许 codesign 和 productsign 访问 keychain（对所有证书）
+          echo "设置所有证书的 keychain 访问权限..."
           security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" || true
           
           # 列出可用的签名身份

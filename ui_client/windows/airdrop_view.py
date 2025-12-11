@@ -1353,6 +1353,7 @@ class AirDropView(QWidget):
         self._current_target: Optional[DeviceInfo] = None
         self._pending_requests: Dict[str, dict] = {}  # 待处理的传输请求
         self._was_hidden_to_icon = False  # 标记窗口是否被隐藏到图标
+        self._changing_window_state = False  # 防止 changeEvent 递归的标志
         
         # 排序相关数据
         self._current_user_id: Optional[str] = None  # 当前用户的 user_id
@@ -1402,17 +1403,33 @@ class AirDropView(QWidget):
         """处理窗口状态改变事件，禁止最大化和最小化"""
         from PySide6.QtCore import QEvent
         if event.type() == QEvent.WindowStateChange:
+            # 防止递归：如果正在处理窗口状态改变，直接返回
+            if self._changing_window_state:
+                super().changeEvent(event)
+                return
+            
             # 如果窗口被最大化，立即恢复
             if self.isMaximized():
-                self.showNormal()
-                event.ignore()
+                self._changing_window_state = True
+                try:
+                    self.showNormal()
+                    event.ignore()
+                finally:
+                    self._changing_window_state = False
                 return
             # 如果窗口被最小化，也恢复（因为我们要用隐藏到图标代替）
             if self.isMinimized():
-                self.showNormal()
-                event.ignore()
+                self._changing_window_state = True
+                try:
+                    self.showNormal()
+                    event.ignore()
+                finally:
+                    self._changing_window_state = False
                 return
-        elif event.type() == QEvent.WindowActivate:
+        # 调用父类方法处理其他事件
+        super().changeEvent(event)
+        
+        if event.type() == QEvent.WindowActivate:
             # 窗口被激活时，重新提升所有气泡窗口到最上层
             # 延迟执行，确保窗口状态已更新
             # 注意：只在 macOS 上需要，因为 macOS 点击任何位置都会激活窗口
