@@ -111,12 +111,23 @@ class PollingService(QObject):
         
         # 发送系统通知
         if self.config.get("notifications", True):
+            # 创建点击回调函数
+            def on_notification_click():
+                print(f"[DEBUG] 通知点击回调被触发: notification_id={notification_id}")
+                try:
+                    self.notification_clicked.emit(notification)
+                    print(f"[DEBUG] 已发出 notification_clicked 信号")
+                except Exception as e:
+                    print(f"[ERROR] 发出 notification_clicked 信号失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
             send_notification(
                 title=notification.get("title", "系统通知"),
                 message=notification.get("message", ""),
                 subtitle=notification.get("subtitle"),
                 notification_id=notification_id,
-                click_callback=lambda: self.notification_clicked.emit(notification)
+                click_callback=on_notification_click
             )
         
         # 发出信号

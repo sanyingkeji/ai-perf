@@ -201,8 +201,12 @@ class UpdateDialog(QDialog):
                 QApplication = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
                 QApplication.instance().quit()
             
-            # 强制退出（确保程序完全退出）
-            os._exit(0)
+            # 优雅退出，避免绕过 atexit/日志
+            import sys
+            from PySide6.QtCore import QTimer
+            QApplication = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
+            QApplication.instance().quit()
+            QTimer.singleShot(1000, lambda: sys.exit(0))
         else:
             # 如果没有找到对应平台的下载地址，显示提示
             from PySide6.QtWidgets import QMessageBox
@@ -245,8 +249,12 @@ class UpdateDialog(QDialog):
                 QApplication = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
                 QApplication.instance().quit()
             
-            # 强制退出（确保程序完全退出）
-            os._exit(0)
+            # 优雅退出，避免绕过 atexit/日志
+            import sys
+            from PySide6.QtCore import QTimer
+            QApplication = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
+            QApplication.instance().quit()
+            QTimer.singleShot(1000, lambda: sys.exit(0))
     
     def closeEvent(self, event):
         """重写关闭事件，根据是否强制升级决定是否允许关闭"""

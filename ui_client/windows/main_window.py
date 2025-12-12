@@ -223,21 +223,40 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
         def adjust_nav_height():
             """根据菜单项数量自动调整菜单高度"""
-            visible_indices = [
-                i for i in range(self.nav.count())
-                if self.nav.item(i) and not self.nav.item(i).isHidden()
-            ]
-            if not visible_indices:
-                self.nav.setFixedHeight(30)
-                return
+            # Windows 上避免窗口闪烁：如果窗口不在前台，临时禁用更新
+            is_windows = platform.system() == "Windows"
+            disabled_updates = False
+            if is_windows:
+                # 检查窗口是否在前台
+                is_window_active = self.isActiveWindow() and self.isVisible()
+                if not is_window_active:
+                    # 窗口不在前台，临时禁用更新以避免闪烁
+                    if self.nav.updatesEnabled():
+                        self.nav.setUpdatesEnabled(False)
+                        disabled_updates = True
+            
+            try:
+                visible_indices = [
+                    i for i in range(self.nav.count())
+                    if self.nav.item(i) and not self.nav.item(i).isHidden()
+                ]
+                if not visible_indices:
+                    self.nav.setFixedHeight(30)
+                    return
 
-            first_index = visible_indices[0]
-            item_height = self.nav.sizeHintForRow(first_index)
-            if item_height <= 0:
-                item_height = 30  # 默认高度
+                first_index = visible_indices[0]
+                item_height = self.nav.sizeHintForRow(first_index)
+                if item_height <= 0:
+                    item_height = 30  # 默认高度
 
-            total_height = len(visible_indices) * item_height + 4
-            self.nav.setFixedHeight(total_height)
+                total_height = len(visible_indices) * item_height + 4
+                self.nav.setFixedHeight(total_height)
+            finally:
+                # 恢复更新状态
+                if is_windows and disabled_updates:
+                    self.nav.setUpdatesEnabled(True)
+                    # 延迟更新，确保布局完成
+                    QTimer.singleShot(50, lambda: self.nav.viewport().update())  # 避免触发 QListWidget.update(QModelIndex) 重载
         
         # 暴露方法，便于后续动态调整（例如图文趋势菜单的显隐）
         self._adjust_nav_height = adjust_nav_height
@@ -335,6 +354,8 @@ class MainWindow(QMainWindow):
         self._airdrop_window = None
         
         self._global_hotkey = None
+        # 标记是否正在退出，避免 closeEvent 误判为“最小化到托盘”
+        self._is_quitting = False
         if platform.system() == "Windows":
             from utils.win_hotkey import WindowsGlobalHotkey
             try:
@@ -938,26 +959,18 @@ class MainWindow(QMainWindow):
     
     def _open_airdrop_after_login(self):
         """
-        登录成功后打开隔空投送窗口，1秒后自动隐藏为侧边图标。
+        登录成功后静默启动隔空投送服务（创建窗口但默认隐藏在屏幕边缘）。
         与启动时的逻辑对齐。
         """
         try:
-            self._show_airdrop()
+            # 静默启动：创建窗口但直接隐藏到边缘
+            self._silent_start_airdrop()
         except Exception:
             return
 
-        # 1 秒后自动隐藏到侧边
-        def hide_later():
-            if self._airdrop_window and hasattr(self._airdrop_window, "_animate_to_icon"):
-                try:
-                    self._airdrop_window._animate_to_icon()
-                except Exception:
-                    pass
-        QTimer.singleShot(1000, hide_later)
-
     def _startup_airdrop_with_autohide(self):
         """
-        启动时展示隔空投送窗口，1秒后自动隐藏为侧边图标。
+        启动时静默启动隔空投送服务（创建窗口但默认隐藏在屏幕边缘）。
         首次启动会发系统通知提示使用方式。
         只在已登录情况下自动打开（未登录时不打开）。
         """
@@ -966,18 +979,10 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            self._show_airdrop()
+            # 静默启动：创建窗口但直接隐藏到边缘
+            self._silent_start_airdrop()
         except Exception:
             return
-
-        # 1 秒后自动隐藏到侧边
-        def hide_later():
-            if self._airdrop_window and hasattr(self._airdrop_window, "_animate_to_icon"):
-                try:
-                    self._airdrop_window._animate_to_icon()
-                except Exception:
-                    pass
-        QTimer.singleShot(1000, hide_later)
 
         # 首次启动提示
         QTimer.singleShot(1200, self._notify_airdrop_hint_once)
@@ -1389,6 +1394,10 @@ class MainWindow(QMainWindow):
             self._airdrop_window.closeEvent = custom_close_event
             
         
+        # 如果是静默启动模式，跳过显示逻辑
+        if hasattr(self, '_silent_start_mode') and self._silent_start_mode:
+            return
+        
         # 判断逻辑：如果窗口已经存在且之前被隐藏过（从边缘恢复），否则是首次打开
         is_restoring = (self._airdrop_window is not None and 
                        hasattr(self._airdrop_window, '_was_hidden_to_icon') and 
@@ -1457,6 +1466,70 @@ class MainWindow(QMainWindow):
                     f"显示窗口失败：{str(e)}",
                     detailed_text
                 )
+    
+    def _silent_start_airdrop(self):
+        """
+        静默启动隔空投送服务：创建窗口并初始化服务，但默认隐藏在屏幕边缘。
+        不显示窗口，用户可以通过快捷键或系统托盘菜单打开。
+        """
+        # 如果窗口已存在，直接返回（避免重复创建）
+        if self._airdrop_window is not None:
+            return
+        
+        # 检查是否已登录
+        if not self._ensure_logged_in():
+            return
+        
+        # 复用 _show_airdrop_window 的创建逻辑，但跳过显示部分
+        # 先创建窗口（这会初始化所有服务）
+        try:
+            # 临时标记，用于跳过显示逻辑
+            self._silent_start_mode = True
+            
+            # 调用 _show_airdrop_window 创建窗口和初始化服务
+            # 但我们需要在显示之前拦截
+            self._show_airdrop_window()
+            
+            # 清除标记
+            self._silent_start_mode = False
+            
+            if not self._airdrop_window:
+                return
+            
+            # 计算窗口应该隐藏到的边缘位置
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import QRect
+            screen = QApplication.primaryScreen().availableGeometry()
+            window_width = 480
+            max_height = min(int(screen.height() * 0.85), 2400)
+            window_height = max(300, max_height // 2)
+            
+            # 默认隐藏到右边缘（保留1像素可见）
+            target_x = screen.right() - 1
+            target_y = screen.top() + (screen.height() - window_height) // 2
+            
+            # 设置窗口大小和位置
+            self._airdrop_window.setFixedSize(window_width, window_height)
+            self._airdrop_window.move(target_x, target_y)
+            
+            # 标记为已隐藏状态
+            self._airdrop_window._was_hidden_to_icon = True
+            self._airdrop_window._hidden_to_left = False  # 隐藏到右边缘
+            
+            # 保存隐藏位置
+            self._airdrop_window._hidden_rect = QRect(target_x, target_y, window_width, window_height)
+            self._airdrop_window._before_hide_rect = QRect(target_x, target_y, window_width, window_height)
+            
+            # 隐藏窗口（不显示）
+            self._airdrop_window.hide()
+            self._airdrop_window.setVisible(False)
+            
+        except Exception as e:
+            self._silent_start_mode = False
+            import traceback
+            import sys
+            print(f"[WARNING] 静默启动隔空投送失败: {e}")
+            traceback.print_exc()
     
     def _show_window_after_hidden(self):
         """从隐藏位置恢复显示窗口（从隐藏位置显示）"""
@@ -1550,16 +1623,18 @@ class MainWindow(QMainWindow):
     
     def _quit_application(self):
         """退出应用"""
+        # 标记退出状态，防止 closeEvent 将关闭操作转为最小化托盘
+        self._is_quitting = True
         # 清理资源
         self._cleanup_resources()
         
-        # 退出应用：先优雅退出事件循环，稍作延迟再强制退出，确保 mDNS goodbye 包发送
+        # 退出应用：优雅退出事件循环，不再使用 os._exit，确保日志/资源清理
         from PySide6.QtWidgets import QApplication
-        import os
         import sys
         QApplication.quit()
+        # 若 1s 后仍未退出（极端情况），再调用 sys.exit 作为兜底
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(500, lambda: os._exit(0))
+        QTimer.singleShot(1000, lambda: sys.exit(0))
     
     def _cleanup_resources(self):
         """清理所有资源"""
@@ -1674,106 +1749,46 @@ class MainWindow(QMainWindow):
                     super().closeEvent(event)
                     from PySide6.QtWidgets import QApplication
                     QApplication.quit()
-                    import os
-                    os._exit(0)
+                    import sys
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(1000, lambda: sys.exit(0))
             else:
                 # 没有系统托盘，直接退出
                 self._cleanup_resources()
                 super().closeEvent(event)
                 from PySide6.QtWidgets import QApplication
                 QApplication.quit()
-                import os
-                os._exit(0)
+                import sys
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(1000, lambda: sys.exit(0))
             return
         
-        # Windows/Linux: 检查是否是首次关闭
-        try:
-            cfg = ConfigManager.load()
-            close_behavior = cfg.get("close_behavior", None)  # None表示首次
-        except Exception:
-            close_behavior = None
-        
-        # 如果是首次关闭（Windows/Linux），显示选择对话框
-        if close_behavior is None:
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("关闭应用")
-            msg_box.setText("请选择关闭方式：")
-            
-            # 检查系统托盘是否可用
-            tray_available = QSystemTrayIcon.isSystemTrayAvailable() and self._tray_icon is not None
-            
-            if tray_available:
-                msg_box.setInformativeText(
-                    "• 退出到托盘：窗口关闭后，应用在系统托盘中继续运行\n"
-                    "• 直接退出：完全退出应用程序\n\n"
-                    "此选择将保存，下次关闭时将自动使用该方式。"
-                )
-            else:
-                msg_box.setInformativeText(
-                    "当前系统不支持系统托盘功能，将直接退出应用程序。\n\n"
-                    "此选择将保存，下次关闭时将自动使用该方式。"
-                )
-            
-            # 创建自定义按钮
-            btn_tray = None
-            if tray_available:
-                btn_tray = msg_box.addButton("退出到托盘", QMessageBox.AcceptRole)
-            btn_quit = msg_box.addButton("直接退出", QMessageBox.AcceptRole)
-            btn_cancel = msg_box.addButton("取消", QMessageBox.RejectRole)
-            
-            # 设置默认按钮
-            if tray_available:
-                msg_box.setDefaultButton(btn_tray)
-            else:
-                msg_box.setDefaultButton(btn_quit)
-            
-            msg_box.exec()
-            
-            clicked_button = msg_box.clickedButton()
-            
-            if clicked_button == btn_cancel:
-                # 取消关闭
+        # Windows/Linux: 如非显式退出，则隐藏到托盘；显式退出时直接走退出流程
+        if not self._is_quitting:
+            if self._tray_icon is None:
+                self._setup_system_tray()
+            if QSystemTrayIcon.isSystemTrayAvailable() and self._tray_icon is not None:
                 event.ignore()
+                self.hide()
+                if not self._tray_icon.isVisible():
+                    self._tray_icon.show()
+                self._tray_icon.showMessage(
+                    "Ai 绩效客户端",
+                    "应用已最小化到系统托盘",
+                    QSystemTrayIcon.Information,
+                    2000
+                )
                 return
-            elif btn_tray and clicked_button == btn_tray:
-                # 退出到托盘
-                close_behavior = "tray"
-            elif clicked_button == btn_quit:
-                # 直接退出
-                close_behavior = "quit"
-            else:
-                # 默认取消
-                event.ignore()
-                return
-            
-            # 保存用户选择
-            try:
-                cfg = ConfigManager.load()
-            except Exception:
-                cfg = {}
-            cfg["close_behavior"] = close_behavior
-            ConfigManager.save(cfg)
-        
-        # Windows/Linux 默认隐藏到托盘（静默与 macOS 行为一致）
-        if not QSystemTrayIcon.isSystemTrayAvailable() or not self._tray_icon:
             # 托盘不可用则直接退出
-            self._cleanup_resources()
-            super().closeEvent(event)
-            from PySide6.QtWidgets import QApplication
-            QApplication.quit()
-            import os
-            os._exit(0)
-        else:
-            event.ignore()
-            self.hide()
-            if not self._tray_icon.isVisible():
-                self._tray_icon.show()
-            self._tray_icon.showMessage(
-                "Ai 绩效客户端",
-                "应用已最小化到系统托盘",
-                QSystemTrayIcon.Information,
-                2000
-            )
+
+        # 退出流程（包含显式退出或托盘不可用时的关闭）
+        self._cleanup_resources()
+        super().closeEvent(event)
+        from PySide6.QtWidgets import QApplication
+        QApplication.quit()
+        import sys
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(1000, lambda: sys.exit(0))
     
     # -------- 启动时登录检查 --------
     def _check_login_on_startup(self):
@@ -2188,6 +2203,7 @@ class MainWindow(QMainWindow):
             
             # 连接信号
             polling_service.notification_received.connect(self._on_notification_received)
+            polling_service.notification_clicked.connect(self._on_notification_clicked)
             polling_service.version_update_available.connect(self._on_version_update_available)
         except Exception:
             # 静默失败，不干扰主程序
@@ -2195,15 +2211,53 @@ class MainWindow(QMainWindow):
     
     def _on_notification_received(self, notification: dict):
         """收到通知时的处理"""
-        # 通知已经在 notification_service 中通过系统通知显示了
-        # 这里可以添加额外的UI处理，比如在应用内显示通知列表等
-        pass
+        # 通知已经在 polling_service 中通过系统通知显示了
+        # 这里可以添加额外的UI处理，比如在应用内显示通知列表、更新通知徽章等
+        try:
+            # 可以在这里更新UI中的通知列表或徽章
+            # 例如：self.update_notification_badge()
+            pass
+        except Exception:
+            # 静默失败，不干扰主程序
+            pass
     
     def _on_notification_clicked(self, notification: dict):
         """通知被点击时的处理"""
-        notification_id = notification.get("id")
-        if notification_id:
-            self.show_notification_detail(notification_id)
+        print(f"[DEBUG] _on_notification_clicked 被调用: {notification}")
+        # 检查是否是传送文件相关的通知
+        # 通过标题、内容或类型字段判断
+        title = notification.get("title", "").lower()
+        message = notification.get("message", "").lower()
+        subtitle = notification.get("subtitle", "").lower() if notification.get("subtitle") else ""
+        notification_type = notification.get("type", "").lower() if notification.get("type") else ""
+        
+        # 判断是否是传送文件相关的通知
+        # 关键词：传送、文件、隔空投送、airdrop、transfer、file
+        transfer_keywords = ["传送", "文件", "隔空投送", "airdrop", "transfer", "file", "文件传输", "文件传送"]
+        is_transfer_notification = (
+            any(keyword in title for keyword in transfer_keywords) or
+            any(keyword in message for keyword in transfer_keywords) or
+            any(keyword in subtitle for keyword in transfer_keywords) or
+            notification_type in ["transfer", "file_transfer", "airdrop"]
+        )
+        
+        if is_transfer_notification:
+            # 传送文件相关的通知，打开隔空投送窗口
+            try:
+                self._show_airdrop()
+            except Exception as e:
+                # 如果打开隔空投送失败，回退到显示通知详情
+                import traceback
+                print(f"[WARNING] 打开隔空投送窗口失败: {e}")
+                traceback.print_exc()
+                notification_id = notification.get("id")
+                if notification_id:
+                    self.show_notification_detail(notification_id)
+        else:
+            # 其他通知，显示通知详情
+            notification_id = notification.get("id")
+            if notification_id:
+                self.show_notification_detail(notification_id)
     
     def _apply_window_title_bar_theme(self):
         """应用窗口标题栏主题样式"""

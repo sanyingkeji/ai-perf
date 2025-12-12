@@ -11,6 +11,7 @@ import contextlib
 import imghdr
 import os
 import threading
+import queue
 import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Set
@@ -56,6 +57,10 @@ from PySide6.QtGui import (
     QImage,
     QGuiApplication,
 )
+try:
+    from shiboken6 import isValid as _qt_is_valid
+except Exception:  # pragma: no cover
+    _qt_is_valid = None
 import httpx
 import logging
 import sys
@@ -69,6 +74,56 @@ from utils.theme_manager import ThemeManager
 from utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
+
+
+class NonScrollListWidget(QListWidget):
+    """禁用自身滚动，交由外层 QScrollArea 接管。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # wheel 事件通常落在 viewport 上，安装事件过滤器以便转发
+        if self.viewport():
+            self.viewport().installEventFilter(self)
+
+    def _forward_wheel_to_scroll_area(self, event):
+        """将滚轮事件转发给最近的 QScrollArea。"""
+        from PySide6.QtWidgets import QScrollArea
+        parent = self.parent()
+        scroll_area = None
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                scroll_area = parent
+                break
+            parent = parent.parent()
+        if scroll_area and scroll_area.viewport():
+            from PySide6.QtGui import QWheelEvent
+            # 构造新的 wheel 事件发给 scroll_area 的 viewport
+            forwarded = QWheelEvent(
+                scroll_area.viewport().mapFromGlobal(event.globalPosition().toPoint()),
+                event.globalPosition(),
+                event.pixelDelta(),
+                event.angleDelta(),
+                event.buttons(),
+                event.modifiers(),
+                event.phase(),
+                event.inverted(),
+                event.source()
+            )
+            from PySide6.QtWidgets import QApplication
+            QApplication.sendEvent(scroll_area.viewport(), forwarded)
+            return True
+        return False
+
+    def wheelEvent(self, event):
+        if not self._forward_wheel_to_scroll_area(event):
+            event.ignore()
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self.viewport() and event.type() == QEvent.Type.Wheel:
+            if self._forward_wheel_to_scroll_area(event):
+                return True
+        return super().eventFilter(obj, event)
 
 
 def _debug_log(message: str):
@@ -144,7 +199,8 @@ class CircularProgressAvatar(QLabel):
 class DeviceItemWidget(QWidget):
     """设备列表项（支持拖放，苹果风格）"""
     
-    file_dropped = Signal(Path, DeviceInfo)  # 文件拖放信号
+    # Windows/Qt6：避免在 Signal 签名里使用非 Qt 元类型（Path/自定义 dataclass），否则在跨线程/排队投递时可能触发原生崩溃
+    file_dropped = Signal(object, object)  # (file_path: Path, device: DeviceInfo)
     
     def __init__(self, device: DeviceInfo, parent=None):
         super().__init__(parent)
@@ -152,6 +208,7 @@ class DeviceItemWidget(QWidget):
         self._progress = 0
         self._parent_airdrop_view = None  # 用于获取主题颜色
         self._is_dark = False  # 主题状态
+        self._device_text_max_px = 160  # 设备名单行显示的最大像素宽度（超出中间省略）
         if parent:
             # 向上查找 AirDropView
             widget = parent
@@ -161,6 +218,10 @@ class DeviceItemWidget(QWidget):
                     self._is_dark = widget._is_dark
                     break
                 widget = widget.parent()
+        # 后台下载头像后，使用 invokeMethod 在 UI 线程应用（避免从 Python Thread 里 emit Qt signal 导致 Qt6Core.dll 0xc0000005）
+        self._pending_avatar_bytes: Optional[bytes] = None
+        self._avatar_apply_scheduled: bool = False
+
         self._setup_ui()
         self.setAcceptDrops(True)
     
@@ -250,7 +311,14 @@ class DeviceItemWidget(QWidget):
         self._default_device_text = device_text
         self.device_label = QLabel(device_text)
         self.device_label.setAlignment(Qt.AlignCenter)
-        self.device_label.setWordWrap(True)
+        # 限制设备名单行显示并中间省略，避免撑高/换行
+        self.device_label.setWordWrap(False)
+        if self._device_text_max_px:
+            fm = self.device_label.fontMetrics()
+            elided = fm.elidedText(device_text, Qt.ElideMiddle, self._device_text_max_px)
+            self.device_label.setText(elided)
+            self.device_label.setMaximumWidth(self._device_text_max_px)
+            self.device_label.setMinimumWidth(0)
         device_font = QFont()
         device_font.setFamily("SF Pro Display")
         device_font.setPointSize(9)
@@ -381,51 +449,69 @@ class DeviceItemWidget(QWidget):
     
     def _load_avatar(self):
         """加载头像"""
+        # 先设置默认占位，确保 UI 有内容；异步失败也不在后台线程触碰 UI
+        self._set_default_avatar()
         if self._device.avatar_url:
             self._load_avatar_async(self._device.avatar_url)
-        else:
-            self._set_default_avatar()
     
     def _load_avatar_async(self, url: str):
-        """异步加载头像，带重试机制"""
+        """
+        异步加载头像（后台线程只做网络请求，不创建/绘制 QPixmap）。
+
+        说明：QPixmap/QPainter 不是线程安全的，尤其在 Windows/Qt6 上会引发 0xc0000005。
+        """
         def load():
-            import time
             max_retries = 3
             retry_delay = 1  # 秒
-            
+
             for attempt in range(max_retries):
                 try:
                     response = httpx.get(url, timeout=5)
-                    if response.status_code == 200:
-                        pixmap = QPixmap()
-                        pixmap.loadFromData(response.content)
-                        if not pixmap.isNull():
-                            # 容器大小是avatar_size+8，确保pixmap大小和容器一致
-                            container_size = self._avatar_size + 8
-                            circular_pixmap = self._make_circular(pixmap, container_size)
-                        # 确保在主线程更新UI
-                        QMetaObject.invokeMethod(
-                            self.avatar_label,
-                            "setPixmap",
-                            Qt.QueuedConnection,
-                            Q_ARG(QPixmap, circular_pixmap)
-                        )
-                        return  # 成功，退出重试循环
+                    if response.status_code == 200 and response.content:
+                        data = bytes(response.content)
+                        self._post_avatar_bytes_to_ui(data)
+                        return
                 except Exception as e:
                     logger.warning(f"加载头像失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                    if attempt < max_retries - 1:
-                        # 还有重试机会，等待后重试
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # 指数退避
-                    else:
-                        # 所有重试都失败了
-                        logger.error(f"加载头像失败（已重试 {max_retries} 次）: {e}")
-            # 所有重试都失败，使用默认头像
-            self._set_default_avatar()
-        
-        import threading
+
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+
+            # 全部失败：保留默认占位，不在后台线程做任何 UI 操作
+            return
+
         thread = threading.Thread(target=load, daemon=True)
         thread.start()
+
+    def _post_avatar_bytes_to_ui(self, data: bytes) -> None:
+        """
+        后台线程调用：把头像 bytes 投递到 UI 线程应用。
+
+        重要：Win11/Qt6 下避免从 Python Thread 里调用任何 Qt API（包括 invokeMethod/emit signal）。
+        这里仅通过父窗口的 Python 队列投递，UI 线程定时 drain 执行。
+        """
+        try:
+            parent_view = getattr(self, "_parent_airdrop_view", None)
+            if parent_view and hasattr(parent_view, "_post_to_ui_thread"):
+                parent_view._post_to_ui_thread(lambda raw=data: self._apply_avatar_bytes(raw))
+        except Exception:
+            pass
+
+    def _apply_avatar_bytes(self, raw: bytes) -> None:
+        """UI 线程：将头像 bytes 转成 pixmap 并更新头像。"""
+        try:
+            if not raw:
+                return
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(raw):
+                return
+            container_size = getattr(self, "_avatar_size", 64) + 8
+            circular_pixmap = self._make_circular(pixmap, container_size)
+            self.avatar_label.setPixmap(circular_pixmap)
+        except Exception:
+            # 静默失败，避免影响主流程
+            pass
 
     def _create_clipboard_text_temp_file(self, text: str) -> Optional[Path]:
         """将文本（可能包含base64图片）保存到临时文件"""
@@ -1269,7 +1355,8 @@ class AirDropView(QWidget):
     # should_hide_to_icon = Signal(QPoint)  # 已移除
     
     # 信号：传输请求结果（用于从后台线程通知主线程）
-    transfer_request_result = Signal(dict, str, str, str, int, str)  # result, file_path, device_name, device_ip, device_port, request_id
+    # Windows/Qt6：避免 dict 这种非 Qt 元类型作为 Signal 签名，使用 object 更安全
+    transfer_request_result = Signal(object, str, str, str, int, str)  # result(dict), file_path, device_name, device_ip, device_port, request_id
     
     def _load_discover_scope(self) -> str:
         """读取可被发现范围配置，默认 all"""
@@ -1347,6 +1434,18 @@ class AirDropView(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 跨线程 UI 任务投递（严禁在 Python Thread 里直接调用 QTimer/操作 Qt，Win11/Qt6 易触发 Qt6Core.dll 0xc0000005）
+        self._ui_event_queue: "queue.Queue[callable]" = queue.Queue()
+        self._ui_dispatch_enabled: bool = True
+        try:
+            self.destroyed.connect(self._on_destroyed)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        # UI 线程任务调度器：周期性 drain 队列（避免从 Python Thread 里 invokeMethod/emit signal）
+        self._ui_dispatch_timer = QTimer(self)
+        self._ui_dispatch_timer.setInterval(20)
+        self._ui_dispatch_timer.timeout.connect(self._drain_ui_events)
+        self._ui_dispatch_timer.start()
         _debug_log("Initializing AirDropView...")
         self._transfer_manager: Optional[TransferManager] = None
         self._transferring = False
@@ -1373,6 +1472,12 @@ class AirDropView(QWidget):
         self._devices_min_height = None  # 启动后根据初始列表高度动态确定
         # 淡入动画引用，避免被GC
         self._fade_animations: list = []
+        # 记录最近一次有效的设备列表可用宽度，隐藏状态下回退使用
+        self._last_viewport_width: int = 0
+        # 记录最近一次有效的设备列表可用高度，隐藏状态下回退使用
+        self._last_viewport_height: int = 0
+        # 标记布局是否需要在下次显示时重算
+        self._layout_dirty: bool = False
         # 应用退出时统一清理传输管理器（窗口隐藏/关闭不再主动停服务）
         try:
             QApplication.instance().aboutToQuit.connect(self._cleanup_transfer_manager)
@@ -1398,6 +1503,58 @@ class AirDropView(QWidget):
             print(f"[ERROR] {error_msg}", file=sys.stderr)
             # 即使初始化失败，也创建一个基本的窗口，避免完全无法显示
             raise
+
+    def _post_to_ui_thread(self, fn):
+        """从任意线程安全投递到 UI 线程执行。"""
+        if not getattr(self, "_ui_dispatch_enabled", True):
+            return
+        try:
+            self._ui_event_queue.put_nowait(fn)
+        except Exception as e:
+            try:
+                logger.error(f"[AirDropView] enqueue ui event failed: {e}", exc_info=True)
+            except Exception:
+                pass
+            return
+
+    @Slot()
+    def _drain_ui_events(self):
+        """在 UI 线程执行队列中的任务。"""
+        while True:
+            try:
+                fn = self._ui_event_queue.get_nowait()
+            except queue.Empty:
+                break
+            except Exception as e:
+                logger.error(f"[AirDropView] dequeue ui event failed: {e}", exc_info=True)
+                break
+            try:
+                fn()
+            except Exception as e:
+                logger.error(f"[AirDropView] ui event execution failed: {e}", exc_info=True)
+
+    @Slot()
+    def _on_destroyed(self) -> None:
+        self._ui_dispatch_enabled = False
+        try:
+            if hasattr(self, "_ui_dispatch_timer") and self._ui_dispatch_timer:
+                self._ui_dispatch_timer.stop()
+        except Exception:
+            pass
+
+    def _snapshot_viewport_metrics(self):
+        """记录当前设备列表的可用宽度/高度，避免隐藏后视口为0时无法计算布局。"""
+        try:
+            if hasattr(self, 'devices_list') and self.devices_list.viewport():
+                vp = self.devices_list.viewport()
+                w = vp.width()
+                h = vp.height()
+                if w and w > 0:
+                    self._last_viewport_width = w
+                if h and h > 0:
+                    self._last_viewport_height = h
+        except Exception:
+            pass
     
     def changeEvent(self, event):
         """处理窗口状态改变事件，禁止最大化和最小化"""
@@ -1482,7 +1639,7 @@ class AirDropView(QWidget):
         content_layout.setContentsMargins(0, 10, 0, 0)
         content_layout.setSpacing(0)
 
-        self.devices_list = QListWidget()
+        self.devices_list = NonScrollListWidget()
         self.devices_list.setSpacing(1)
         self.devices_list.setSelectionMode(QListWidget.NoSelection)
         self.devices_list.setFocusPolicy(Qt.NoFocus)
@@ -1514,7 +1671,8 @@ class AirDropView(QWidget):
         content_layout.addWidget(self.devices_list, 0)
         
         # 提示内容区域（作为正常内容，跟随在同事列表后面）
-        content_layout.addSpacing(12)
+        self._list_to_background_spacing = 12  # 记录列表与提示区的固定间距
+        content_layout.addSpacing(self._list_to_background_spacing)
         self._background_frame = QFrame(content_widget)
         self._background_frame.setStyleSheet("background-color: transparent;")
         self._background_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1604,17 +1762,47 @@ class AirDropView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # 整个内容放入滚动区域，禁用滚动条（更美观，但仍可通过鼠标滚轮滚动）
-        # 注意：setWidgetResizable(True) 会让 content_widget 的大小等于滚动区域的大小
-        # 但内容超出时仍可通过鼠标滚轮、触摸板等滚动
+        # 整个内容放入滚动区域（仅在需要时滚动）
+        # 若内容未超出视窗则不应出现滚动行为
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
-        # 禁用滚动条，但保留滚动功能
         self._scroll_area.setFrameShape(QFrame.NoFrame)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 垂直滚动条默认关闭，后续根据内容高度动态调整
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll_area.setWidget(content_widget)
         layout.addWidget(self._scroll_area)
+        
+        # 通过样式表隐藏滚动条（保持视觉无滚动条）
+        self._scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+            }
+            QScrollBar:vertical {
+                width: 0px;
+                background: transparent;
+            }
+            QScrollBar::handle:vertical {
+                width: 0px;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                width: 0px;
+                height: 0px;
+            }
+            QScrollBar:horizontal {
+                height: 0px;
+                background: transparent;
+            }
+            QScrollBar::handle:horizontal {
+                height: 0px;
+            }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {
+                width: 0px;
+                height: 0px;
+            }
+        """)
         
         # 保存引用
         self._content_widget = content_widget
@@ -1658,15 +1846,11 @@ class AirDropView(QWidget):
         if persist:
             self._save_discover_scope(scope)
         if update_service and self._transfer_manager:
-            # 后台线程执行，避免阻塞 UI
-            def worker():
-                try:
-                    self._transfer_manager.set_discover_scope(scope)
-                except Exception as e:
-                    logger.warning(f"更新 discover_scope 到 TransferManager 失败: {e}")
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            self._scope_change_thread = t
+            # 直接在 UI 线程更新：避免从 Python Thread 调用 QObject 方法导致 Win11/Qt6 原生崩溃
+            try:
+                self._transfer_manager.set_discover_scope(scope)
+            except Exception as e:
+                logger.warning(f"更新 discover_scope 到 TransferManager 失败: {e}")
     
     def _on_discover_clicked(self):
         """展示自定义下拉（向上弹出），选项暂不改逻辑，仅UI"""
@@ -1708,14 +1892,20 @@ class AirDropView(QWidget):
                 return
             bg_top = self._background_frame.mapTo(self, QPoint(0, 0)).y()
             list_top = self.devices_list.mapTo(self, QPoint(0, 0)).y()
+            bg_h = self._background_frame.height()
+            list_h = self.devices_list.height()
+            window_h = self.height()
             logger.info(
                 f"[AirDropView] initial layout: bg_top={bg_top}, list_top={list_top}, "
-                f"bg_height={self._background_frame.height()}, list_height={self.devices_list.height()}, "
-                f"window_height={self.height()}"
+                f"bg_height={bg_h}, list_height={list_h}, "
+                f"window_height={window_h}"
             )
             # 动态设定设备列表的最小高度，避免提示区上移
             if not self._devices_min_height:
-                self._devices_min_height = max(self.devices_list.height(), 200)
+                # 按需求：初始最小高度 = 窗口高度 H - 提示区高度 H1（再减去布局上边距10和间距12）
+                base_margins = 10 + 12  # content_top_margin + spacing
+                available_h = max(window_h - bg_h - base_margins, 0)
+                self._devices_min_height = available_h
                 logger.info(f"[AirDropView] devices_min_height set to {self._devices_min_height}")
         except Exception as e:
             logger.debug(f"[AirDropView] log initial layout failed: {e}")
@@ -1744,9 +1934,25 @@ class AirDropView(QWidget):
         # 窗口显示后，延迟更新 item 宽度，确保布局已完成
         if hasattr(self, 'devices_list'):
             QTimer.singleShot(50, self._update_item_widths)
+            QTimer.singleShot(80, self._adjust_devices_list_size)
+        # 更新窗口标题（显示在线人数）
+        QTimer.singleShot(50, self._update_window_title)
         # 如果有待处理请求，显示时主动聚焦最早的请求
         if self._pending_requests:
             QTimer.singleShot(50, self._focus_first_pending_request)
+
+    def show(self):
+        """确保每次显示（含从隐藏恢复）都强制重算布局。"""
+        super().show()
+        # 仅在显示时执行布局计算；若之前标记过 dirty，这里统一刷新
+        def refresh():
+            self._layout_dirty = False
+            self._update_item_widths()
+            self._adjust_devices_list_size()
+            self._update_window_title()
+        refresh()
+        QTimer.singleShot(10, refresh)
+        QTimer.singleShot(10, refresh)
     
     def _tint_pixmap(self, pixmap: QPixmap, color: QColor) -> QPixmap:
         """将图标着色为指定颜色"""
@@ -2288,6 +2494,9 @@ class AirDropView(QWidget):
             import sys
             return
         
+        # 在隐藏前记录一次可用宽高，避免隐藏后为 0
+        self._snapshot_viewport_metrics()
+        
         if not self.isVisible():
             # 如果窗口已经隐藏，直接隐藏
             self._was_hidden_to_icon = True
@@ -2473,20 +2682,13 @@ class AirDropView(QWidget):
                         _debug_log(f"User info loaded: id={user_id}, name={user_name}, group_id={self._current_user_group_id}")
                         
                         _debug_log("Queueing _create_transfer_manager on UI thread")
-                        QMetaObject.invokeMethod(
-                            self,
-                            "_createTransferManagerSlot",
-                            Qt.QueuedConnection,
-                            Q_ARG(str, user_id),
-                            Q_ARG(str, user_name),
-                            Q_ARG(str, avatar_url or "")
-                        )
+                        self._post_to_ui_thread(lambda uid=user_id, un=user_name, au=(avatar_url or ""): self._createTransferManagerSlot(uid, un, au))
                         return  # 成功，退出重试循环
                     else:
                         _debug_log("User info response invalid, cannot start AirDrop")
                         def show_error():
                             Toast.show_message(self, "无法获取用户信息，请先登录")
-                        QTimer.singleShot(0, show_error)
+                        self._post_to_ui_thread(show_error)
                         return  # 业务错误，不重试
                 except Exception as e:
                     logger.warning(f"初始化传输管理器失败 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -2502,7 +2704,7 @@ class AirDropView(QWidget):
                         logger.error(f"初始化传输管理器失败（已重试 {max_retries} 次）: {e}")
                         def show_error():
                             Toast.show_message(self, f"初始化失败: {e}（已重试 {max_retries} 次）")
-                        QTimer.singleShot(0, show_error)
+                        self._post_to_ui_thread(show_error)
         
         # 在后台线程中执行API调用
         import threading
@@ -2534,35 +2736,27 @@ class AirDropView(QWidget):
             self._transfer_manager.receive_progress.connect(self._on_receive_progress)
             self._transfer_manager.transfer_completed.connect(self._on_transfer_completed)
             
-            # 连接传输请求结果信号
-            self.transfer_request_result.connect(self._on_transfer_request_result_signal)
-            
-            def start_manager():
-                """启动 TransferManager，带重试机制"""
-                import time
+            # 传输请求结果不再使用 Qt Signal 从后台线程回传，统一走 _post_to_ui_thread 直接回到 UI 线程调用
+
+            # 启动 TransferManager：在 UI 线程执行（避免从 Python Thread 调用 QObject 方法导致 Win11/Qt6 原生崩溃）
+            def start_manager_attempt(attempt: int = 1, delay_s: int = 0):
                 max_retries = 3
-                retry_delay = 2  # 秒
-                
-                for attempt in range(max_retries):
-                    try:
-                        self._transfer_manager.start()
-                        QTimer.singleShot(0, self._on_transfer_manager_started)
-                        return  # 成功，退出重试循环
-                    except Exception as exc:
-                        logger.warning(f"启动 TransferManager 失败 (尝试 {attempt + 1}/{max_retries}): {exc}")
-                        _debug_log(f"TransferManager.start() failed (attempt {attempt + 1}/{max_retries}): {exc}")
-                        
-                        if attempt < max_retries - 1:
-                            # 还有重试机会，等待后重试
-                            _debug_log(f"等待 {retry_delay} 秒后重试...")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # 指数退避
-                        else:
-                            # 所有重试都失败了
-                            logger.error(f"启动 TransferManager 失败（已重试 {max_retries} 次）: {exc}")
-                            QTimer.singleShot(0, lambda: Toast.show_message(self, f"初始化失败: {exc}（已重试 {max_retries} 次）"))
-            
-            threading.Thread(target=start_manager, daemon=True).start()
+                if delay_s and delay_s > 0:
+                    QTimer.singleShot(delay_s * 1000, lambda: start_manager_attempt(attempt, 0))
+                    return
+                try:
+                    self._transfer_manager.start()
+                    self._on_transfer_manager_started()
+                except Exception as exc:
+                    logger.warning(f"启动 TransferManager 失败 (尝试 {attempt}/{max_retries}): {exc}")
+                    if attempt < max_retries:
+                        next_delay = 2 ** attempt  # 2,4,...
+                        start_manager_attempt(attempt + 1, next_delay)
+                    else:
+                        logger.error(f"启动 TransferManager 失败（已重试 {max_retries} 次）: {exc}")
+                        Toast.show_message(self, f"初始化失败: {exc}（已重试 {max_retries} 次）")
+
+            QTimer.singleShot(0, lambda: start_manager_attempt(1, 0))
         except Exception as e:
             logger.error(f"创建传输管理器失败: {e}")
             _debug_log(f"_create_transfer_manager failed: {e}")
@@ -2679,6 +2873,15 @@ class AirDropView(QWidget):
     
     def _on_device_added(self, device: DeviceInfo):
         """设备添加"""
+        # 过滤“自己”：同 user_id + 同 IP 不显示（双重兜底，避免定时刷新/回调路径遗漏）
+        try:
+            if self._current_user_id and device.user_id == self._current_user_id:
+                local_ip = getattr(self._transfer_manager, "_local_ip", None) if self._transfer_manager else None
+                if local_ip and device.ip == local_ip:
+                    _debug_log(f"[UI] Ignoring self device: user_id={device.user_id}, ip={device.ip}")
+                    return
+        except Exception:
+            pass
         if not self._is_device_visible(device):
             _debug_log(f"[UI] Device hidden by discover_scope: {getattr(device, 'discover_scope', None)} user_id={device.user_id}")
             return
@@ -2768,7 +2971,9 @@ class AirDropView(QWidget):
             )
         
         item = QListWidgetItem()
-        widget = DeviceItemWidget(display_device)
+        # 先给 AirDropView 作为父对象，便于 DeviceItemWidget 在 __init__ 中正确获取主题/深色模式；
+        # setItemWidget 时 Qt 会把其重新挂到 viewport 下。
+        widget = DeviceItemWidget(display_device, parent=self)
         widget.file_dropped.connect(self._on_file_dropped)
         # 先设置为透明，插入后再做淡入动画
         opacity = QGraphicsOpacityEffect(widget)
@@ -2798,6 +3003,8 @@ class AirDropView(QWidget):
         self._update_item_widths()
         # 调整 QListWidget 大小以显示所有内容
         self._adjust_devices_list_size()
+        # 更新窗口标题（显示在线人数）
+        self._update_window_title()
         # 淡入显示
         self._fade_in_widget(widget)
     
@@ -2809,13 +3016,22 @@ class AirDropView(QWidget):
         """根据列表数量动态更新所有 item 的宽度"""
         if not hasattr(self, 'devices_list') or self.devices_list.count() == 0:
             return
+        # 窗口未显示时跳过计算，标记待刷新
+        if not self.isVisible():
+            self._layout_dirty = True
+            return
         
         # 获取 devices_list 的可用宽度（viewport 宽度，已排除滚动条）
         available_width = self.devices_list.viewport().width()
+        if available_width <= 0 and self._last_viewport_width > 0:
+            # 窗口隐藏时 viewport 宽度可能为 0，回退到上一次有效值
+            available_width = self._last_viewport_width
         if available_width <= 0:
             # 如果宽度还没计算出来，延迟重试
             QTimer.singleShot(10, self._update_item_widths)
             return
+        # 记录最近一次有效宽度，供隐藏状态下使用
+        self._last_viewport_width = available_width
 
         # 根据列表数量动态计算每行显示的 item 数量
         total_count = self.devices_list.count()
@@ -2849,8 +3065,15 @@ class AirDropView(QWidget):
                     current_height = current_size.height() if current_size.isValid() else 118
                     # 更新 item 的宽度，保持高度不变
                     item.setSizeHint(QSize(item_width, current_height))
-                    # 更新 widget 的最小宽度
+                    # 将卡片固定为该行应占的宽度，保证平分并居中
                     widget.setMinimumWidth(item_width)
+                    widget.setMaximumWidth(item_width)
+                    widget.setFixedWidth(item_width)
+        # 确保列表本身宽度与可用宽度对齐，避免剩余空白
+        self.devices_list.setMinimumWidth(available_width)
+        self.devices_list.setMaximumWidth(available_width)
+        # 设定统一网格尺寸，确保 IconMode 平均分配
+        self.devices_list.setGridSize(QSize(item_width, current_height if 'current_height' in locals() else 118))
     
     def _adjust_devices_list_size(self):
         """调整 devices_list 的大小以显示所有内容"""
@@ -2858,6 +3081,10 @@ class AirDropView(QWidget):
             min_h = self._devices_min_height or 0
             self.devices_list.setMinimumHeight(min_h)
             self.devices_list.setMaximumHeight(min_h)
+            return
+        # 窗口未显示时跳过计算，标记待刷新
+        if not self.isVisible():
+            self._layout_dirty = True
             return
         
         # 获取第一个 item 的大小作为参考
@@ -2879,12 +3106,41 @@ class AirDropView(QWidget):
     
     def _do_adjust_devices_list_size(self, item_width: int, item_height: int, spacing: int):
         """实际执行调整大小"""
+        # 若窗口未显示，延迟到下次显示再计算，避免隐藏态尺寸为0
+        if not self.isVisible():
+            self._layout_dirty = True
+            return
         if self.devices_list.count() == 0:
+            # 无设备时按照 MINH 规则布置，使提示区完整可见且不滚动
             min_h = self._devices_min_height or 0
-            # 无设备时重置边距
+            viewport_h = 0
+            if hasattr(self, "_scroll_area") and self._scroll_area and self._scroll_area.viewport():
+                viewport_h = self._scroll_area.viewport().height()
+                if viewport_h <= 0 and self._last_viewport_height > 0:
+                    viewport_h = self._last_viewport_height
+            bg_hint = self._background_frame.sizeHint().height() if hasattr(self, "_background_frame") and self._background_frame else 0
+            bg_min = self._background_frame.minimumHeight() if hasattr(self, "_background_frame") and self._background_frame else 0
+            bg_h = max(bg_hint, bg_min)
+            status_h = self.status_label.sizeHint().height() if hasattr(self, "status_label") and self.status_label and self.status_label.isVisible() else 0
+            spacing_h = getattr(self, "_list_to_background_spacing", 0)
+            content_top_margin = 10
+            content_bottom_margin = 0
+            MINH = max(viewport_h - bg_h - status_h - spacing_h - content_top_margin - content_bottom_margin, 0) if viewport_h > 0 else 0
+            # 若 MINH 计算为 0（例如服务未启动、高度未知），退回 min_h（默认最小列表高）避免提示被挤
+            if MINH == 0 and min_h > 0:
+                MINH = min_h
+
+            list_h = max(min_h, MINH)
             self.devices_list.setViewportMargins(0, 0, 0, 0)
-            self.devices_list.setMinimumHeight(min_h)
-            self.devices_list.setMaximumHeight(min_h)
+            self.devices_list.setMinimumHeight(list_h)
+            self.devices_list.setMaximumHeight(list_h)
+            # 固定内容总高度，避免滚动且提示区完整
+            if hasattr(self, "_scroll_area") and self._scroll_area and self._scroll_area.widget():
+                content_h = list_h + spacing_h + bg_h + status_h + content_top_margin + content_bottom_margin
+                self._scroll_area.widget().setMinimumHeight(content_h)
+                self._scroll_area.widget().setMaximumHeight(content_h)
+                from PySide6.QtCore import Qt as _Qt
+                self._scroll_area.setVerticalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
             return
         
         # 获取 QListWidget 的可用宽度（减去滚动条宽度）
@@ -2904,20 +3160,80 @@ class AirDropView(QWidget):
         # 计算总高度：行数 * (item高度 + 间距) + 一些边距
         total_height = rows * (item_height + spacing) + spacing
         
-        # 若内容高度低于最小高度，居中显示；否则正常排布
-        min_h = self._devices_min_height or 0
-        top_margin = 0
-        bottom_margin = 0
-        if min_h > 0 and total_height < min_h:
-            free_space = min_h - total_height
+        # 计算 MINH = viewport高度 - 提示区高度(H1) - 间距/状态高度 - 布局边距
+        viewport_h = 0
+        if hasattr(self, "_scroll_area") and self._scroll_area and self._scroll_area.viewport():
+            viewport_h = self._scroll_area.viewport().height()
+            if viewport_h <= 0 and self._last_viewport_height > 0:
+                viewport_h = self._last_viewport_height
+        bg_hint = self._background_frame.sizeHint().height() if hasattr(self, "_background_frame") and self._background_frame else 0
+        bg_min = self._background_frame.minimumHeight() if hasattr(self, "_background_frame") and self._background_frame else 0
+        bg_h = max(bg_hint, bg_min)
+        status_h = self.status_label.sizeHint().height() if hasattr(self, "status_label") and self.status_label and self.status_label.isVisible() else 0
+        spacing_h = getattr(self, "_list_to_background_spacing", 0)
+        # content_layout 上下边距
+        content_top_margin = 10  # setContentsMargins(0,10,0,0)
+        content_bottom_margin = 0
+        MINH = max(viewport_h - bg_h - status_h - spacing_h - content_top_margin - content_bottom_margin, 0) if viewport_h > 0 else 0
+
+        # 调试尺寸打印，便于排查布局问题
+        try:
+            logger.info(
+                "[AirDropView] layout metrics | vp_h=%s last_vp_h=%s bg_h=%s status_h=%s spacing_h=%s MINH=%s total_h=%s items=%s rows=%s available_w=%s last_vp_w=%s content_top_margin=%s content_bottom_margin=%s",
+                viewport_h, self._last_viewport_height, bg_h, status_h, spacing_h, MINH,
+                total_height, total_items, rows, available_width, self._last_viewport_width,
+                content_top_margin, content_bottom_margin
+            )
+        except Exception:
+            pass
+
+        from PySide6.QtCore import Qt as _Qt
+        # 情况1：内容高度 <= MINH，一屏可见且在 MINH 内垂直居中，不滚动
+        if MINH > 0 and total_height <= MINH:
+            free_space = MINH - total_height
             top_margin = free_space // 2
             bottom_margin = free_space - top_margin
-            total_height = min_h
-        self.devices_list.setViewportMargins(0, top_margin, 0, bottom_margin)
-        
-        # 设置最小和最大高度，确保所有内容都能显示，但不阻止布局系统调整
+            self.devices_list.setViewportMargins(0, top_margin, 0, bottom_margin)
+            self.devices_list.setMinimumHeight(MINH)
+            self.devices_list.setMaximumHeight(MINH)
+            # 确保内容整体高度不超出 viewport，避免滚动
+            if hasattr(self, "_scroll_area") and self._scroll_area and self._scroll_area.widget():
+                content_height = MINH + spacing_h + bg_h + status_h + content_top_margin + content_bottom_margin
+                self._scroll_area.widget().setMinimumHeight(content_height)
+                self._scroll_area.widget().setMaximumHeight(content_height)
+            if hasattr(self, "_scroll_area") and self._scroll_area:
+                self._scroll_area.setVerticalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
+            return
+
+        # 情况2：内容高度 > MINH（或无法获得 MINH），允许滚动，列表高度按内容
+        self.devices_list.setViewportMargins(0, 0, 0, 0)
         self.devices_list.setMinimumHeight(total_height)
         self.devices_list.setMaximumHeight(total_height)
+        if hasattr(self, "_scroll_area") and self._scroll_area:
+            self._scroll_area.setVerticalScrollBarPolicy(_Qt.ScrollBarAsNeeded)
+        # 如果当前不可见，标记下次显示时重算（冗余保护）
+        if not self.isVisible():
+            self._layout_dirty = True
+    
+    def _update_window_title(self):
+        """更新窗口标题，显示在线设备数量（包括自己的其他设备）"""
+        try:
+            if not hasattr(self, 'devices_list'):
+                return
+            
+            # 统计设备列表数量（包括"你自己"和其他设备）
+            device_count = self.devices_list.count()
+            
+            # 更新窗口标题
+            if device_count > 0:
+                title = f"隔空投送({device_count}设备在线)"
+            else:
+                title = "隔空投送"
+            
+            self.setWindowTitle(title)
+        except Exception:
+            # 静默失败，不干扰主程序
+            pass
 
     def _fade_in_widget(self, widget: QWidget, duration: int = 200):
         """淡入显示新加入的设备卡片"""
@@ -2945,21 +3261,30 @@ class AirDropView(QWidget):
         except Exception:
             pass
     
-    def _on_device_removed(self, device_name: str):
-        """设备移除（通过设备名称，可能移除多个同名设备）"""
-        _debug_log(f"[UI] Device removed from AirDropView: {device_name}")
-        # 注意：device_name 可能对应多个设备（同一账号多个设备），需要移除所有匹配的
+    def _on_device_removed(self, user_id: str, ip: str, device_name: str):
+        """设备移除（通过 user_id + ip 唯一标识，支持"自己"设备的正确匹配）"""
+        _debug_log(f"[UI] Device removed from AirDropView: {device_name} (user_id={user_id}, ip={ip})")
+        # 使用 user_id + ip 作为唯一标识来匹配设备，而不是使用 device_name
+        # 因为"自己"的设备在 UI 中显示为"你自己"，但传入的 device_name 是原始名称
+        device_unique_id = f"{user_id}::{ip}"
         removed = False
         for i in range(self.devices_list.count() - 1, -1, -1):  # 倒序遍历，避免索引问题
             item = self.devices_list.item(i)
             widget = self.devices_list.itemWidget(item)
-            if isinstance(widget, DeviceItemWidget) and widget.device.name == device_name:
-                self.devices_list.takeItem(i)
-                removed = True
+            if isinstance(widget, DeviceItemWidget):
+                widget_unique_id = self._get_device_unique_id(widget.device)
+                if widget_unique_id == device_unique_id:
+                    self.devices_list.takeItem(i)
+                    removed = True
+                    _debug_log(f"[UI] Removed device: {widget_unique_id}")
         
         if removed:
+            # 更新所有 item 的宽度（根据新的设备数量重新计算排列方式）
+            self._update_item_widths()
             # 调整 QListWidget 大小
             self._adjust_devices_list_size()
+            # 更新窗口标题（显示在线人数）
+            self._update_window_title()
     
     def _on_file_dropped(self, file_path: Path, device: DeviceInfo):
         """文件拖放到设备头像"""
@@ -2992,9 +3317,9 @@ class AirDropView(QWidget):
                     self._wait_and_transfer(file_path, device, request_id)
                 else:
                     msg = result.get("message", "请求失败")
-                    QTimer.singleShot(0, lambda m=msg: self._handle_send_request_failure(device, m))
+                    self._post_to_ui_thread(lambda m=msg: self._handle_send_request_failure(device, m))
             except Exception as e:
-                QTimer.singleShot(0, lambda m=str(e): self._handle_send_request_failure(device, m))
+                self._post_to_ui_thread(lambda m=str(e): self._handle_send_request_failure(device, m))
         
         import threading
         thread = threading.Thread(target=send_in_thread, daemon=True)
@@ -3009,15 +3334,10 @@ class AirDropView(QWidget):
                 target_port=device.port,
                 timeout=60
             )
-            
-            # 使用信号通知主线程（信号会自动在主线程中执行）
-            self.transfer_request_result.emit(
-                result,
-                str(file_path),
-                device.name,
-                device.ip,
-                device.port,
-                request_id
+            # 不要在 Python Thread 里 emit Qt signal（Win11/Qt6 下可能直接 0xc0000005），统一投递到 UI 线程执行
+            self._post_to_ui_thread(
+                lambda res=result, fp=str(file_path), dn=device.name, dip=device.ip, dport=device.port, rid=request_id:
+                self._on_transfer_request_result_signal(res, fp, dn, dip, dport, rid)
             )
         
         import threading
@@ -3067,16 +3387,14 @@ class AirDropView(QWidget):
         """传输文件"""
         self.status_label.setVisible(False)
         self._set_device_status(device, None)
-        
-        # 创建一个适配器函数，将 (uploaded, total) 转换为 (target_name, uploaded, total)
-        def progress_adapter(uploaded: int, total: int):
-            self._on_transfer_progress(device.name, uploaded, total)
-        
+
+        # 重要：不要把 UI 回调（会操作 Qt 控件）传入后台线程执行。
+        # TransferManager 内部会安全地把进度通过 Qt signal 投递回 UI 线程（transfer_progress），
+        # 这里不再额外传 on_progress，避免 Win11/Qt6 下 Qt6Core.dll 0xc0000005。
         self._transfer_manager.send_file_after_confirm(
             file_path=file_path,
             target_device=device,
-            request_id=request_id,
-            on_progress=progress_adapter
+            request_id=request_id
         )
     
     def _on_transfer_request_received(self, request_id: str, sender_name: str, sender_id: str,
@@ -3344,47 +3662,55 @@ class AirDropView(QWidget):
     
     def _on_transfer_completed(self, target_name: str, success: bool, message: str):
         """传输完成"""
-        self._transferring = False
-        
-        self.status_label.setVisible(False)
-        
-        # 清除设备项的头像进度条，并记录传输时间
-        current_device = self._current_target
-        target_user_id = None
-        target_device = None
         try:
-            for i in range(self.devices_list.count()):
-                item = self.devices_list.item(i)
-                if item is None:
-                    continue
-                widget = self.devices_list.itemWidget(item)
-                if (isinstance(widget, DeviceItemWidget) and 
-                    hasattr(widget, 'device') and widget.device is not None and
-                    hasattr(widget.device, 'name') and widget.device.name == target_name):
-                    widget.set_progress(0)
-                    widget.set_device_status(None)
-                    if hasattr(widget.device, 'user_id'):
-                        target_user_id = widget.device.user_id
-                    target_device = widget.device
-                    break
-        except Exception as e:
-            logger.error(f"处理传输完成时查找设备失败: {e}", exc_info=True)
-        
-        if success and target_user_id and target_device:
+            logger.info(f"[AirDropView] 传输完成: target_name={target_name}, success={success}, message={message}")
+            self._transferring = False
+            
+            self.status_label.setVisible(False)
+            
+            # 清除设备项的头像进度条，并记录传输时间
+            current_device = self._current_target
+            target_user_id = None
+            target_device = None
             try:
-                # 记录传输时间（按 user_id 记录，同一账号的所有设备共享传输时间）
-                import time
-                self._device_transfer_times[target_user_id] = time.time()
-                # 传输成功后重新排序该账号的所有设备（因为排序是基于 user_id 的）
-                self._reorder_devices_by_user_id(target_user_id)
-                Toast.show_message(self, f"文件已成功发送到 {target_name}")
+                for i in range(self.devices_list.count()):
+                    item = self.devices_list.item(i)
+                    if item is None:
+                        continue
+                    widget = self.devices_list.itemWidget(item)
+                    if (isinstance(widget, DeviceItemWidget) and 
+                        hasattr(widget, 'device') and widget.device is not None and
+                        hasattr(widget.device, 'name') and widget.device.name == target_name):
+                        widget.set_progress(0)
+                        widget.set_device_status(None)
+                        if hasattr(widget.device, 'user_id'):
+                            target_user_id = widget.device.user_id
+                        target_device = widget.device
+                        break
             except Exception as e:
-                logger.error(f"处理传输成功时出错: {e}", exc_info=True)
-                Toast.show_message(self, f"文件已成功发送到 {target_name}")
-        else:
-            Toast.show_message(self, f"发送失败: {message}")
-        
-        self._current_target = None
+                logger.error(f"处理传输完成时查找设备失败: {e}", exc_info=True)
+            
+            if success and target_user_id and target_device:
+                try:
+                    # 记录传输时间（按 user_id 记录，同一账号的所有设备共享传输时间）
+                    import time
+                    self._device_transfer_times[target_user_id] = time.time()
+                    # 传输成功后延迟重新排序该账号的所有设备（因为排序是基于 user_id 的）
+                    # 使用 QTimer.singleShot 延迟执行，避免在 Qt 布局更新过程中操作列表导致崩溃
+                    QTimer.singleShot(100, lambda uid=target_user_id: self._reorder_devices_by_user_id(uid))
+                    Toast.show_message(self, f"文件已成功发送到 {target_name}")
+                except Exception as e:
+                    logger.error(f"处理传输成功时出错: {e}", exc_info=True)
+                    Toast.show_message(self, f"文件已成功发送到 {target_name}")
+            else:
+                Toast.show_message(self, f"发送失败: {message}")
+            
+            self._current_target = None
+        except Exception as e:
+            logger.error(f"[AirDropView] 传输完成回调发生未捕获异常: {e}", exc_info=True)
+            # 确保即使发生异常也不会导致应用退出
+            import traceback
+            logger.error(f"[AirDropView] 异常堆栈: {traceback.format_exc()}")
     
     def _on_receive_progress(self, request_id: str, received: int, total: int):
         """接收进度更新"""
@@ -3416,8 +3742,9 @@ class AirDropView(QWidget):
             progress = int((received / total) * 100) if total > 0 else 0
             self.status_label.setVisible(False)
     
-    def _on_file_received(self, save_path: Path, file_size: int, original_filename: str):
+    def _on_file_received(self, save_path: str, file_size: int, original_filename: str):
         """文件接收完成"""
+        save_path = Path(save_path)
         # 隐藏状态
         self.status_label.setVisible(False)
         
@@ -3591,77 +3918,62 @@ class AirDropView(QWidget):
         QTimer.singleShot(0, self._adjust_devices_list_size)
     
     def _reorder_devices_by_user_id(self, user_id: str):
-        """重新排序指定 user_id 的所有设备（传输后需要移动到前面）"""
+        """
+        重新排序指定 user_id 的所有设备（传输后需要移动到前面）。
+
+        重要：在 Windows/Qt6 上，QListWidget + setItemWidget 的组合如果通过 takeItem/insertItem
+        复用旧的 QWidget，非常容易触发 Qt6Core.dll 0xc0000005（C++ 侧 use-after-free）。
+        这里改为“先移除旧项，再按最新排序规则重新创建 widget 插回”，稳定优先。
+        """
         if not user_id:
             return
-        
+
+        if not hasattr(self, "devices_list") or self.devices_list is None:
+            return
+
         try:
-            # 找到所有该 user_id 的设备
-            devices_to_reorder = []
+            rows: list[int] = []
+            devices: list[DeviceInfo] = []
+
+            # 收集该账号的所有设备（保持原顺序）
             for i in range(self.devices_list.count()):
                 item = self.devices_list.item(i)
                 if item is None:
                     continue
                 widget = self.devices_list.itemWidget(item)
-                if (isinstance(widget, DeviceItemWidget) and 
-                    hasattr(widget, 'device') and widget.device is not None and
-                    hasattr(widget.device, 'user_id') and widget.device.user_id == user_id):
-                    devices_to_reorder.append((i, item, widget))
-            
-            if not devices_to_reorder:
-                return
-            
-            # 计算新的排序键
-            new_key = self._get_device_sort_key(user_id)
-            
-            # 找到应该插入的位置（第一个设备的位置）
-            first_row = devices_to_reorder[0][0]
-            new_position = 0
-            
-            for i in range(self.devices_list.count()):
-                if i == first_row:
-                    continue  # 跳过第一个要移动的设备
-                item = self.devices_list.item(i)
-                if item is None:
+                if not isinstance(widget, DeviceItemWidget):
                     continue
-                widget = self.devices_list.itemWidget(item)
-                if (isinstance(widget, DeviceItemWidget) and 
-                    hasattr(widget, 'device') and widget.device is not None and
-                    hasattr(widget.device, 'user_id')):
-                    existing_key = self._get_device_sort_key(widget.device.user_id)
-                    if new_key < existing_key:
-                        new_position = i
-                        break
-                    new_position = i + 1
-            
-            # 如果位置没有变化，不需要移动
-            if new_position == first_row or (new_position == first_row + len(devices_to_reorder)):
+                try:
+                    dev = widget.device
+                except RuntimeError:
+                    continue
+                if getattr(dev, "user_id", None) == user_id:
+                    rows.append(i)
+                    devices.append(dev)
+
+            if not devices:
                 return
-            
-            # 安全地移动所有设备：先移除，再插入到新位置
-            # 按行号倒序移除，避免索引变化
-            devices_to_reorder.sort(key=lambda x: x[0], reverse=True)
-            
-            # 移除所有设备
-            for row, item, widget in devices_to_reorder:
-                if row < self.devices_list.count():
-                    self.devices_list.takeItem(row)
-                    # 如果新位置在移除位置之后，需要调整
-                    if new_position > row:
-                        new_position -= 1
-            
-            # 按原顺序插入到新位置（保持同一账号设备的相对顺序）
-            devices_to_reorder.reverse()  # 恢复原顺序
-            for idx, (_, item, widget) in enumerate(devices_to_reorder):
-                insert_pos = new_position + idx
-                if insert_pos <= self.devices_list.count():
-                    self.devices_list.insertItem(insert_pos, item)
-                    # 重新设置widget（takeItem后需要重新设置）
-                    self.devices_list.setItemWidget(item, widget)
-            
-            # 更新宽度和大小
+
+            was_updates_enabled = self.devices_list.updatesEnabled()
+            try:
+                self.devices_list.setUpdatesEnabled(False)
+
+                # 移除旧项（倒序避免索引变化）
+                for row in reversed(rows):
+                    with contextlib.suppress(Exception):
+                        self.devices_list.takeItem(row)
+
+                # 重新插入（内部会根据 _get_device_sort_key 计算正确位置）
+                for dev in devices:
+                    with contextlib.suppress(Exception):
+                        self._add_device_widget_at_sorted_position(dev)
+            finally:
+                self.devices_list.setUpdatesEnabled(was_updates_enabled)
+
+            # 延迟刷新，避开 paint/layout 进行中窗口
             QTimer.singleShot(0, self._update_item_widths)
             QTimer.singleShot(0, self._adjust_devices_list_size)
+            QTimer.singleShot(0, self._update_window_title)
         except Exception as e:
             logger.error(f"重新排序设备失败 (user_id={user_id}): {e}", exc_info=True)
     
@@ -3915,7 +4227,7 @@ class AirDropView(QWidget):
     
     def _position_request_bubble(self, bubble: TransferRequestBubble, request_info: dict, retry: bool = True):
         """将气泡定位在发送者头像附近；若主窗口隐藏到边缘，则固定到屏幕右上角"""
-        margin = 12
+        margin = 0  # 减小间距，让浮窗更靠近头像
         
         # 如果窗口已隐藏到屏幕边缘或当前不可见，固定到屏幕角落提示
         if self._was_hidden_to_icon or not self.isVisible():

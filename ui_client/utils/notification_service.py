@@ -47,7 +47,11 @@ class NotificationService(QObject):
         self._poll_timer.stop()
     
     def _check_notifications(self):
-        """检查新通知"""
+        """检查新通知（需要登录）"""
+        # 首先检查是否已登录，未登录时不发起请求
+        if not ApiClient.is_logged_in():
+            return
+        
         if not self.api_client:
             try:
                 self.api_client = ApiClient.from_config()
@@ -105,6 +109,14 @@ class _NotificationCheckWorker(QRunnable):
     
     def run(self):
         """执行检查"""
+        # 检查 api_client 是否有效
+        if not self.api_client:
+            return
+        
+        # 再次检查登录状态（双重检查，确保不会在未登录时发起请求）
+        if not ApiClient.is_logged_in():
+            return
+        
         try:
             response = self.api_client._get("/api/notifications", params={"unread_only": True, "limit": 10})
             
@@ -117,7 +129,7 @@ class _NotificationCheckWorker(QRunnable):
                     # 检查是否已经处理过（去重）
                     if item.get("id") not in self.checked_ids:
                         self.notification_found.emit(item)
-        except Exception as e:
+        except Exception:
             # 静默失败，不干扰主程序
             pass
 

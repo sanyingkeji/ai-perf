@@ -3,11 +3,21 @@ import os
 import encodings  # 确保 PyInstaller 包含 encodings 模块（修复 ModuleNotFoundError）
 import traceback
 import logging
+import faulthandler
 from pathlib import Path
 from datetime import datetime, timedelta
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType, QLoggingCategory, QLockFile, QSharedMemory
+
+# Windows: 强制使用 SelectorEventLoopPolicy，避免 proactor 与部分库组合导致的崩溃
+try:
+    import platform
+    if platform.system() == "Windows":
+        import asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+except Exception:
+    pass
 from utils.theme_manager import ThemeManager
 from utils.config_manager import CONFIG_PATH, ConfigManager
 from windows.main_window import MainWindow
@@ -55,6 +65,7 @@ def setup_crash_logging():
 
     # 创建日志文件，文件名包含时间戳
     log_file = log_dir / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    fatal_file = log_dir / f"fatal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
     # 创建日志文件，文件名包含时间戳
     logging.basicConfig(
@@ -71,7 +82,17 @@ def setup_crash_logging():
     logger.info(f"应用启动 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"Python 版本: {sys.version}")
     logger.info(f"日志文件: {log_file}")
+    logger.info(f"Fatal/崩溃栈文件: {fatal_file}")
     logger.info("=" * 80)
+
+    # 尽最大可能捕获“Qt6Core.dll 0xc0000005”等原生崩溃时的线程栈
+    # 注：进程被硬杀/极早期崩溃仍可能来不及写出，但比单纯 logging 更可靠
+    try:
+        fatal_fp = open(fatal_file, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=fatal_fp, all_threads=True)
+        logger.info("faulthandler 已启用（all_threads=True）")
+    except Exception as e:
+        logger.warning(f"faulthandler 启用失败: {e}")
 
     # 按配置清理旧日志
     retention_hours = _get_retention_hours()
@@ -79,6 +100,8 @@ def setup_crash_logging():
     _cleanup_old_logs(log_dir, retention_hours)
 
     return logger, log_file
+
+
 
 
 def qt_message_handler(msg_type, context, message):
@@ -139,23 +162,78 @@ def exception_handler(exc_type, exc_value, exc_traceback):
     sys.__excepthook__(exc_type, exc_value, exc_traceback)
 
 
+def thread_exception_handler(args):
+    """线程异常处理器，捕获线程中未处理的异常（Python 3.8+）"""
+    logger = logging.getLogger('crash_logger')
+    logger.critical("=" * 80)
+    logger.critical("线程中未捕获的异常！")
+    logger.critical("=" * 80)
+    logger.critical(f"线程: {args.thread.name if hasattr(args, 'thread') else 'Unknown'}")
+    logger.critical(f"异常类型: {args.exc_type.__name__}")
+    logger.critical(f"异常信息: {args.exc_value}")
+    logger.critical("堆栈跟踪:")
+    
+    # 记录完整的堆栈跟踪
+    for line in traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback):
+        logger.critical(line.strip())
+    
+    logger.critical("=" * 80)
+    
+    # 尝试显示错误对话框（如果 QApplication 已创建）
+    try:
+        app = QApplication.instance()
+        if app is not None:
+            error_msg = f"线程中发生错误，详细信息已记录到日志文件。\n\n线程: {args.thread.name if hasattr(args, 'thread') else 'Unknown'}\n异常类型: {args.exc_type.__name__}\n异常信息: {args.exc_value}"
+            QMessageBox.critical(None, "线程错误", error_msg)
+    except Exception:
+        pass  # 如果无法显示对话框，忽略
+
+
 def main():
     # 单实例检查：确保应用只能运行一个实例
     # 使用 QLockFile 在创建 QApplication 之前检查
     import platform
+    # 确保锁文件目录存在，避免 UnknownError(3) 的警告
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # 提前安装 Qt 消息处理器，防止 Qt 自己的警告直接输出到 stderr
+    try:
+        qInstallMessageHandler(qt_message_handler)
+    except Exception:
+        pass
+
     lock_file_path = CONFIG_PATH.parent / "app_instance.lock"
     lock_file = QLockFile(str(lock_file_path))
-    
+
+    # 兼容不同平台/版本的 QLockFile 枚举命名差异
+    lock_error_enum = getattr(QLockFile, "LockError", None)
+    lock_failed = (
+        getattr(lock_error_enum, "LockFailedError", None)
+        or getattr(lock_error_enum, "LockFailed", None)
+        or getattr(QLockFile, "LockFailedError", None)
+        or getattr(QLockFile, "LockFailed", None)
+    )
+    permission_error = (
+        getattr(lock_error_enum, "PermissionError", None)
+        or getattr(QLockFile, "PermissionError", None)
+    )
+
     # 尝试获取锁（非阻塞，等待最多100毫秒）
     lock_result = lock_file.tryLock(100)
     if not lock_result:
         # 检查锁文件错误类型
         error = lock_file.error()
-        if error == QLockFile.LockFailed:
+
+        # 将错误值转换为整数进行比较（兼容枚举和整数）
+        error_value = int(error) if hasattr(error, '__int__') else error
+        lock_failed_value = int(lock_failed) if hasattr(lock_failed, '__int__') else lock_failed
+        permission_error_value = int(permission_error) if hasattr(permission_error, '__int__') else permission_error
+
+        if lock_failed_value is not None and error_value == lock_failed_value:
             # 已有实例在运行，静默退出
             # 注意：不创建 QApplication，直接退出，避免显示任何窗口
             sys.exit(0)
-        elif error == QLockFile.PermissionError:
+        elif permission_error_value is not None and error_value == permission_error_value:
             # 权限错误，可能是锁文件权限问题，尝试删除旧锁文件后继续
             try:
                 if lock_file_path.exists():
@@ -194,6 +272,13 @@ def main():
             logger, log_file = setup_crash_logging()
             # 设置全局异常处理器
             sys.excepthook = exception_handler
+            # 设置线程异常处理器（Python 3.8+）
+            try:
+                import threading
+                threading.excepthook = thread_exception_handler
+            except AttributeError:
+                # Python < 3.8 不支持 threading.excepthook
+                pass
             # 设置 Qt 消息处理器
             qInstallMessageHandler(qt_message_handler)
     except Exception as e:
@@ -233,8 +318,8 @@ def main():
         from PySide6.QtCore import Qt
         app.setAttribute(Qt.AA_DontShowIconsInMenus, False)  # 确保菜单图标正常显示
     else:
-        # Windows/Linux: 默认自动退出，但 closeEvent 可以覆盖
-        app.setQuitOnLastWindowClosed(True)
+        # Windows/Linux: 始终保持后台（托盘）运行，关闭窗口不直接退出
+        app.setQuitOnLastWindowClosed(False)
 
     # 设置应用图标
     app_dir = Path(__file__).parent

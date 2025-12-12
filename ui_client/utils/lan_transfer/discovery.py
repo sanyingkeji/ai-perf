@@ -10,7 +10,11 @@ import sys
 import time
 from typing import Dict, Optional, Callable
 from dataclasses import dataclass
-from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
+try:
+    from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener, IPVersion  # type: ignore
+except Exception:  # pragma: no cover
+    from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener  # type: ignore
+    IPVersion = None  # type: ignore
 import threading
 import logging
 
@@ -41,17 +45,20 @@ class DeviceDiscovery:
     SERVICE_TYPE = "_aiperf-transfer._tcp.local."
     
     def __init__(self, on_device_added: Optional[Callable[[DeviceInfo], None]] = None,
-                 on_device_removed: Optional[Callable[[str], None]] = None,
+                 on_device_removed: Optional[Callable[[str, str, str], None]] = None,
                  local_user_id: Optional[str] = None,
-                 local_ip: Optional[str] = None):
+                 local_ip: Optional[str] = None,
+                 zeroconf: Optional[Zeroconf] = None):
         """
         初始化设备发现服务
         
         Args:
             on_device_added: 设备添加时的回调函数
-            on_device_removed: 设备移除时的回调函数
+            on_device_removed: 设备移除时的回调函数 (user_id, ip, name)
         """
-        self._zeroconf: Optional[Zeroconf] = None
+        self._zeroconf: Optional[Zeroconf] = zeroconf
+        # 是否由 DeviceDiscovery 自己创建并拥有 zeroconf（共享实例时必须为 False，避免重复 close）
+        self._own_zeroconf: bool = zeroconf is None
         self._browser: Optional[ServiceBrowser] = None
         self._listener: Optional[_DeviceListener] = None
         self._on_device_added = on_device_added
@@ -75,7 +82,16 @@ class DeviceDiscovery:
         
         _debug_log("DeviceDiscovery.start() called")
         try:
-            self._zeroconf = Zeroconf()
+            if self._zeroconf is None:
+                # Win11 上优先 IPv4Only，减少 IPv6/多网卡/驱动导致的底层不稳定
+                try:
+                    if platform.system() == "Windows" and IPVersion is not None:
+                        self._zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
+                    else:
+                        self._zeroconf = Zeroconf()
+                except Exception:
+                    self._zeroconf = Zeroconf()
+                self._own_zeroconf = True
             self._listener = _DeviceListener(
                 on_add=self._on_device_found,
                 on_remove=self._on_device_lost
@@ -104,7 +120,7 @@ class DeviceDiscovery:
             if self._browser:
                 self._browser.cancel()
                 self._browser = None
-            if self._zeroconf:
+            if self._zeroconf and self._own_zeroconf:
                 self._zeroconf.close()
                 self._zeroconf = None
             if self._cleanup_timer:
@@ -235,7 +251,8 @@ class DeviceDiscovery:
                 for sn in service_names_to_remove:
                     self._devices.pop(sn, None)
                 
-                self._on_device_removed(device_info.name)
+                # 传递 user_id, ip, name 以便上层使用 user_id + ip 进行匹配
+                self._on_device_removed(device_info.user_id, device_info.ip, device_info.name)
             
             logger.info(f"设备已离线: {service_name}")
         except Exception as e:
@@ -359,7 +376,8 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
                      avatar_url: Optional[str] = None,
                      device_name: Optional[str] = None,
                      group_id: Optional[str] = None,
-                     discover_scope: Optional[str] = None) -> tuple[Zeroconf, ServiceInfo]:
+                     discover_scope: Optional[str] = None,
+                     zeroconf: Optional[Zeroconf] = None) -> tuple[Zeroconf, ServiceInfo]:
     """
     注册mDNS服务
     
@@ -404,12 +422,22 @@ def register_service(name: str, port: int, user_id: str, user_name: str,
         properties=properties
     )
     
-    # 注册服务
+    # 注册服务（允许复用共享 Zeroconf，避免多条 _run_loop 线程导致 Windows/Qt6 原生崩溃）
     _debug_log(f"Registering AirDrop service: name={name}, ip={local_ip}, port={port}")
-    zeroconf = Zeroconf()
-    zeroconf.register_service(service_info)
+    if zeroconf is not None:
+        zc = zeroconf
+    else:
+        # Win11 上优先 IPv4Only，减少 IPv6/多网卡/驱动导致的底层不稳定
+        try:
+            if platform.system() == "Windows" and IPVersion is not None:
+                zc = Zeroconf(ip_version=IPVersion.V4Only)
+            else:
+                zc = Zeroconf()
+        except Exception:
+            zc = Zeroconf()
+    zc.register_service(service_info)
     
-    return zeroconf, service_info
+    return zc, service_info
 
 
 def get_local_ip() -> Optional[str]:

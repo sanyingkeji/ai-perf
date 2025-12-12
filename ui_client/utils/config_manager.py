@@ -43,6 +43,8 @@ DEFAULT_CONFIG = {
     "update_dialog_dismissed_date": "",  # 非强制升级弹窗关闭的日期（格式：YYYY-MM-DD），用于当天不再弹出
     # 隔空投送可被发现范围：all | group | none
     "airdrop_discover_scope": "all",
+    # 隔空投送：是否启用 mDNS/zeroconf（Win11 若出现 Qt6Core.dll 0xc0000005 可临时关闭用于排查）
+    "airdrop_mdns_enabled": True,
     # 配置架构版本，用于迁移
     "config_version": CURRENT_CONFIG_VERSION,
 }
@@ -77,6 +79,7 @@ USER_DATA_FIELDS = {
     "notifications",  # 通知设置
     "log_retention_hours",  # 日志保留时长
     "airdrop_discover_scope",  # 隔空投送范围
+    "airdrop_mdns_enabled",  # 隔空投送 mDNS 开关
     "global_hotkey_enabled",  # 全局快捷键
 }
 

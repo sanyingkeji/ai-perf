@@ -342,15 +342,22 @@ class TransferClient:
         
         def file_generator():
             nonlocal uploaded
-            with open(file_path, 'rb') as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    uploaded += len(chunk)
-                    if on_progress:
-                        on_progress(uploaded, file_size)
-                    yield chunk
+            try:
+                with open(file_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        uploaded += len(chunk)
+                        if on_progress:
+                            try:
+                                on_progress(uploaded, file_size)
+                            except Exception as e:
+                                logger.error(f"[TransferClient] 进度回调异常: {e}", exc_info=True)
+                        yield chunk
+            except Exception as e:
+                logger.error(f"[TransferClient] 文件生成器异常: {e}", exc_info=True)
+                raise
         
         # 发送请求
         response = client.post(

@@ -57,7 +57,8 @@ class SystemNotification:
     
     @staticmethod
     def send(title: str, message: str, subtitle: Optional[str] = None, 
-             sound: bool = True, timeout: int = 5, icon_path: Optional[str] = None) -> bool:
+             sound: bool = True, timeout: int = 5, icon_path: Optional[str] = None,
+             notification_id: Optional[int] = None) -> bool:
         """
         发送系统通知（使用系统原生 API）
         
@@ -67,6 +68,7 @@ class SystemNotification:
             subtitle: 副标题（仅 macOS）
             sound: 是否播放声音
             timeout: 通知显示时长（秒，仅 macOS，已废弃，由系统控制）
+            notification_id: 通知ID（用于点击回调，仅 macOS）
         
         Returns:
             bool: 是否发送成功
@@ -74,7 +76,7 @@ class SystemNotification:
         system = platform.system()
         
         if system == "Darwin":  # macOS
-            return SystemNotification._send_macos_native(title, message, subtitle, sound, icon_path)
+            return SystemNotification._send_macos_native(title, message, subtitle, sound, icon_path, notification_id)
         elif system == "Windows":  # Windows
             return SystemNotification._send_windows_native(title, message, sound, icon_path)
         elif system == "Linux":  # Linux
@@ -85,7 +87,8 @@ class SystemNotification:
     
     @staticmethod
     def _send_macos_native(title: str, message: str, subtitle: Optional[str] = None,
-                           sound: bool = True, icon_path: Optional[str] = None) -> bool:
+                           sound: bool = True, icon_path: Optional[str] = None,
+                           notification_id: Optional[int] = None) -> bool:
         """
         macOS 系统通知（使用 NSUserNotificationCenter / UserNotifications framework）
         类似 iOS 的 UNUserNotificationCenter
@@ -124,25 +127,97 @@ class SystemNotification:
                         pass
                 
                 # 设置用户信息（用于点击回调）
-                # 注意：NSUserNotification 不支持直接回调，需要通过通知中心代理处理
-                # 这里先设置，后续可以通过通知中心代理处理点击事件
+                # 将 notification_id 存储到通知的用户信息中，以便点击时识别
+                if notification_id is not None:
+                    from Foundation import NSDictionary
+                    user_info = NSDictionary.dictionaryWithDictionary_({
+                        "notification_id": notification_id
+                    })
+                    notification.setUserInfo_(user_info)
                 
-                # 发送通知（通过系统通知中心）
+                # 设置通知中心代理（如果还没有设置）
                 center = NSUserNotificationCenter.defaultUserNotificationCenter()
                 if center is None:
                     # macOS 10.14+ 可能返回 None（NSUserNotificationCenter 已被废弃）
-                    # 回退到 osascript
+                    # 在开发模式下，尝试使用 UserNotifications framework（如果可用）
+                    # 如果不可用，回退到 osascript（osascript 不支持点击回调）
+                    print("[WARNING] NSUserNotificationCenter 不可用，尝试使用 UserNotifications framework")
+                    try:
+                        # 尝试使用 UserNotifications framework (macOS 10.14+)
+                        from UserNotifications import UNUserNotificationCenter, UNMutableNotificationContent, UNNotificationRequest, UNTimeIntervalNotificationTrigger
+                        # 注意：UserNotifications framework 需要应用有正确的 bundle ID
+                        # 在开发模式下可能不可用，所以这里只是尝试
+                        print("[INFO] UserNotifications framework 可用，但需要应用 bundle ID，开发模式下可能不可用")
+                    except ImportError:
+                        pass
+                    
+                    # 如果有点击回调，记录警告
+                    if notification_id is not None and hasattr(send_notification, '_callbacks') and send_notification._callbacks.get(notification_id):
+                        print(f"[WARNING] 使用 osascript 回退方案，点击回调将无法触发（notification_id={notification_id}）")
+                        print("[INFO] 提示：在开发模式下，建议安装 PyObjC 以确保通知点击回调正常工作")
+                    
                     return SystemNotification._send_macos_fallback(title, message, subtitle, sound, icon_path)
+                
+                # 确保设置了 delegate 来处理点击事件
+                if not hasattr(SystemNotification, '_delegate_set'):
+                    try:
+                        from AppKit import NSObject
+                        from Foundation import NSObject as FoundationNSObject
+                        
+                        class NotificationDelegate(FoundationNSObject):
+                            """通知代理类，处理通知点击事件"""
+                            
+                            def userNotificationCenter_didActivateNotification_(self, center, notification):
+                                """通知被点击时调用"""
+                                try:
+                                    print("[DEBUG] 通知被点击，开始处理回调")
+                                    user_info = notification.userInfo()
+                                    if user_info:
+                                        notification_id = user_info.get("notification_id")
+                                        print(f"[DEBUG] 通知ID: {notification_id}")
+                                        if notification_id is not None:
+                                            # 从全局字典中获取回调并执行
+                                            if hasattr(send_notification, '_callbacks'):
+                                                callback = send_notification._callbacks.get(notification_id)
+                                                print(f"[DEBUG] 回调函数: {callback}")
+                                                if callback:
+                                                    # 在主线程中执行回调
+                                                    from PySide6.QtCore import QTimer
+                                                    print("[DEBUG] 在主线程中执行回调")
+                                                    QTimer.singleShot(0, callback)
+                                                else:
+                                                    print(f"[WARNING] 未找到通知ID {notification_id} 对应的回调函数")
+                                            else:
+                                                print("[WARNING] send_notification._callbacks 不存在")
+                                    else:
+                                        print("[WARNING] 通知没有 userInfo")
+                                except Exception as e:
+                                    print(f"[WARNING] 处理通知点击失败: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            
+                            def userNotificationCenter_shouldPresentNotification_(self, center, notification):
+                                """是否应该显示通知（返回 True 表示显示）"""
+                                return True
+                        
+                        delegate = NotificationDelegate.alloc().init()
+                        center.setDelegate_(delegate)
+                        SystemNotification._delegate_set = True
+                        print("[DEBUG] 通知代理已设置")
+                    except Exception as e:
+                        print(f"[WARNING] 设置通知代理失败: {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 center.deliverNotification_(notification)
                 
                 return True
             except ImportError:
-                # 如果 PyObjC 不可用，回退到 osascript
+                # 如果 PyObjC 不可用，回退到 osascript（osascript 不支持点击回调）
                 return SystemNotification._send_macos_fallback(title, message, subtitle, sound, icon_path)
             except Exception as e:
                 print(f"macOS 原生通知 API 调用失败: {e}")
-                # 回退到 osascript
+                # 回退到 osascript（osascript 不支持点击回调）
                 return SystemNotification._send_macos_fallback(title, message, subtitle, sound, icon_path)
         except Exception as e:
             print(f"macOS 通知发送失败: {e}")
@@ -572,12 +647,17 @@ def send_notification(title: str, message: str, subtitle: Optional[str] = None,
         if not hasattr(send_notification, '_callbacks'):
             send_notification._callbacks = {}
         send_notification._callbacks[notification_id] = click_callback
+        print(f"[DEBUG] 保存通知点击回调: notification_id={notification_id}, callback={click_callback}")
+    elif click_callback:
+        print(f"[WARNING] 有点击回调但 notification_id 为 None，回调将无法触发")
+    elif notification_id:
+        print(f"[DEBUG] 通知ID={notification_id}，但没有点击回调")
     
     # 如果没有提供图标路径，尝试使用应用默认图标
     if icon_path is None:
         icon_path = SystemNotification._get_default_app_icon()
     
-    return SystemNotification.send(title, message, subtitle, sound, timeout, icon_path)
+    return SystemNotification.send(title, message, subtitle, sound, timeout, icon_path, notification_id)
 
 
 def get_notification_callback(notification_id: int) -> Optional[callable]:
