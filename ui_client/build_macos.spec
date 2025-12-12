@@ -125,13 +125,13 @@ app = BUNDLE(
     name='Ai Perf Client.app',
     icon='resources/app_icon.icns' if os.path.exists('resources/app_icon.icns') else None,
     bundle_identifier='site.sanying.aiperf.client',
-    version='1.1.0',
+    version='1.1.1',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',
         'LSMinimumSystemVersion': '10.13',
-        'CFBundleShortVersionString': '1.1.0',
-        'CFBundleVersion': '1.1.0',
+        'CFBundleShortVersionString': '1.1.1',
+        'CFBundleVersion': '1.1.1',
         # 不设置 LSUIElement，让应用在 Dock 显示
         # 关闭窗口后通过代码动态隐藏 Dock 图标
     },

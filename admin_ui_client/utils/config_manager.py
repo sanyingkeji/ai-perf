@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
     "notifications": True,
     # 日志保留时长（小时），默认仅保留最近 1 小时
     "log_retention_hours": 1,
-    "client_version": "1.1.0",  # 客户端版本号（格式：x.x.x）
+    "client_version": "1.1.1",  # 客户端版本号（格式：x.x.x）
     "update_dialog_dismissed_date": "",  # 非强制升级弹窗关闭的日期（格式：YYYY-MM-DD），用于当天不再弹出
     # SSH 配置（用于服务管理）
     "ssh_host": "",
