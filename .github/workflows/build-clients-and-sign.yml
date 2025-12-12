@@ -432,6 +432,24 @@ jobs:
           name: ${{ matrix.client }}-macos-arm64-app
           path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.app
           retention-days: 30
+      
+      - name: Upload DMG artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-macos-arm64-dmg
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.dmg
+          retention-days: 30
+          if-no-files-found: error
+      
+      - name: Upload PKG artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-macos-arm64-pkg
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/m/*.pkg
+          retention-days: 30
+          if-no-files-found: error
 
   build-macos-intel:
     name: Build macOS (Intel)
@@ -836,6 +854,24 @@ jobs:
           name: ${{ matrix.client }}-macos-intel-app
           path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.app
           retention-days: 30
+      
+      - name: Upload DMG artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-macos-intel-dmg
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.dmg
+          retention-days: 30
+          if-no-files-found: error
+      
+      - name: Upload PKG artifact
+        if: steps.check_build.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.client }}-macos-intel-pkg
+          path: ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}/dist/intel/*.pkg
+          retention-days: 30
+          if-no-files-found: error
 
   build-windows:
     name: Build Windows
@@ -1221,11 +1257,43 @@ jobs:
             fi
           done
           
-          # 复制安装包文件（.dmg, .pkg, .exe, .msi, .deb, .rpm）
-          # 优先复制安装器 EXE（*_Setup.exe），如果存在则排除原始 EXE
+          # 复制 macOS 安装包文件（.dmg, .pkg）
+          # 注意：arm64/intel 构建产出的 DMG/PKG 默认同名（例如 Ai_Perf_Client.dmg），直接复制会互相覆盖
+          # 这里从 artifact 名称中识别架构，并在文件名中追加 -arm64 / -intel 后缀
+          find artifacts -type f \( -name "*.dmg" -o -name "*.pkg" \) | while read file_path; do
+            file_name=$(basename "$file_path")
+            base_name="${file_name%.*}"
+            ext="${file_name##*.}"
+            
+            # 从 artifact 名称中推断架构：artifacts/{client}-macos-{arch}-{format}/...
+            # 注意：artifact 内部通常会保留原始目录结构，因此不能直接用 dirname 取父目录
+            artifact_dir=$(echo "$file_path" | sed -n 's|.*\(artifacts/[^/]*-macos-[^/]*-\(dmg\|pkg\)\).*|\1|p' | head -n 1)
+            artifact_name=$(basename "$artifact_dir")
+            arch="unknown"
+            if echo "$artifact_name" | grep -qE "-macos-arm64-(dmg|pkg)$"; then
+              arch="arm64"
+            elif echo "$artifact_name" | grep -qE "-macos-intel-(dmg|pkg)$"; then
+              arch="intel"
+            fi
+            
+            if [[ "$arch" != "unknown" ]]; then
+              new_name="${base_name}-${arch}.${ext}"
+            else
+              new_name="${base_name}-${artifact_name}.${ext}"
+              echo "⚠ 警告: 无法确定架构，使用 artifact 名作为后缀: ${artifact_name}"
+            fi
+            
+            # 避免覆盖（极端情况下仍可能同名）
+            if [[ -f "release_files/${new_name}" ]]; then
+              new_name="${base_name}-${artifact_name}-$(date +%s).${ext}"
+              echo "⚠ 警告: 目标文件已存在，生成唯一文件名: ${new_name}"
+            fi
+            
+            cp "$file_path" "release_files/${new_name}"
+          done
+          
+          # 复制其他安装包文件（.msi, .deb, .rpm）
           find artifacts -type f \( \
-            -name "*.dmg" -o \
-            -name "*.pkg" -o \
             -name "*.msi" -o \
             -name "*.deb" -o \
             -name "*.rpm" \

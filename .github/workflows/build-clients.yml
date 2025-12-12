@@ -1,11 +1,6 @@
-name: Build Clients
+name: Build Clients (Unsigned)
 
 on:
-  release:
-    types: [published]
-  push:
-    tags:
-      - 'v*'  # 监听以 v 开头的 tag 推送
   workflow_dispatch:
     inputs:
       client_type:
