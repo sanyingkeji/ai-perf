@@ -74,6 +74,9 @@ class DeviceDiscovery:
         self._local_ip = local_ip
         self._lock = threading.Lock()
         self._running = False
+        # 记录上一次已打印的设备列表签名，避免 get_devices 被 UI 轮询时刷屏
+        # 只在设备列表发生变化（新增/下线/信息变更）时才打印一次概要
+        self._last_logged_devices_sig: Optional[tuple[tuple[str, str, str, int, str, str, str], ...]] = None
     
     def start(self):
         """启动设备发现服务"""
@@ -316,12 +319,32 @@ class DeviceDiscovery:
 
     def get_devices(self) -> list[DeviceInfo]:
         """获取当前发现的设备列表"""
+        # 注意：get_devices 可能被 UI 定时调用（轮询刷新列表），这里必须避免每次都打印日志
+        # 仅当设备列表签名发生变化时（新增/下线/信息变更）才打印一次当前列表
+        changed = False
         with self._lock:
             devices = list(self._devices.values())
-            logger.info(f"[Discovery] get_devices: returning {len(devices)} devices")
-            for device in devices:
+            sig = tuple(sorted(
+                (
+                    str(d.user_id),
+                    str(d.ip),
+                    str(d.name),
+                    int(d.port),
+                    str(d.group_id or ""),
+                    str(d.discover_scope or ""),
+                    str(d.device_name or ""),
+                )
+                for d in devices
+            ))
+            if sig != self._last_logged_devices_sig:
+                self._last_logged_devices_sig = sig
+                changed = True
+        
+        if changed:
+            logger.info(f"[Discovery] devices changed: {len(devices)} devices")
+            for device in sorted(devices, key=lambda x: (str(x.user_id), str(x.ip), str(x.name))):
                 logger.info(f"[Discovery]   - {device.name} (user_id={device.user_id}, ip={device.ip})")
-            return devices
+        return devices
     
     def _is_self_service(self, service_name: str) -> bool:
         """判断给定 service 是否为本机发布的服务"""

@@ -190,6 +190,54 @@ def thread_exception_handler(args):
 
 
 def main():
+    # 先解析命令行参数：某些模式（后台服务/安装服务）不应拉起任何 UI
+    notification_id = None
+    install_background_service = False
+    run_background_notification_service = False
+
+    for arg in sys.argv:
+        if arg.startswith("--notification-id="):
+            try:
+                notification_id = int(arg.split("=")[1])
+            except (ValueError, IndexError):
+                pass
+        elif arg == "--install-background-service":
+            install_background_service = True
+        elif arg == "--run-background-notification-service":
+            run_background_notification_service = True
+
+    # 后台通知模式：执行一次检查并退出（不创建 QApplication / 不显示窗口）
+    if run_background_notification_service:
+        try:
+            from utils.notification_background_job import run_once
+            run_once()
+            return 0
+        except Exception as e:
+            # 后台任务失败保持静默，但返回非 0 方便 LaunchAgent/任务计划程序排查
+            try:
+                print(f"[WARNING] 后台通知任务执行失败: {e}", file=sys.stderr)
+            except Exception:
+                pass
+            return 1
+
+    # 安装后台服务模式：只安装/启用后退出（不显示窗口）
+    if install_background_service:
+        try:
+            from utils.system_notification_service import SystemNotificationService
+            from utils.config_manager import ConfigManager
+
+            # 检查用户是否启用了通知
+            config = ConfigManager.load()
+            if config.get("notifications", True):
+                service = SystemNotificationService()
+                # 覆盖安装：修复旧版配置（例如 macOS 上每分钟拉起 App）
+                service.install(force_reinstall=True)
+                service.enable()
+        except Exception:
+            # 静默失败
+            pass
+        return 0
+
     # 单实例检查：确保应用只能运行一个实例
     # 使用 QLockFile 在创建 QApplication 之前检查
     import platform
@@ -376,40 +424,6 @@ def main():
         except Exception:
             pass
         sys.exit(1)
-    
-    # 检查是否有命令行参数
-    notification_id = None
-    install_background_service = False
-    
-    for arg in sys.argv:
-        if arg.startswith("--notification-id="):
-            try:
-                notification_id = int(arg.split("=")[1])
-            except (ValueError, IndexError):
-                pass
-        elif arg == "--install-background-service":
-            install_background_service = True
-    
-    # 如果要求安装后台服务，先安装然后退出（不显示窗口）
-    if install_background_service:
-        try:
-            from utils.system_notification_service import SystemNotificationService
-            from utils.config_manager import ConfigManager
-            
-            # 检查用户是否启用了通知
-            config = ConfigManager.load()
-            if config.get("notifications", True):
-                service = SystemNotificationService()
-                if not service.is_installed():
-                    success, msg = service.install()
-                    if success:
-                        service.enable()
-                elif not service.is_enabled():
-                    service.enable()
-        except Exception:
-            # 静默失败
-            pass
-        sys.exit(0)
     
     # 如果有通知ID，显示通知详情
     if notification_id:

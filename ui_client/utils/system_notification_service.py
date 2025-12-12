@@ -27,6 +27,10 @@ def _get_subprocess_kwargs() -> dict:
 
 class SystemNotificationService:
     """系统通知服务管理器"""
+
+    # 后台通知运行模式：由客户端可执行文件自行执行一次检查并退出（不拉起 UI）
+    # 该参数由 `ui_client/main.py` 解析处理
+    BACKGROUND_FLAG = "--run-background-notification-service"
     
     def __init__(self):
         self.system = platform.system()
@@ -42,6 +46,11 @@ class SystemNotificationService:
         
         # 后台服务脚本路径（需要根据实际打包后的路径确定）
         self._service_script_path = None
+
+    @staticmethod
+    def _is_frozen_app() -> bool:
+        """是否为打包后的应用（PyInstaller）。"""
+        return hasattr(sys, "frozen") and bool(getattr(sys, "frozen", False))
     
     def _get_service_script_path(self) -> Optional[Path]:
         """获取后台服务脚本路径"""
@@ -196,10 +205,11 @@ class SystemNotificationService:
         """检查已安装的服务配置是否正确（用于覆盖安装时验证）"""
         if not self.is_installed():
             return False
-        
+
+        # 说明：
+        # - 开发环境：通常由 python + scripts/notification_background_service.py 组成
+        # - 打包环境：优先使用 “可执行文件 + BACKGROUND_FLAG” 组成（避免把 App 当 python 去跑导致每分钟拉起窗口）
         script_path = self._get_service_script_path()
-        if not script_path:
-            return False
         
         if self.system == "Windows":
             try:
@@ -214,15 +224,21 @@ class SystemNotificationService:
                 if result.returncode == 0:
                     # 检查 XML 中是否包含当前脚本路径
                     xml_content = result.stdout
+                    xml_lower = (xml_content or "").lower()
+
+                    # 新版：如果任务参数里包含后台模式参数，则认为配置有效
+                    if self.BACKGROUND_FLAG.lower() in xml_lower:
+                        return True
                     
                     # 规范化路径进行比较（处理不同的路径格式）
+                    if not script_path:
+                        return False
                     script_path_normalized = str(script_path).replace("\\", "/").lower()
                     script_path_backslash = str(script_path).lower()
                     script_path_escaped = str(script_path).replace("\\", "\\\\").lower()
                     # 也检查文件名（更宽松的匹配）
                     script_filename = script_path.name.lower()
-                    
-                    xml_lower = xml_content.lower()
+
                     # 检查脚本路径是否在任务配置中（多种格式）
                     # 如果路径匹配失败，至少检查文件名是否匹配（更宽松）
                     path_match = (script_path_normalized in xml_lower or 
@@ -246,20 +262,42 @@ class SystemNotificationService:
                 return self.is_enabled()
         elif self.system == "Darwin":
             try:
-                # 读取 plist 文件，检查脚本路径
+                # 读取 plist 文件，检查 ProgramArguments
                 # plistlib 是 Python 标准库，所有平台都可用
                 import plistlib
                 with open(self.macos_plist_path, 'rb') as f:
                     plist_data = plistlib.load(f)
                 program_args = plist_data.get("ProgramArguments", [])
-                if len(program_args) >= 2:
-                    # 检查第二个参数（脚本路径）是否匹配
+
+                if not isinstance(program_args, list):
+                    return False
+
+                # 新版：如果包含后台模式参数，认为配置有效
+                if any(str(x) == self.BACKGROUND_FLAG for x in program_args):
+                    return True
+
+                # 若是“App 可执行文件 + 脚本路径”的旧配置（会导致每分钟拉起窗口），视为无效
+                try:
+                    if self._is_frozen_app() and len(program_args) >= 1:
+                        exe0 = program_args[0]
+                        if exe0 and Path(str(exe0)).resolve() == Path(sys.executable).resolve():
+                            return False
+                except Exception:
+                    # 无法解析路径时，不强行判 invalid，继续走脚本匹配逻辑
+                    pass
+
+                # 兼容旧版/手动安装：python3 + notification_background_service.py（不要求精确路径）
+                if any(str(x).endswith("notification_background_service.py") for x in program_args):
+                    return True
+
+                # 更严格：若脚本路径可解析，尝试精确匹配
+                if script_path and len(program_args) >= 2:
                     installed_script = program_args[1]
                     try:
                         return str(script_path) == installed_script or Path(installed_script).resolve() == script_path.resolve()
                     except Exception:
-                        # 如果路径解析失败，只做字符串比较
-                        return str(script_path) == installed_script
+                        return str(script_path) == str(installed_script)
+
                 return False
             except Exception:
                 return False
@@ -310,8 +348,12 @@ class SystemNotificationService:
         Returns:
             (成功标志, 错误消息)
         """
+        is_frozen = self._is_frozen_app()
         script_path = self._get_service_script_path()
-        if not script_path:
+
+        # 打包环境下（特别是 macOS），后台服务可以通过“可执行文件 + BACKGROUND_FLAG”运行，
+        # 不强依赖脚本文件路径，避免把 App 当作 python 解释器执行导致拉起窗口。
+        if not script_path and not (is_frozen and self.system in ("Darwin", "Windows")):
             return False, "找不到后台服务脚本文件"
         
         # 如果服务已安装，检查配置是否正确
@@ -338,9 +380,10 @@ class SystemNotificationService:
         else:
             return False, f"不支持的操作系统: {self.system}"
     
-    def _install_macos(self, script_path: Path) -> Tuple[bool, str]:
+    def _install_macos(self, script_path: Optional[Path]) -> Tuple[bool, str]:
         """安装 macOS LaunchAgent"""
         try:
+            is_frozen = self._is_frozen_app()
             python_exe = self._get_python_executable()
             
             # 创建 plist 文件
@@ -348,6 +391,18 @@ class SystemNotificationService:
             log_dir.mkdir(parents=True, exist_ok=True)
             stdout_log = str(log_dir / 'notification_service.log')
             stderr_log = str(log_dir / 'notification_service_error.log')
+
+            # ProgramArguments：
+            # - 打包环境：直接运行 App 可执行文件，并通过 BACKGROUND_FLAG 进入后台任务模式
+            # - 开发环境：python + notification_background_service.py --once
+            if is_frozen and self.system == "Darwin":
+                program_args = [sys.executable, self.BACKGROUND_FLAG]
+            else:
+                if not script_path:
+                    return False, "找不到后台服务脚本文件"
+                program_args = [python_exe, str(script_path), "--once"]
+
+            program_args_xml = "\n".join([f"        <string>{arg}</string>" for arg in program_args])
             
             plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -357,9 +412,10 @@ class SystemNotificationService:
     <string>{self.macos_label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{python_exe}</string>
-        <string>{str(script_path)}</string>
+{program_args_xml}
     </array>
+    <key>ProcessType</key>
+    <string>Background</string>
     <key>StartInterval</key>
     <integer>60</integer>
     <key>RunAtLoad</key>
@@ -410,7 +466,7 @@ class SystemNotificationService:
         except Exception as e:
             return False, f"安装 macOS 服务失败: {str(e)}"
     
-    def _install_windows(self, script_path: Path) -> Tuple[bool, str]:
+    def _install_windows(self, script_path: Optional[Path]) -> Tuple[bool, str]:
         """安装 Windows 任务计划程序任务"""
         try:
             python_exe = self._get_python_executable()
@@ -477,6 +533,18 @@ class SystemNotificationService:
                     except Exception:
                         pass
             
+            # 任务执行内容：
+            # - 打包环境：直接运行客户端可执行文件，并通过 BACKGROUND_FLAG 进入后台模式
+            # - 开发环境：pythonw.exe + notification_background_service.py --once
+            if is_frozen_app:
+                task_command = python_exe
+                task_arguments = self.BACKGROUND_FLAG
+            else:
+                if not script_path:
+                    return False, "找不到后台服务脚本文件"
+                task_command = python_exe
+                task_arguments = f"\"{str(script_path)}\" --once"
+
             # 创建任务（每1分钟运行一次）
             # 使用 XML 方式创建任务，更可靠
             xml_content = f"""<?xml version="1.0" encoding="UTF-16"?>
@@ -523,8 +591,8 @@ class SystemNotificationService:
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>"{python_exe}"</Command>
-      <Arguments>"{str(script_path)}" --once</Arguments>
+      <Command>"{task_command}"</Command>
+      <Arguments>{task_arguments}</Arguments>
     </Exec>
   </Actions>
 </Task>"""

@@ -2114,8 +2114,21 @@ class MainWindow(QMainWindow):
                     # macOS 静默失败，不显示错误（保持原有逻辑）
             else:
                 # 服务已安装，检查配置是否正确（覆盖安装的情况）
-                # 只在 Windows 和 Linux 进行配置检查和重新安装
-                if not is_macos and not service.is_configuration_valid():
+                # macOS 也需要做配置检查：旧版配置可能会导致 LaunchAgent 每分钟拉起 App 窗口
+                if not service.is_configuration_valid():
+                    if is_macos:
+                        # macOS：静默修复（不弹窗）
+                        success, msg = service.install(force_reinstall=True)
+                        if success:
+                            enable_success, enable_msg = service.enable()
+                            if not enable_success:
+                                print(f"[WARNING] macOS 后台通知服务启用失败：{enable_msg}")
+                        else:
+                            # 静默失败：只记录日志，避免打扰用户
+                            print(f"[WARNING] macOS 后台通知服务配置无效，但修复失败：{msg}")
+                        return
+
+                    # Windows / Linux：保持原有提示逻辑
                     # 配置不正确，检查是否已经尝试过更新（防止重复弹出弹窗）
                     if not self._service_update_attempted:
                         # 标记已尝试更新（保存到配置文件，避免每次启动都尝试）

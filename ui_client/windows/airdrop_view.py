@@ -3177,13 +3177,31 @@ class AirDropView(QWidget):
         MINH = max(viewport_h - bg_h - status_h - spacing_h - content_top_margin - content_bottom_margin, 0) if viewport_h > 0 else 0
 
         # 调试尺寸打印，便于排查布局问题
+        # 注意：该方法可能在 UI 刷新/轮询时被频繁触发，避免刷屏：仅当指标变化时输出，且降级为 debug
         try:
-            logger.info(
-                "[AirDropView] layout metrics | vp_h=%s last_vp_h=%s bg_h=%s status_h=%s spacing_h=%s MINH=%s total_h=%s items=%s rows=%s available_w=%s last_vp_w=%s content_top_margin=%s content_bottom_margin=%s",
-                viewport_h, self._last_viewport_height, bg_h, status_h, spacing_h, MINH,
-                total_height, total_items, rows, available_width, self._last_viewport_width,
-                content_top_margin, content_bottom_margin
+            metrics = (
+                viewport_h,
+                self._last_viewport_height,
+                bg_h,
+                status_h,
+                spacing_h,
+                MINH,
+                total_height,
+                total_items,
+                rows,
+                available_width,
+                self._last_viewport_width,
+                content_top_margin,
+                content_bottom_margin,
             )
+            if getattr(self, "_last_layout_metrics_log", None) != metrics:
+                self._last_layout_metrics_log = metrics
+                logger.debug(
+                    "[AirDropView] layout metrics | vp_h=%s last_vp_h=%s bg_h=%s status_h=%s spacing_h=%s MINH=%s total_h=%s items=%s rows=%s available_w=%s last_vp_w=%s content_top_margin=%s content_bottom_margin=%s",
+                    viewport_h, self._last_viewport_height, bg_h, status_h, spacing_h, MINH,
+                    total_height, total_items, rows, available_width, self._last_viewport_width,
+                    content_top_margin, content_bottom_margin
+                )
         except Exception:
             pass
 

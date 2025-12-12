@@ -417,6 +417,30 @@ jobs:
             fi
           done
       
+      - name: Rename macOS installers to include arch (arm64)
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          dist_dir="dist/m"
+          
+          # 将 DMG/PKG 文件名加上架构后缀（避免下载后无法从文件名区分 arm64 / intel）
+          # 例如：Ai_Perf_Client.dmg -> Ai_Perf_Client-arm64.dmg
+          for f in "$dist_dir"/*.dmg "$dist_dir"/*.pkg; do
+            [ -f "$f" ] || continue
+            filename=$(basename "$f")
+            filename_lower=$(echo "$filename" | tr '[:upper:]' '[:lower:]')
+            # 如果已经包含架构标识，则不重复追加
+            if echo "$filename_lower" | grep -qE "(arm64|intel|x86)"; then
+              echo "跳过重命名（已包含架构标识）: $filename"
+              continue
+            fi
+            ext="${filename##*.}"
+            base="${filename%.*}"
+            new_name="${base}-arm64.${ext}"
+            mv "$f" "$dist_dir/$new_name"
+            echo "✓ 重命名: $filename -> $new_name"
+          done
+      
       - name: Cleanup keychain
         if: always() && steps.check_build.outputs.should_build == 'true'
         run: |
@@ -839,6 +863,30 @@ jobs:
             fi
           done
       
+      - name: Rename macOS installers to include arch (intel)
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          cd ${{ matrix.client == 'employee' && 'ui_client' || 'admin_ui_client' }}
+          dist_dir="dist/intel"
+          
+          # 将 DMG/PKG 文件名加上架构后缀（避免下载后无法从文件名区分 arm64 / intel）
+          # 例如：Ai_Perf_Client.dmg -> Ai_Perf_Client-intel.dmg
+          for f in "$dist_dir"/*.dmg "$dist_dir"/*.pkg; do
+            [ -f "$f" ] || continue
+            filename=$(basename "$f")
+            filename_lower=$(echo "$filename" | tr '[:upper:]' '[:lower:]')
+            # 如果已经包含架构标识，则不重复追加
+            if echo "$filename_lower" | grep -qE "(arm64|intel|x86)"; then
+              echo "跳过重命名（已包含架构标识）: $filename"
+              continue
+            fi
+            ext="${filename##*.}"
+            base="${filename%.*}"
+            new_name="${base}-intel.${ext}"
+            mv "$f" "$dist_dir/$new_name"
+            echo "✓ 重命名: $filename -> $new_name"
+          done
+      
       - name: Cleanup keychain
         if: always() && steps.check_build.outputs.should_build == 'true'
         run: |
@@ -1258,29 +1306,38 @@ jobs:
           done
           
           # 复制 macOS 安装包文件（.dmg, .pkg）
-          # 注意：arm64/intel 构建产出的 DMG/PKG 默认同名（例如 Ai_Perf_Client.dmg），直接复制会互相覆盖
-          # 这里从 artifact 名称中识别架构，并在文件名中追加 -arm64 / -intel 后缀
+          # 说明：构建阶段已将 DMG/PKG 重命名为带架构后缀（-arm64 / -intel）
+          # 这里仍做兜底：如果文件名未包含架构标识，则从 artifact 名推断并重命名，避免 arm64/intel 同名覆盖
           find artifacts -type f \( -name "*.dmg" -o -name "*.pkg" \) | while read file_path; do
             file_name=$(basename "$file_path")
-            base_name="${file_name%.*}"
+            file_name_lower=$(echo "$file_name" | tr '[:upper:]' '[:lower:]')
             ext="${file_name##*.}"
+            base_name="${file_name%.*}"
             
             # 从 artifact 名称中推断架构：artifacts/{client}-macos-{arch}-{format}/...
-            # 注意：artifact 内部通常会保留原始目录结构，因此不能直接用 dirname 取父目录
             artifact_dir=$(echo "$file_path" | sed -n 's|.*\(artifacts/[^/]*-macos-[^/]*-\(dmg\|pkg\)\).*|\1|p' | head -n 1)
             artifact_name=$(basename "$artifact_dir")
-            arch="unknown"
-            if echo "$artifact_name" | grep -qE "-macos-arm64-(dmg|pkg)$"; then
-              arch="arm64"
-            elif echo "$artifact_name" | grep -qE "-macos-intel-(dmg|pkg)$"; then
-              arch="intel"
+            if [[ -z "$artifact_name" ]]; then
+              artifact_name="unknown-artifact"
             fi
             
-            if [[ "$arch" != "unknown" ]]; then
-              new_name="${base_name}-${arch}.${ext}"
+            # 如果文件名已经包含架构标识，直接复制（避免出现 -arm64-arm64）
+            if echo "$file_name_lower" | grep -qE "(arm64|intel|x86)"; then
+              new_name="$file_name"
             else
-              new_name="${base_name}-${artifact_name}.${ext}"
-              echo "⚠ 警告: 无法确定架构，使用 artifact 名作为后缀: ${artifact_name}"
+              arch="unknown"
+              if echo "$artifact_name" | grep -qE "-macos-arm64-(dmg|pkg)$"; then
+                arch="arm64"
+              elif echo "$artifact_name" | grep -qE "-macos-intel-(dmg|pkg)$"; then
+                arch="intel"
+              fi
+              
+              if [[ "$arch" != "unknown" ]]; then
+                new_name="${base_name}-${arch}.${ext}"
+              else
+                new_name="${base_name}-${artifact_name}.${ext}"
+                echo "⚠ 警告: 无法确定架构，使用 artifact 名作为后缀: ${artifact_name}"
+              fi
             fi
             
             # 避免覆盖（极端情况下仍可能同名）

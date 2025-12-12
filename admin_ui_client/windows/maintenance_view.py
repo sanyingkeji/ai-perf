@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QFrame, QTabWidget, QTabBar, QHeaderView, QAbstractItemView,
     QFileDialog, QMessageBox, QLineEdit, QCheckBox, QTextEdit, QPlainTextEdit,
     QSplitter, QComboBox, QProgressDialog, QDialog, QListWidget,
-    QListWidgetItem, QProgressBar, QMenu
+    QListWidgetItem, QProgressBar, QMenu, QStyle
 )
 from PySide6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QTimer, QProcess
@@ -5580,9 +5580,26 @@ class PackageTab(QWidget):
         tab_bar.setExpanding(False)  # 禁用扩展，确保标签从左边开始排列
         tab_bar.setDocumentMode(False)  # 禁用文档模式，确保标签正常显示
         tab_bar.setMovable(False)  # 禁用标签移动
+
+        # -----------------------------
+        # 修复 macOS 下 TAB 与输出区域之间的“间隙”（你观察到需要 -9px）
+        #
+        # 现象：
+        # - 在 macOS（含 Intel + 14+）的某些 Qt style 下
+        #   QStyle.PM_TabBarBaseOverlap / PM_TabBarBaseHeight 可能返回 0
+        # - 但视觉上 TabBar 底部仍然会留出一段“底座高度”（常见 8~9px），导致 tab 与 pane 有缝
+        #
+        # 策略：
+        # - 先用最小值消除 1px 边框缝
+        # - 再在布局完成后，通过 tabBar 的实际尺寸/sizeHint 估算底座高度，动态把 tab 的 margin-bottom 调整为 -N
+        #   （等价于你手动设置 margin-bottom:-9px，但不写死）
+        # -----------------------------
+        pane_top_px = -1
+        tab_margin_bottom_px = -1
+
         # 使用样式表设置 TAB 样式（匹配终端黑色背景）
         # 统一圆角，确保 TAB 内容区域和输出区域一致
-        self.output_tabs.setStyleSheet("""
+        output_tabs_style = """
             QTabWidget::pane {
                 border: 1px solid #3A3A3C;
                 background-color: #000000;
@@ -5590,7 +5607,7 @@ class PackageTab(QWidget):
                 border-top: 1px solid #3A3A3C;
                 padding: 0px;
                 margin: 0px;
-                margin-top: -1px;
+                top: __PANE_TOP_PX__px;
             }
             QTabBar {
                 alignment: left;
@@ -5621,7 +5638,7 @@ class PackageTab(QWidget):
                 border-bottom: 1px solid #3A3A3C;
                 padding: 6px 32px 6px 16px;
                 margin-right: 2px;
-                margin-bottom: -1px;
+                margin-bottom: __TAB_MARGIN_BOTTOM_PX__px;
                 font-size: 12px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
@@ -5661,12 +5678,73 @@ class PackageTab(QWidget):
             QTabBar::tab:first-child {
                 padding-right: 16px;
             }
-        """)
+        """
+        def _apply_output_tabs_style(pane_top: int, tab_margin_bottom: int):
+            """应用 output_tabs 的样式（支持动态替换 pane/top 与 tab/margin-bottom）。"""
+            self.output_tabs.setStyleSheet(
+                output_tabs_style
+                .replace("__PANE_TOP_PX__", str(pane_top))
+                .replace("__TAB_MARGIN_BOTTOM_PX__", str(tab_margin_bottom))
+            )
+
+        # 初始应用（先保证基本对齐，避免闪一下）
+        _apply_output_tabs_style(pane_top_px, tab_margin_bottom_px)
         
         # 创建默认的 "Github 输出" TAB（不可关闭）
         self.output_text = self._create_output_text_edit()
         self.output_text.setPlaceholderText("点击\"git push\"按钮开始推送...")
         github_output_index = self.output_tabs.addTab(self.output_text, "Github 输出")
+
+        # 布局完成后再校准一次 tab 的 margin-bottom，动态消除底座高度造成的缝隙
+        def _auto_fix_output_tabs_gap():
+            try:
+                tb = self.output_tabs.tabBar()
+                if tb.count() <= 0:
+                    return
+                idx = tb.currentIndex()
+                if idx < 0:
+                    idx = 0
+
+                # 估算“底座高度”：
+                # - 有些 style 的 pixelMetric 返回 0，但 tabBar 的整体高度仍会比 tab 本身高出一截
+                # - 这截高度通常就是你看到的 9px 左右
+                bar_h = tb.height()
+                if bar_h <= 0:
+                    bar_h = tb.sizeHint().height()
+
+                tab_h = 0
+                try:
+                    rect = tb.tabRect(idx)
+                    tab_h = rect.height()
+                except Exception:
+                    tab_h = 0
+                if tab_h <= 0:
+                    try:
+                        tab_h = tb.tabSizeHint(idx).height()
+                    except Exception:
+                        tab_h = 0
+
+                base_gap_1 = max(0, bar_h - tab_h)
+
+                # 再用纯 sizeHint 的方式兜底（避免未 show 时 height 为 0）
+                try:
+                    base_gap_2 = max(0, tb.sizeHint().height() - tb.tabSizeHint(idx).height())
+                except Exception:
+                    base_gap_2 = 0
+
+                base_gap = max(base_gap_1, base_gap_2)
+
+                # gap 很小时不用动（保留 -1 用于消边框缝）
+                if base_gap <= 1:
+                    return
+
+                # 核心：用负 margin-bottom 抵消底座高度（等价于手动 -9px）
+                _apply_output_tabs_style(-1, -int(base_gap))
+            except Exception:
+                # 任何异常都不影响主流程
+                return
+
+        QTimer.singleShot(0, _auto_fix_output_tabs_gap)
         
         # 确保 TAB 文字可见：显式设置文字和颜色
         tab_bar = self.output_tabs.tabBar()
@@ -6019,6 +6097,75 @@ class PackageTab(QWidget):
         
         # 显示菜单
         menu.exec_(self.version_table.viewport().mapToGlobal(position))
+
+    def _infer_macos_arch_from_asset_name(self, asset_name_lower: str) -> Optional[str]:
+        """从文件名中推断 macOS 架构（arm64 / intel），推断失败返回 None。"""
+        if not asset_name_lower:
+            return None
+
+        # 优先匹配更明确的后缀/关键字
+        if (
+            "-arm64" in asset_name_lower
+            or asset_name_lower.endswith("-arm64.app.zip")
+            or asset_name_lower.endswith("-arm64.zip")
+            or "arm64" in asset_name_lower
+        ):
+            return "arm64"
+
+        if (
+            "-intel" in asset_name_lower
+            or asset_name_lower.endswith("-intel.app.zip")
+            or asset_name_lower.endswith("-intel.zip")
+            or "intel" in asset_name_lower
+            or "x86" in asset_name_lower
+            or "x86_64" in asset_name_lower
+        ):
+            return "intel"
+
+        return None
+
+    def _prompt_macos_arch(self, asset_name: str) -> Optional[str]:
+        """
+        当无法从文件名识别架构时，让用户手动选择 macOS 架构。
+
+        返回：
+        - "arm64" / "intel"
+        - 用户取消则返回 None
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("选择架构")
+        dlg.setModal(True)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        tip = QLabel(
+            "无法从文件名中识别架构类型，请手动选择。\n\n"
+            f"文件名：{asset_name}"
+        )
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        combo = QComboBox()
+        combo.addItem("Apple Silicon（arm64）", "arm64")
+        combo.addItem("Intel（x86_64）", "intel")
+        layout.addWidget(combo)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        ok_btn = QPushButton("确定")
+        cancel_btn = QPushButton("取消")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        dlg.resize(460, 200)
+        if dlg.exec() == QDialog.Accepted:
+            return combo.currentData()
+        return None
     
     def _on_download_only(self, asset_data: Dict[str, Any]):
         """仅下载：下载选中的单个 asset 到本地（输出到TAB）"""
@@ -6046,13 +6193,11 @@ class PackageTab(QWidget):
         # 确定架构（macOS 需要）
         arch = None
         if platform == "macOS":
-            if "-arm64" in asset_name_lower or "arm64" in asset_name_lower:
-                arch = "arm64"
-            elif "-intel" in asset_name_lower or "intel" in asset_name_lower or "x86" in asset_name_lower:
-                arch = "intel"
+            arch = self._infer_macos_arch_from_asset_name(asset_name_lower)
             if not arch:
-                QMessageBox.warning(self, "错误", "无法从文件名中识别架构类型")
-                return
+                arch = self._prompt_macos_arch(asset_name)
+                if not arch:
+                    return
         
         # 构建下载路径：dist/from_github/{client_type}/{arch或操作系统}/
         # 对于 macOS: dist/from_github/{client_type}/{arch}/
@@ -6308,23 +6453,12 @@ class PackageTab(QWidget):
             return
         
         # 从文件名中提取架构
-        if "-arm64" in asset_name_lower or asset_name_lower.endswith("-arm64.app.zip") or asset_name_lower.endswith("-arm64.zip"):
-            arch = "arm64"
-        elif "-intel" in asset_name_lower or asset_name_lower.endswith("-intel.app.zip") or asset_name_lower.endswith("-intel.zip"):
-            arch = "intel"
-        elif "arm64" in asset_name_lower:
-            arch = "arm64"
-        elif "intel" in asset_name_lower or "x86" in asset_name_lower:
-            arch = "intel"
+        arch = self._infer_macos_arch_from_asset_name(asset_name_lower)
         
         if not arch:
-            QMessageBox.warning(
-                self,
-                "错误",
-                f"无法从文件名中识别架构类型：{asset_name}\n\n"
-                "文件名应包含 'arm64' 或 'intel' 关键字。"
-            )
-            return
+            arch = self._prompt_macos_arch(asset_name)
+            if not arch:
+                return
         
         # 获取下载URL
         asset_url = asset_data.get("asset_url", "")
@@ -6442,23 +6576,12 @@ class PackageTab(QWidget):
             return
         
         # 从文件名中提取架构
-        if "-arm64" in asset_name_lower or asset_name_lower.endswith("-arm64.app.zip") or asset_name_lower.endswith("-arm64.zip"):
-            arch = "arm64"
-        elif "-intel" in asset_name_lower or asset_name_lower.endswith("-intel.app.zip") or asset_name_lower.endswith("-intel.zip"):
-            arch = "intel"
-        elif "arm64" in asset_name_lower:
-            arch = "arm64"
-        elif "intel" in asset_name_lower or "x86" in asset_name_lower:
-            arch = "intel"
+        arch = self._infer_macos_arch_from_asset_name(asset_name_lower)
         
         if not arch:
-            QMessageBox.warning(
-                self,
-                "错误",
-                f"无法从文件名中识别架构类型：{asset_name}\n\n"
-                f"文件名应包含 'arm64' 或 'intel' 关键字。"
-            )
-            return
+            arch = self._prompt_macos_arch(asset_name)
+            if not arch:
+                return
         
         # 构建已签名包的路径：{client_dir}/dist/from_github/{client_type}/{arch}/
         client_dir = Path(self._project_root) / ("ui_client" if client_type == "employee" else "admin_ui_client")
@@ -6748,13 +6871,11 @@ class PackageTab(QWidget):
         # 确定架构（macOS 需要）
         arch = None
         if platform == "macOS":
-            if "-arm64" in asset_name_lower or "arm64" in asset_name_lower:
-                arch = "arm64"
-            elif "-intel" in asset_name_lower or "intel" in asset_name_lower or "x86" in asset_name_lower:
-                arch = "intel"
+            arch = self._infer_macos_arch_from_asset_name(asset_name_lower)
             if not arch:
-                QMessageBox.warning(self, "错误", "无法从文件名中识别架构类型")
-                return
+                arch = self._prompt_macos_arch(asset_name)
+                if not arch:
+                    return
         
         # 将平台名称转换为上传接口需要的格式
         platform_map = {
