@@ -1236,18 +1236,38 @@ def main():
 <plist version="1.0">
 <dict>
     <key>com.apple.security.cs.allow-jit</key>
-    <false/>
+    <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <false/>
+    <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <false/>
     <key>com.apple.security.cs.disable-library-validation</key>
-    <false/>
+    <true/>
 </dict>
 </plist>"""
                 with open(entitlements_file, 'w') as f:
                     f.write(entitlements_content)
                 log_info("✓ 创建 entitlements.plist")
+            
+            # 仅当应用包含 QtWebEngineProcess.app 时才启用 JIT 相关 entitlements
+            # 说明：QtWebEngine(Chromium) 在 Hardened Runtime 下需要 allow-jit / allow-unsigned-executable-memory
+            # 否则在部分 macOS 版本/环境下会出现 WebView 空白、无法加载等问题（开发模式通常不受影响）。
+            try:
+                webengine_process_apps = [
+                    p for p in app_bundle.rglob("QtWebEngineProcess.app")
+                    if p.is_dir()
+                ]
+            except Exception:
+                webengine_process_apps = []
+            
+            needs_webengine_entitlements = bool(webengine_process_apps) and entitlements_file.exists()
+            if needs_webengine_entitlements:
+                log_warn(
+                    f"检测到 QtWebEngineProcess.app（{len(webengine_process_apps)} 个），"
+                    f"签名时将附带 JIT 相关 entitlements: {entitlements_file}"
+                )
+            else:
+                log_info("未检测到 QtWebEngineProcess.app，签名时不附带 JIT entitlements")
             
             # 签名 Resources 目录中的二进制文件（如果有）
             resources_dir = app_bundle / "Contents" / "Resources"
@@ -1371,6 +1391,34 @@ def main():
                                 except Exception:
                                     pass
                         
+                        # 在签名框架目录之前，先签名其中嵌套的 .app（例如 QtWebEngineProcess.app）
+                        # 否则后续签名框架目录会覆盖/包含未签名的嵌套应用，导致 WebEngine 子进程可能被 Gatekeeper 阻止启动。
+                        nested_app_dirs = [d for d in framework_dir.rglob("*.app") if d.is_dir()]
+                        if nested_app_dirs:
+                            # 先签名更深层的 .app，避免父目录签名后再修改导致签名失效
+                            nested_app_dirs.sort(key=lambda p: len(p.parts), reverse=True)
+                            for nested_app_dir in nested_app_dirs:
+                                log_info(f"      签名嵌套应用: {nested_app_dir.relative_to(app_bundle)}")
+                                cmd = [
+                                    "codesign", "--force", "--sign", codesign_identity,
+                                    "--options", "runtime",
+                                    "--timestamp",
+                                ]
+                                # QtWebEngineProcess 需要 JIT 相关 entitlements（Hardened Runtime 下否则可能无法渲染/空白）
+                                if needs_webengine_entitlements and nested_app_dir.name == "QtWebEngineProcess.app":
+                                    cmd += ["--entitlements", str(entitlements_file)]
+                                cmd.append(str(nested_app_dir))
+                                sign_result = subprocess.run(
+                                    cmd,
+                                    check=False,
+                                    capture_output=True,
+                                    text=True,
+                                )
+                                if sign_result.returncode != 0:
+                                    log_warn(f"      ⚠ 签名嵌套应用失败: {nested_app_dir.relative_to(app_bundle)}")
+                                    if sign_result.stderr:
+                                        log_warn(f"        {sign_result.stderr.strip()[:200]}")
+                        
                         # 然后签名整个框架目录
                         subprocess.run([
                             "codesign", "--force", "--sign", codesign_identity,
@@ -1443,12 +1491,16 @@ def main():
             # 先签名主可执行文件
             main_executable = app_bundle / "Contents" / "MacOS" / app_name
             if main_executable.exists():
-                subprocess.run([
+                codesign_main_cmd = [
                     "codesign", "--force", "--sign", codesign_identity,
                     "--options", "runtime",
                     "--timestamp",
                     str(main_executable)
-                ], check=True)
+                ]
+                if needs_webengine_entitlements:
+                    codesign_main_cmd.insert(-1, "--entitlements")
+                    codesign_main_cmd.insert(-1, str(entitlements_file))
+                subprocess.run(codesign_main_cmd, check=True)
                 log_info("✓ 主可执行文件已签名")
             
             log_warn("签名应用包（不使用 --deep，避免重新签名）...")
@@ -1475,6 +1527,10 @@ def main():
                 "codesign", "--force", "--sign", codesign_identity,
                 "--options", "runtime",
                 "--timestamp",
+            ]
+            if needs_webengine_entitlements:
+                codesign_cmd += ["--entitlements", str(entitlements_file)]
+            codesign_cmd += [
                 "--strict",
                 "--verify",
                 str(app_bundle)
@@ -1532,6 +1588,10 @@ def main():
                     "--sign", codesign_identity,
                     "--options", "runtime",
                     "--timestamp",
+                ]
+                if needs_webengine_entitlements:
+                    codesign_cmd += ["--entitlements", str(entitlements_file)]
+                codesign_cmd += [
                     "--strict",
                     str(app_bundle)
                 ]

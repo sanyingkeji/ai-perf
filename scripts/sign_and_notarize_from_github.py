@@ -1326,18 +1326,38 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
 <plist version="1.0">
 <dict>
     <key>com.apple.security.cs.allow-jit</key>
-    <false/>
+    <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <false/>
+    <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <false/>
     <key>com.apple.security.cs.disable-library-validation</key>
-    <false/>
+    <true/>
 </dict>
 </plist>"""
                 with open(entitlements_file, 'w') as f:
                     f.write(entitlements_content)
                 log_info("✓ 创建 entitlements.plist")
+            
+            # 仅当应用包含 QtWebEngineProcess.app 时才启用 JIT 相关 entitlements
+            # 说明：QtWebEngine(Chromium) 在 Hardened Runtime 下需要 allow-jit / allow-unsigned-executable-memory
+            # 否则在部分 macOS 版本/环境下会出现 WebView 空白、无法加载等问题（开发模式通常不受影响）。
+            try:
+                webengine_process_apps = [
+                    p for p in target_app.rglob("QtWebEngineProcess.app")
+                    if p.is_dir()
+                ]
+            except Exception:
+                webengine_process_apps = []
+            
+            needs_webengine_entitlements = bool(webengine_process_apps) and entitlements_file.exists()
+            if needs_webengine_entitlements:
+                log_warn(
+                    f"检测到 QtWebEngineProcess.app（{len(webengine_process_apps)} 个），"
+                    f"签名时将附带 JIT 相关 entitlements: {entitlements_file}"
+                )
+            else:
+                log_info("未检测到 QtWebEngineProcess.app，签名时不附带 JIT entitlements")
             
             # 复用 build_client.py 的完整签名流程
             # 第一步：签名 Resources 目录中的二进制文件（如果有）
@@ -1587,6 +1607,34 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                     except Exception:
                                         pass
                             
+                            # 在签名框架目录之前，先签名其中嵌套的 .app（例如 QtWebEngineProcess.app）
+                            # 否则后续签名框架目录会覆盖/包含未签名的嵌套应用，导致 WebEngine 子进程可能被 Gatekeeper 阻止启动。
+                            nested_app_dirs = [d for d in framework_dir.rglob("*.app") if d.is_dir()]
+                            if nested_app_dirs:
+                                # 先签名更深层的 .app，避免父目录签名后再修改导致签名失效
+                                nested_app_dirs.sort(key=lambda p: len(p.parts), reverse=True)
+                                for nested_app_dir in nested_app_dirs:
+                                    log_info(f"      签名嵌套应用: {nested_app_dir.relative_to(target_app)}")
+                                    cmd = [
+                                        "codesign", "--force", "--sign", codesign_identity,
+                                        "--options", "runtime",
+                                        "--timestamp",
+                                    ]
+                                    # QtWebEngineProcess 需要 JIT 相关 entitlements（Hardened Runtime 下否则可能无法渲染/空白）
+                                    if needs_webengine_entitlements and nested_app_dir.name == "QtWebEngineProcess.app":
+                                        cmd += ["--entitlements", str(entitlements_file)]
+                                    cmd.append(str(nested_app_dir))
+                                    sign_result = subprocess.run(
+                                        cmd,
+                                        check=False,
+                                        capture_output=True,
+                                        text=True,
+                                    )
+                                    if sign_result.returncode != 0:
+                                        log_warn(f"      ⚠ 签名嵌套应用失败: {nested_app_dir.relative_to(target_app)}")
+                                        if sign_result.stderr:
+                                            log_warn(f"        {sign_result.stderr.strip()[:200]}")
+                            
                             # 第五步：签名整个框架目录（不使用 --deep，避免重新签名）
                             # 注意：嵌入式框架不应该使用 --deep，因为我们已经手动签名了所有文件
                             result = subprocess.run([
@@ -1816,12 +1864,20 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                     # 注意：如果签名失败并提示 .qmltypes 文件未签名，这是正常的，因为文本文件不需要签名
                     # 但 codesign 在签名主可执行文件时会检查所有子组件，包括这些文本文件
                     try:
-                        subprocess.run([
+                        codesign_main_cmd = [
                             "codesign", "--force", "--sign", codesign_identity,
                             "--options", "runtime",
                             "--timestamp",
-                            str(main_executable)
-                        ], check=True, capture_output=True, text=True)  # 使用 check=True，失败会立即报错
+                        ]
+                        if needs_webengine_entitlements:
+                            codesign_main_cmd += ["--entitlements", str(entitlements_file)]
+                        codesign_main_cmd.append(str(main_executable))
+                        subprocess.run(
+                            codesign_main_cmd,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        )  # 使用 check=True，失败会立即报错
                         log_info("✓ 主可执行文件已签名")
                     except subprocess.CalledProcessError as e:
                         # 检查错误信息是否与 .qmltypes 文件相关
@@ -1833,23 +1889,42 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                             # 先签名整个应用包（不使用 --deep 和 --strict），这样可以"密封"应用包
                             # 使用 --preserve-metadata 保留已签名组件的元数据
                             try:
-                                seal_result = subprocess.run([
+                                seal_cmd = [
                                     "codesign", "--force", "--sign", codesign_identity,
                                     "--options", "runtime",
                                     "--timestamp",
+                                ]
+                                if needs_webengine_entitlements:
+                                    seal_cmd += ["--entitlements", str(entitlements_file)]
+                                seal_cmd += [
                                     "--preserve-metadata=entitlements,requirements,flags",
-                                    str(target_app)
-                                ], check=False, capture_output=True, text=True, timeout=300)
+                                    str(target_app),
+                                ]
+                                seal_result = subprocess.run(
+                                    seal_cmd,
+                                    check=False,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=300,
+                                )
                                 if seal_result.returncode != 0:
                                     log_warn(f"  密封应用包时出现警告: {seal_result.stderr or seal_result.stdout}")
                                 log_info("  应用包已初步签名（密封），现在重新签名主可执行文件...")
                                 # 重新签名主可执行文件
-                                retry_result = subprocess.run([
+                                retry_cmd = [
                                     "codesign", "--force", "--sign", codesign_identity,
                                     "--options", "runtime",
                                     "--timestamp",
-                                    str(main_executable)
-                                ], check=False, capture_output=True, text=True)
+                                ]
+                                if needs_webengine_entitlements:
+                                    retry_cmd += ["--entitlements", str(entitlements_file)]
+                                retry_cmd.append(str(main_executable))
+                                retry_result = subprocess.run(
+                                    retry_cmd,
+                                    check=False,
+                                    capture_output=True,
+                                    text=True,
+                                )
                                 if retry_result.returncode != 0:
                                     retry_error = (retry_result.stderr or "") + (retry_result.stdout or "")
                                     log_warn(f"  重新签名主可执行文件失败: {retry_error}")
@@ -1863,13 +1938,24 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                                     
                                     for timestamp_attempt in range(1, timestamp_max_retries + 1):
                                         log_warn(f"  尝试使用 --deep 选项签名（{timestamp_attempt}/{timestamp_max_retries}）...")
-                                        deep_result = subprocess.run([
+                                        deep_cmd = [
                                             "codesign", "--force", "--sign", codesign_identity,
                                             "--options", "runtime",
                                             "--timestamp",
+                                        ]
+                                        if needs_webengine_entitlements:
+                                            deep_cmd += ["--entitlements", str(entitlements_file)]
+                                        deep_cmd += [
                                             "--deep",
-                                            str(target_app)
-                                        ], check=False, capture_output=True, text=True, timeout=600)
+                                            str(target_app),
+                                        ]
+                                        deep_result = subprocess.run(
+                                            deep_cmd,
+                                            check=False,
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=600,
+                                        )
                                         if deep_result.returncode == 0:
                                             log_info("✓ 使用 --deep 选项成功签名整个应用包")
                                             timestamp_success = True
@@ -1934,9 +2020,13 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                     "codesign", "--force", "--sign", codesign_identity,
                     "--options", "runtime",
                     "--timestamp",
+                ]
+                if needs_webengine_entitlements:
+                    codesign_cmd += ["--entitlements", str(entitlements_file)]
+                codesign_cmd += [
                     "--strict",
                     "--verify",
-                    str(target_app)
+                    str(target_app),
                 ]
                 subprocess.run(codesign_cmd, check=True)
                 log_info("✓ 应用包已签名")
@@ -1996,8 +2086,12 @@ def sign_and_notarize_app_from_existing(app_bundle: Path, client_type: str, arch
                             "--sign", codesign_identity,
                             "--options", "runtime",
                             "--timestamp",
+                        ]
+                        if needs_webengine_entitlements:
+                            codesign_cmd += ["--entitlements", str(entitlements_file)]
+                        codesign_cmd += [
                             "--strict",
-                            str(target_app)
+                            str(target_app),
                         ]
                         subprocess.run(codesign_cmd, check=True)
                         log_info("✓ 应用包已重新签名以包含修复")
