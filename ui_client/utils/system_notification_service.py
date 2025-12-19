@@ -230,8 +230,44 @@ class SystemNotificationService:
                     if self.BACKGROUND_FLAG.lower() in xml_lower:
                         return True
                     
+                    # 对于打包后的应用，如果任务直接运行可执行文件（没有 BACKGROUND_FLAG），
+                    # 会导致每分钟拉起窗口，视为无效配置
+                    is_frozen = self._is_frozen_app()
+                    if is_frozen:
+                        try:
+                            # 解析 XML 查找 Command 和 Arguments
+                            import xml.etree.ElementTree as ET
+                            root = ET.fromstring(xml_content)
+                            # 查找 Actions/Exec/Command 和 Arguments
+                            exec_elem = root.find(".//{http://schemas.microsoft.com/windows/2004/02/mit/task}Exec")
+                            if exec_elem is not None:
+                                command_elem = exec_elem.find("{http://schemas.microsoft.com/windows/2004/02/mit/task}Command")
+                                arguments_elem = exec_elem.find("{http://schemas.microsoft.com/windows/2004/02/mit/task}Arguments")
+                                
+                                if command_elem is not None:
+                                    task_command = command_elem.text or ""
+                                    task_arguments = (arguments_elem.text or "").lower() if arguments_elem is not None else ""
+                                    
+                                    # 如果命令是可执行文件本身，且参数中没有 BACKGROUND_FLAG，视为无效
+                                    command_path = Path(task_command)
+                                    if command_path.suffix.lower() == '.exe':
+                                        # 检查是否是可执行文件本身
+                                        try:
+                                            if Path(task_command).resolve() == Path(sys.executable).resolve():
+                                                # 是可执行文件本身，但没有 BACKGROUND_FLAG，视为无效配置
+                                                return False
+                                        except Exception:
+                                            # 路径解析失败，继续其他检查
+                                            pass
+                        except Exception:
+                            # XML 解析失败，继续其他检查逻辑
+                            pass
+                    
                     # 规范化路径进行比较（处理不同的路径格式）
                     if not script_path:
+                        # 对于打包后的应用，如果没有脚本路径且没有 BACKGROUND_FLAG，视为无效
+                        if is_frozen:
+                            return False
                         return False
                     script_path_normalized = str(script_path).replace("\\", "/").lower()
                     script_path_backslash = str(script_path).lower()
@@ -250,8 +286,13 @@ class SystemNotificationService:
                     if path_match or filename_match:
                         return True
                     
+                    # 对于打包后的应用，如果没有匹配到脚本路径且没有 BACKGROUND_FLAG，视为无效
+                    if is_frozen:
+                        return False
+                    
                     # 如果都不匹配，但任务存在且已启用，也认为配置可能有效
                     # （可能是路径格式问题，但任务本身是有效的）
+                    # 注意：这个逻辑只适用于开发环境，打包环境应该走上面的检查
                     if self.is_enabled():
                         return True
                     
@@ -259,6 +300,9 @@ class SystemNotificationService:
                 return False
             except Exception:
                 # 如果检查失败，但任务存在，认为配置可能有效（避免误判）
+                # 但对于打包后的应用，如果检查失败，应该更保守地认为配置可能无效
+                if self._is_frozen_app():
+                    return False
                 return self.is_enabled()
         elif self.system == "Darwin":
             try:
