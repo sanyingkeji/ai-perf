@@ -175,6 +175,10 @@ class MacGlobalHotkey(QObject):
     def _event_tap_callback(self, proxy, event_type, event, refcon):
         """CGEventTap 回调函数"""
         try:
+            # 检查对象是否仍然有效（防止在销毁过程中访问）
+            if not hasattr(self, '_registered') or not self._registered:
+                return event
+            
             # kCGEventKeyDown = 10
             if event_type != Quartz.kCGEventKeyDown:
                 return event
@@ -211,6 +215,8 @@ class MacGlobalHotkey(QObject):
                 if not has_other_important_modifiers:
                     # 触发回调（在主线程中执行）
                     try:
+                        # 再次检查对象是否仍然有效
+                        if hasattr(self, '_registered') and self._registered:
                         # 使用信号在主线程中执行回调
                         # 信号会自动在主线程中触发，即使从后台线程发出
                         self._hotkey_triggered.emit()
@@ -229,7 +235,7 @@ class MacGlobalHotkey(QObject):
             self._run_loop = Quartz.CFRunLoopGetCurrent()
             
             # 将事件tap添加到运行循环
-            if self._run_loop_source:
+            if self._run_loop_source and self._run_loop:
                 Quartz.CFRunLoopAddSource(
                     self._run_loop,
                     self._run_loop_source,
@@ -238,11 +244,19 @@ class MacGlobalHotkey(QObject):
             
             # 运行循环直到停止
             while not self._stop_event.is_set():
+                # 检查对象是否仍然有效
+                if not hasattr(self, '_registered') or not self._registered:
+                    break
+                
+                try:
                 Quartz.CFRunLoopRunInMode(
                     Quartz.kCFRunLoopDefaultMode,
                     0.1,  # 超时时间
                     False  # returnAfterSourceHandled
                 )
+                except Exception:
+                    # 如果运行循环出错，退出
+                    break
         except Exception:
             pass
     

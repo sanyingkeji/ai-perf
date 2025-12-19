@@ -68,7 +68,7 @@ class _CronJobListWorker(QRunnable):
         if not self._ssh_config.get("host") or not self._ssh_config.get("username"):
             self.signals.error.emit("请先配置SSH服务器信息")
             return
-        
+
         try:
             # 创建SSH客户端
             ssh = SSHClient(
@@ -378,6 +378,7 @@ class _DownloadBackupWorker(QRunnable):
             self.signals.error.emit("请先配置SSH服务器信息")
             return
         
+        ssh = None
         try:
             # 创建SSH客户端
             ssh = SSHClient(
@@ -392,28 +393,27 @@ class _DownloadBackupWorker(QRunnable):
                 self.signals.error.emit("SSH连接失败，请检查配置")
                 return
             
-            # 通过SSH读取文件内容
-            remote_path = f"{self._backup_dir}/{self._filename}"
-            result = ssh.execute(f"cat {remote_path}", sudo=False)
+            # ⚠️ 备份文件通常较大，不能用 `cat` 走 stdout 拉取（容易阻塞/内存暴涨）
+            # 这里改为 SFTP 直连下载，避免“正在下载...”遮罩层一直不消失的问题
+            backup_dir = self._backup_dir.rstrip("/")
+            filename = self._filename.lstrip("/")
+            remote_path = f"{backup_dir}/{filename}"
+            result = ssh.download_file(remote_path, self._save_path)
             
-            if not result["success"]:
-                error_msg = result.get("stderr") or result.get("error") or "读取文件失败"
-                ssh.close()
+            if not result.get("success"):
+                error_msg = result.get("error") or "下载备份文件失败"
                 self.signals.error.emit(error_msg)
                 return
             
-            # 保存到本地文件
-            file_content = result.get("stdout", "")
-            if isinstance(file_content, bytes):
-                file_content = file_content.decode("utf-8")
-            
-            with open(self._save_path, "w", encoding="utf-8") as f:
-                f.write(file_content)
-            
-            ssh.close()
             self.signals.finished.emit(self._save_path)
         except Exception as e:
             self.signals.error.emit(f"下载备份文件失败：{e}")
+        finally:
+            try:
+                if ssh:
+                    ssh.close()
+            except Exception:
+                pass
 
 
 class DatabaseBackupTab(QWidget):

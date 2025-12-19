@@ -12,7 +12,7 @@ from PySide6.QtGui import QPainter, QColor, QAction, QContextMenuEvent
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWebEngineCore import QWebEnginePage
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
     WEBENGINE_AVAILABLE = True
 except ImportError:
     WEBENGINE_AVAILABLE = False
@@ -58,7 +58,88 @@ class DataTrendView(QWidget):
         self.web_view.loadFinished.connect(self._on_load_finished)
         self.web_view.loadFinished.connect(self._hide_scrollbars)
         self.web_view.loadFinished.connect(self._inject_app_context)
+        
+        # 设置 UserScript 在页面加载前注入变量
+        self._setup_user_script()
+        
+        # 设置 webview 背景色以适配主题
+        self._update_webview_background()
+        
         layout.addWidget(self.web_view)
+
+    def _setup_user_script(self):
+        """设置 UserScript 在页面加载前注入变量"""
+        if not WEBENGINE_AVAILABLE or not self.web_view:
+            return
+        
+        # 重新加载上下文数据
+        self._context_data = self._load_context()
+        ctx = self._context_data
+        ctx_json = json.dumps(ctx)
+        
+        # 创建 UserScript，在文档开始创建时注入
+        script_source = f"""
+        (function() {{
+            const ctx = {ctx_json};
+            // 在页面加载前就设置这些变量
+            Object.defineProperty(window, 'appToken', {{
+                value: ctx.token,
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'appTheme', {{
+                value: ctx.theme,
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'appVersion', {{
+                value: ctx.clientVersion,
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'userInfo', {{
+                value: {{
+                    id: ctx.userId,
+                    name: ctx.userName,
+                    email: ctx.userEmail
+                }},
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'appPreferences', {{
+                value: {{
+                    autoRefresh: ctx.autoRefresh,
+                    notifications: ctx.notifications
+                }},
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'appContext', {{
+                value: Object.assign({{}}, ctx),
+                writable: true,
+                configurable: true
+            }});
+            
+            console.log('[UserScript] App context injected before page load:', {{
+                theme: ctx.theme,
+                hasToken: !!ctx.token
+            }});
+        }})();
+        """
+        
+        script = QWebEngineScript()
+        script.setSourceCode(script_source)
+        script.setName("app_context_injector")
+        script.setWorldId(QWebEngineScript.MainWorld)
+        script.setInjectionPoint(QWebEngineScript.DocumentCreation)
+        script.setRunsOnSubFrames(False)
+        
+        # 直接插入脚本（不清除旧脚本，因为脚本是幂等的）
+        # 注意：PySide6 的 QWebEngineScriptCollection API 可能不支持遍历和查找
+        # 但直接插入是安全的，因为脚本是幂等的（重复执行结果相同）
+        page = self.web_view.page()
+        scripts = page.scripts()
+        scripts.insert(script)
 
     def load_url(self, url: str):
         """加载远程链接，确保只接受有效的 http/https 地址。"""
@@ -75,6 +156,9 @@ class DataTrendView(QWidget):
         current_url = self.web_view.url()
         if current_url == qurl and current_url.isValid():
             return
+
+        # 在加载前更新 UserScript
+        self._setup_user_script()
 
         self.web_view.setUrl(qurl)
 
@@ -110,16 +194,25 @@ class DataTrendView(QWidget):
         if not ok:
             return
 
+        # 延迟注入，确保DOM已经准备好
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._do_inject_app_context)
+    
+    def _do_inject_app_context(self):
+        """实际执行注入操作（在页面加载后再次确认和触发事件）"""
+        if not self.web_view or not self.web_view.url().isValid():
+            return
+
         # 每次加载重新拉取配置，确保 token / 主题为最新
         self._context_data = self._load_context()
         ctx = self._context_data
         ctx_json = json.dumps(ctx)
-        # 注意：使用 format 时需要对 JS 对象的大括号进行转义
-        # JS 模板中的大括号需要成对转义，避免 str.format 误解析
+        
+        # 再次确认变量已设置，并触发事件
         js_code = """
         (() => {{
             const ctx = {ctx_json};
-            // 兼容帮助中心的变量命名
+            // 确保变量已设置（UserScript 可能已经设置了，这里再次确认）
             window.appToken = ctx.token;
             window.appTheme = ctx.theme;
             window.appVersion = ctx.clientVersion;
@@ -133,14 +226,150 @@ class DataTrendView(QWidget):
                 notifications: ctx.notifications
             }};
             window.appContext = {{ ...ctx }};
-            console.log('DataTrend app context injected', {{
+            
+            // 触发主题变更事件，让页面可以响应主题变化
+            if (window.onAppThemeChanged) {{
+                window.onAppThemeChanged(ctx.theme);
+            }}
+            
+            // 也触发自定义事件
+            if (typeof window.dispatchEvent !== 'undefined') {{
+                window.dispatchEvent(new CustomEvent('appThemeChanged', {{ detail: {{ theme: ctx.theme }} }}));
+            }}
+            
+            // 如果页面有 initTheme 函数，也调用它
+            if (typeof initTheme === 'function') {{
+                initTheme();
+            }}
+            
+            console.log('[PostLoad] DataTrend app context confirmed', {{
                 hasToken: ctx.token ? '***' : '',
                 theme: ctx.theme,
-                version: ctx.clientVersion,
-                autoRefresh: ctx.autoRefresh,
-                notifications: ctx.notifications
+                appTheme: window.appTheme,
+                appContextTheme: window.appContext?.theme
             }});
-        })();
+        }})();
+        """.replace("{ctx_json}", ctx_json)
+        
+        # 执行注入
+        self.web_view.page().runJavaScript(js_code)
+        
+        # 延迟后再次注入以确保成功（如果第一次注入时页面还没完全准备好）
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(300, lambda: self._retry_inject_app_context())
+    
+    def _retry_inject_app_context(self):
+        """重试注入（确保主题正确设置）"""
+        if not self.web_view or not self.web_view.url().isValid():
+            return
+        
+        self._context_data = self._load_context()
+        ctx = self._context_data
+        ctx_json = json.dumps(ctx)
+        
+        # 只注入主题相关的变量，确保主题正确
+        js_code = """
+        (() => {{
+            const ctx = {ctx_json};
+            window.appTheme = ctx.theme;
+            if (window.appContext) {{
+                window.appContext.theme = ctx.theme;
+            }}
+            
+            // 触发主题变更事件
+            if (window.onAppThemeChanged) {{
+                window.onAppThemeChanged(ctx.theme);
+            }}
+            
+            if (typeof window.dispatchEvent !== 'undefined') {{
+                window.dispatchEvent(new CustomEvent('appThemeChanged', {{ detail: {{ theme: ctx.theme }} }}));
+            }}
+            
+            if (typeof initTheme === 'function') {{
+                initTheme();
+            }}
+        }})();
+        """.replace("{ctx_json}", ctx_json)
+        
+        self.web_view.page().runJavaScript(js_code)
+    
+    def _update_webview_background(self):
+        """更新 webview 背景色以适配主题"""
+        if not WEBENGINE_AVAILABLE or not self.web_view:
+            return
+        
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference
+        except Exception:
+            theme = "light"
+        
+        # 设置页面背景色
+        page = self.web_view.page()
+        if theme == "dark":
+            # 深色主题：使用深色背景
+            page.setBackgroundColor(QColor(32, 33, 36))  # #202124
+            self.web_view.setStyleSheet("background-color: #202124;")
+        else:
+            # 浅色主题：使用浅色背景
+            page.setBackgroundColor(QColor(247, 249, 252))  # #F7F9FC
+            self.web_view.setStyleSheet("background-color: #F7F9FC;")
+    
+    def update_theme(self):
+        """更新 webview 主题（供外部调用）"""
+        if not WEBENGINE_AVAILABLE or not self.web_view:
+            return
+        
+        # 更新背景色
+        self._update_webview_background()
+        
+        # 更新 UserScript（下次加载时会使用新主题）
+        self._setup_user_script()
+        
+        # 如果页面已加载，立即更新主题
+        if self.web_view.url().isValid():
+            # 重新拉取配置，确保主题为最新
+            self._context_data = self._load_context()
+            ctx = self._context_data
+            ctx_json = json.dumps(ctx)
+            
+            # 先更新变量，再触发事件
+            js_code = """
+            (() => {{
+                const ctx = {ctx_json};
+                // 更新所有相关变量
+                window.appTheme = ctx.theme;
+                if (window.appContext) {{
+                    window.appContext.theme = ctx.theme;
+                }}
+                
+                console.log('[UpdateTheme] Variables updated:', {{
+                    appTheme: window.appTheme,
+                    appContextTheme: window.appContext?.theme
+                }});
+                
+                // 触发主题变更事件（延迟一点确保变量已更新）
+                setTimeout(() => {{
+                    if (window.onAppThemeChanged) {{
+                        window.onAppThemeChanged(ctx.theme);
+                    }}
+                    
+                    if (typeof window.dispatchEvent !== 'undefined') {{
+                        window.dispatchEvent(new CustomEvent('appThemeChanged', {{ detail: {{ theme: ctx.theme }} }}));
+                    }}
+                    
+                    // 如果页面有 updateTheme 函数，也调用它
+                    if (typeof updateTheme === 'function') {{
+                        updateTheme(ctx.theme);
+                    }}
+                    
+                    console.log('[UpdateTheme] DataTrend theme updated and events triggered:', ctx.theme);
+                }}, 50);
+            }})();
         """.replace("{ctx_json}", ctx_json)
         self.web_view.page().runJavaScript(js_code)
 

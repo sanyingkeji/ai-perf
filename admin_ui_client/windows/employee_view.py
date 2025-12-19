@@ -1272,13 +1272,267 @@ class GitHubMemberSelectDialog(QDialog):
         return self._selected_member
 
 
+class AttendanceEmployeeSelectDialog(QDialog):
+    """得力云（得力 e+）考勤员工选择对话框（带本地缓存）"""
+
+    def __init__(self, parent, default_search: Optional[str] = None):
+        super().__init__(parent)
+        self.setWindowTitle("选择考勤员工（得力云）")
+        self.resize(820, 620)
+
+        self._selected_employee: Optional[Dict[str, Any]] = None
+        self._thread_pool = QThreadPool.globalInstance()
+        self._all_items: List[Dict[str, Any]] = []
+        self._default_search = (str(default_search).strip() if default_search is not None else "")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # 顶部说明
+        self._info_label = QLabel("加载中…")
+        self._info_label.setMaximumHeight(30)
+        self._info_label.setMinimumHeight(25)
+        self._info_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(self._info_label)
+
+        # 搜索框 + 刷新按钮
+        top_row = QHBoxLayout()
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("搜索：姓名 / 手机号 / ext_id / 工号")
+        if self._default_search:
+            # 默认把“待绑定员工姓名”带过来，便于快速筛选（姓名通常一致）
+            self._search_edit.setText(self._default_search)
+        self._search_edit.textChanged.connect(self._apply_filter)
+        top_row.addWidget(self._search_edit)
+
+        self._refresh_btn = QPushButton("刷新")
+        self._refresh_btn.setToolTip("清空本地缓存并重新拉取（员工列表通常不变，建议少用）")
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
+        top_row.addWidget(self._refresh_btn)
+
+        layout.addLayout(top_row)
+
+        # 列表
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        layout.addWidget(self._list)
+
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定")
+        btn_ok.clicked.connect(self._on_ok_clicked)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+        self._load_items(force_refresh=False)
+
+    def get_selected_employee(self) -> Optional[Dict[str, Any]]:
+        return self._selected_employee
+
+    def _cache_key(self) -> str:
+        return "delicloud_attendance_employees_v1"
+
+    def _on_refresh_clicked(self):
+        # 清空缓存并刷新
+        try:
+            cache_path = _DataCache._get_cache_path(self._cache_key())
+            if cache_path.exists():
+                cache_path.unlink()
+        except Exception:
+            pass
+        self._load_items(force_refresh=True)
+
+    def _load_items(self, force_refresh: bool):
+        """异步加载得力云员工列表（优先本地缓存）"""
+        self._refresh_btn.setEnabled(False)
+        self._info_label.setText("正在加载得力云员工列表…")
+        self._list.clear()
+
+        class _WorkerSignals(QObject):
+            finished = Signal(list)  # items
+            error = Signal(str)
+
+        class _Worker(QRunnable):
+            def __init__(self, cache_key: str, force_refresh: bool):
+                super().__init__()
+                self._cache_key = cache_key
+                self._force_refresh = force_refresh
+                self.signals = _WorkerSignals()
+
+            @Slot()
+            def run(self):
+                try:
+                    # 1) 本地缓存
+                    if not self._force_refresh:
+                        cached = _DataCache.get(self._cache_key)
+                        if isinstance(cached, list) and cached:
+                            self.signals.finished.emit(cached)
+                            return
+
+                    # 2) 直连得力云接口拉取（与 Jira/GitHub/Figma 的“客户端直连”逻辑一致）
+                    from utils.config_manager import ConfigManager
+                    import hashlib
+                    import time
+
+                    import httpx
+
+                    cfg = ConfigManager.load()
+                    base_url = (cfg.get("delicloud_api_url", "https://v2-api.delicloud.com") or "").strip().rstrip("/")
+                    app_key = (cfg.get("delicloud_app_key") or "").strip()
+                    app_secret = (cfg.get("delicloud_app_secret") or "").strip()
+
+                    if not base_url:
+                        self.signals.error.emit("请先在设置页面配置“得力云 API 地址”。")
+                        return
+                    if not app_key or not app_secret:
+                        self.signals.error.emit("请先在设置页面配置“得力云 App-Key / App-Secret”。")
+                        return
+
+                    def _signed_headers(path: str) -> dict:
+                        ts = str(int(time.time() * 1000))
+                        sig_src = f"{path}{ts}{app_key}{app_secret}"
+                        sig = hashlib.md5(sig_src.encode("utf-8")).hexdigest().lower()
+                        return {
+                            "Accept": "application/json",
+                            "Content-Type": "application/json; charset=UTF-8",
+                            "App-Key": app_key,
+                            "App-Timestamp": ts,
+                            "App-Sig": sig,
+                        }
+
+                    path = "/v2.0/employee/query"
+                    url = f"{base_url}{path}"
+
+                    items: List[Dict[str, Any]] = []
+                    limit = 100
+                    offset = 0
+
+                    with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)) as hc:
+                        while True:
+                            body = {"limit": int(limit), "offset": int(offset)}
+                            r = hc.post(url, headers=_signed_headers(path), json=body)
+                            r.raise_for_status()
+                            resp = r.json()
+                            if not isinstance(resp, dict):
+                                self.signals.error.emit("得力云返回非 JSON 对象")
+                                return
+
+                            code = resp.get("code")
+                            if code != 0:
+                                self.signals.error.emit(f"得力云接口错误：code={code}, msg={resp.get('msg')}")
+                                return
+
+                            data = resp.get("data") or {}
+                            rows = data.get("rows") or []
+                            if not isinstance(rows, list):
+                                rows = []
+
+                            for row in rows:
+                                if not isinstance(row, dict):
+                                    continue
+                                # 统一字段名，供 UI 展示/写入 extra_json
+                                items.append(
+                                    {
+                                        "id": (str(row.get("id")) if row.get("id") is not None else None),
+                                        "ext_id": (str(row.get("ext_id")) if row.get("ext_id") is not None and str(row.get("ext_id")).strip() else None),
+                                        "name": (str(row.get("name")) if row.get("name") is not None else None),
+                                        "mobile": (str(row.get("mobile")) if row.get("mobile") is not None else None),
+                                        "employee_num": (str(row.get("employee_num")) if row.get("employee_num") is not None else None),
+                                        "raw": row,
+                                    }
+                                )
+
+                            # 结束条件：rows 为空 或 本页不足 limit
+                            if not rows or len(rows) < limit:
+                                break
+                            offset += limit
+
+                    # 写缓存（员工列表通常不频繁变化）
+                    _DataCache.set(self._cache_key, items)
+                    self.signals.finished.emit(items)
+                except Exception as e:
+                    self.signals.error.emit(f"加载失败：{type(e).__name__}: {e}")
+
+        worker = _Worker(self._cache_key(), force_refresh)
+        worker.signals.finished.connect(self._on_loaded)
+        worker.signals.error.connect(self._on_load_error)
+        self._thread_pool.start(worker)
+
+    def _on_loaded(self, items: List[Dict[str, Any]]):
+        self._refresh_btn.setEnabled(True)
+        self._all_items = items or []
+        self._info_label.setText(f"请选择考勤员工（共 {len(self._all_items)} 人）：")
+        self._apply_filter()
+
+    def _on_load_error(self, msg: str):
+        self._refresh_btn.setEnabled(True)
+        self._all_items = []
+        self._info_label.setText("加载失败")
+        QMessageBox.warning(self, "加载失败", msg or "获取得力云员工列表失败")
+
+    def _apply_filter(self):
+        keyword = (self._search_edit.text() or "").strip().lower()
+        self._list.clear()
+
+        if not self._all_items:
+            return
+
+        for emp in self._all_items:
+            if not isinstance(emp, dict):
+                continue
+
+            emp_id = str(emp.get("id") or "")
+            ext_id = str(emp.get("ext_id") or "")
+            name = str(emp.get("name") or "")
+            mobile = str(emp.get("mobile") or "")
+            employee_num = str(emp.get("employee_num") or "")
+
+            hay = f"{emp_id} {ext_id} {name} {mobile} {employee_num}".lower()
+            if keyword and keyword not in hay:
+                continue
+
+            display = name or "(未命名)"
+            if mobile:
+                display += f"  {mobile}"
+            if employee_num:
+                display += f"  工号:{employee_num}"
+            if ext_id:
+                display += f"  ext_id:{ext_id}"
+            else:
+                display += "  ext_id:(未设置)"
+            if emp_id:
+                display += f"  id:{emp_id}"
+
+            item = QListWidgetItem(display)
+            item.setData(Qt.UserRole, emp)
+            self._list.addItem(item)
+
+    def _on_item_double_clicked(self, item: QListWidgetItem):
+        self._on_ok_clicked()
+
+    def _on_ok_clicked(self):
+        current_item = self._list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "提示", "请选择一个员工。")
+            return
+        self._selected_employee = current_item.data(Qt.UserRole)
+        if self._selected_employee:
+            self.accept()
+
+
 class BindingEditDialog(QDialog):
     """账号绑定编辑/添加对话框"""
-    def __init__(self, parent, user_id: str, binding_data: Optional[Dict] = None):
+    def __init__(self, parent, user_id: str, binding_data: Optional[Dict] = None, user_name: Optional[str] = None):
         super().__init__(parent)
         self._user_id = user_id
         self._binding_data = binding_data
         self._is_edit = binding_data is not None
+        self._user_name = str(user_name).strip() if user_name else ""
         self._user_email = None  # 员工邮箱，用于自动获取
         self._thread_pool = QThreadPool.globalInstance()
         
@@ -1294,7 +1548,9 @@ class BindingEditDialog(QDialog):
         platform_row = QHBoxLayout()
         self._platform_combo = QComboBox()
         self._platform_combo.setMinimumWidth(300)
-        self._platform_combo.addItems(["jira", "github", "figma", "other"])
+        # 注意：platform 字段会写入 emp_account_binding.platform，用于 ETL 侧按平台读取 external_id
+        # 新增 attendance：用于得力云（得力 e+）考勤系统“员工ID（user_id）”绑定
+        self._platform_combo.addItems(["jira", "github", "figma", "attendance", "other"])
         if self._is_edit:
             platform = binding_data.get("platform", "")
             index = self._platform_combo.findText(platform)
@@ -1318,6 +1574,7 @@ class BindingEditDialog(QDialog):
         self._external_id_edit.setMinimumHeight(80)  # 设置最小高度
         self._external_id_edit.setMaximumHeight(120)  # 设置最大高度
         self._external_id_edit.setMinimumWidth(500)  # 设置最小宽度
+        self._external_id_edit.setPlaceholderText("平台侧唯一ID（建议用“自动获取”填充）")
         if self._is_edit:
             self._external_id_edit.setPlainText(binding_data.get("external_id", ""))
         form.addRow("外部ID：", self._external_id_edit)
@@ -1378,8 +1635,26 @@ class BindingEditDialog(QDialog):
     def _on_platform_changed(self):
         """平台选择变化时，更新自动获取按钮状态"""
         platform = self._platform_combo.currentText()
-        # 平台不是"other"时启用自动获取（编辑模式下也可用）
-        self._auto_fetch_btn.setEnabled(platform != "other")
+        # 支持自动获取的平台：
+        # - jira/figma：按邮箱检索（与历史逻辑保持一致）
+        # - github：成员选择对话框
+        # - attendance（得力云考勤）：员工选择对话框（按手机号/姓名等人工匹配）
+        self._auto_fetch_btn.setEnabled(platform in ("jira", "github", "figma", "attendance"))
+
+        # 同步外部ID输入框提示（避免手动填写口径错误）
+        try:
+            if platform == "attendance":
+                self._external_id_edit.setPlaceholderText("得力云员工ID（employee_query.id / checkin_query.user_id）")
+            elif platform == "jira":
+                self._external_id_edit.setPlaceholderText("Jira accountId（建议用“自动获取”填充）")
+            elif platform == "github":
+                self._external_id_edit.setPlaceholderText("GitHub 用户 id（数字）（建议用“自动获取”填充）")
+            elif platform == "figma":
+                self._external_id_edit.setPlaceholderText("Figma 用户ID（如需手动填写，请按公司口径）")
+            else:
+                self._external_id_edit.setPlaceholderText("平台侧唯一ID（建议用“自动获取”填充）")
+        except Exception:
+            pass
     
     def _load_user_email(self):
         """异步加载员工邮箱"""
@@ -1452,6 +1727,38 @@ class BindingEditDialog(QDialog):
                             self._extra_json_edit.setPlainText(extra_json_str)
                         except Exception:
                             pass
+            return
+
+        # 得力云考勤平台：弹出员工选择对话框（按手机号/姓名人工匹配）
+        if platform == "attendance":
+            default_search = self._user_name
+            # 去掉管理端展示时可能追加的“（组长）”后缀，避免影响搜索
+            if default_search.endswith("（组长）"):
+                default_search = default_search[:-4].strip()
+
+            dialog = AttendanceEmployeeSelectDialog(self, default_search=default_search)
+            if dialog.exec() == QDialog.Accepted:
+                emp = dialog.get_selected_employee()
+                if emp:
+                    # 约定（更新）：
+                    # attendance 平台的 external_id 统一存“得力云员工ID”（employee_query 返回的 id），
+                    # 该 id 与 checkin_query 返回的 user_id 对齐，属于权威主键。
+                    emp_id = str(emp.get("id") or "").strip()
+                    if not emp_id:
+                        QMessageBox.warning(
+                            self,
+                            "无法绑定",
+                            "该员工缺少得力云员工ID（id），无法绑定。请先检查得力云员工数据是否完整。",
+                        )
+                        return
+
+                    self._external_id_edit.setPlainText(emp_id)
+                    # extra_json 存一份原始信息（便于后续排查/展示）
+                    extra_json = emp.get("raw") if isinstance(emp.get("raw"), dict) else emp
+                    try:
+                        self._extra_json_edit.setPlainText(json.dumps(extra_json, ensure_ascii=False, indent=2))
+                    except Exception:
+                        pass
             return
         
         # 其他平台（Jira、Figma）继续使用原有的邮箱搜索逻辑
@@ -1873,6 +2180,7 @@ class BindingManageDialog(QDialog):
     def __init__(self, parent, user_id: str, user_name: str):
         super().__init__(parent)
         self._user_id = user_id
+        self._user_name = user_name
         self.setWindowTitle(f"{user_name} ({user_id}) - 账号绑定管理")
         self.resize(800, 600)
         
@@ -2022,7 +2330,7 @@ class BindingManageDialog(QDialog):
             self._on_delete_clicked(binding_id)
     
     def _on_add_clicked(self):
-        dlg = BindingEditDialog(self, self._user_id)
+        dlg = BindingEditDialog(self, self._user_id, user_name=self._user_name)
         if dlg.exec() == QDialog.Accepted:
             data = dlg.get_data()
             data["user_id"] = self._user_id
@@ -2052,7 +2360,7 @@ class BindingManageDialog(QDialog):
             self._save_binding(data, is_create=True)
     
     def _on_edit_clicked(self, binding_data: Dict):
-        dlg = BindingEditDialog(self, self._user_id, binding_data)
+        dlg = BindingEditDialog(self, self._user_id, binding_data, user_name=self._user_name)
         if dlg.exec() == QDialog.Accepted:
             data = dlg.get_data()
             self._save_binding(data, binding_id=binding_data.get("id"), is_create=False)

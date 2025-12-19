@@ -96,7 +96,16 @@ class ApiClient:
         raise ApiError(f"网络异常：{type(last_exception).__name__}: {last_exception}")
 
     # ---------- POST ----------
-    def _post(self, path: str, payload: Dict[str, Any], max_retries: int = 3) -> Any:
+    def _post(self, path: str, payload: Dict[str, Any], max_retries: int = 3, timeout: float = 15.0) -> Any:
+        """
+        POST 请求
+        
+        Args:
+            path: API 路径
+            payload: 请求体
+            max_retries: 最大重试次数，默认 3 次
+            timeout: 超时时间（秒），默认 15 秒
+        """
         url = f"{self.base_url}{path}"
         import time
         
@@ -106,7 +115,7 @@ class ApiClient:
         for attempt in range(max_retries):
             try:
                 r = httpx.post(url, headers=self._headers(),
-                             content=json.dumps(payload), timeout=15)
+                             content=json.dumps(payload), timeout=timeout)
                 return self._handle_response(r)
             except Exception as e:
                 last_exception = e
@@ -242,8 +251,10 @@ class ApiClient:
     def submit_review(self, payload: Dict[str, Any]) -> Any:
         """
         POST /api/reviews  提交复评数据
+        
+        注意：复评是耗时操作（需要调用 AI 进行评分），因此使用较长的超时时间（3 分钟）
         """
-        return self._post("/api/reviews", payload)
+        return self._post("/api/reviews", payload, timeout=180.0)  # 3 分钟超时
 
     def get_daily_snapshot(self, date_str: str, user_id: Optional[str] = None) -> Any:
         """
@@ -304,12 +315,14 @@ class ApiClient:
         """
         POST /api/comparison
         返回格式：ComparisonResponse
+        
+        注意：对比分析是耗时操作（需要调用 AI 进行对比分析），因此使用较长的超时时间（3 分钟）
         """
         payload = {
             "target_user_id": target_user_id,
             "date": date_str,
         }
-        data = self._post("/api/comparison", payload)
+        data = self._post("/api/comparison", payload, timeout=180.0)  # 3 分钟超时
         return data
 
     def get_daily_output(self, date_str: str) -> Any:

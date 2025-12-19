@@ -379,8 +379,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # 启动应用时自动打开隔空投送窗口，并在1秒后自动隐藏
-        QTimer.singleShot(500, self._startup_airdrop_with_autohide)
+        # 启动应用时自动打开隔空投送窗口（如果配置启用）
+        try:
+            cfg = ConfigManager.load()
+            if cfg.get("airdrop_auto_start", True):
+                QTimer.singleShot(500, self._startup_airdrop_with_autohide)
+        except Exception:
+            # 配置加载失败时，默认启用（保持向后兼容）
+            QTimer.singleShot(500, self._startup_airdrop_with_autohide)
         
         # macOS: 确保应用在窗口关闭后仍然运行
         if platform.system() == "Darwin":
@@ -548,8 +554,14 @@ class MainWindow(QMainWindow):
                 self.refresh_current_page_after_login()
                 # 启动轮询服务
                 self._start_polling_service()
-                # 登录成功后隔1秒打开隔空投送并自动隐藏（与启动时逻辑对齐）
-                QTimer.singleShot(1000, self._open_airdrop_after_login)
+                # 登录成功后隔1秒打开隔空投送并自动隐藏（如果配置启用）
+                try:
+                    cfg = ConfigManager.load()
+                    if cfg.get("airdrop_auto_start", True):
+                        QTimer.singleShot(1000, self._open_airdrop_after_login)
+                except Exception:
+                    # 配置加载失败时，默认启用（保持向后兼容）
+                    QTimer.singleShot(1000, self._open_airdrop_after_login)
             
             def _on_login_error(error_msg: str):
                 self.hide_loading()
@@ -1638,6 +1650,25 @@ class MainWindow(QMainWindow):
     
     def _cleanup_resources(self):
         """清理所有资源"""
+        # 在 macOS 上，先禁用所有页面的更新，防止绘制时崩溃
+        import platform
+        if platform.system() == "Darwin":
+            try:
+                # 禁用所有页面的更新
+                for page in [self.today_page, self.history_page, self.review_page, 
+                            self.ranking_page, self.notification_page, self.profile_page, 
+                            self.settings_page, self.data_trend_page]:
+                    if page:
+                        try:
+                            page.setUpdatesEnabled(False)
+                            # 如果页面有 _is_destroying 标记，设置它
+                            if hasattr(page, '_is_destroying'):
+                                page._is_destroying = True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        
         if self._global_hotkey:
             try:
                 self._global_hotkey.unregister()
@@ -2411,8 +2442,19 @@ class MainWindow(QMainWindow):
     def _open_help_center(self):
         """打开帮助中心窗口"""
         try:
+            # 如果帮助中心窗口已存在，直接显示
+            if hasattr(self, '_help_center_window') and self._help_center_window:
+                self._help_center_window.show()
+                self._help_center_window.raise_()
+                self._help_center_window.activateWindow()
+                return
+            
             # 创建帮助中心窗口
             help_window = HelpCenterWindow(self)
+            # 保存引用，以便后续更新主题
+            self._help_center_window = help_window
+            # 窗口关闭时清空引用
+            help_window.destroyed.connect(lambda: setattr(self, '_help_center_window', None))
             help_window.show()
         except Exception as e:
             # 如果QWebEngineView不可用，显示错误提示

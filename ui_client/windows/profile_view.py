@@ -182,19 +182,15 @@ class ProfileView(QWidget):
         bindings_title.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         bindings_layout.addWidget(bindings_title)
         
-        # 账号绑定列表容器（使用滚动区域）
+        # 账号绑定列表容器（不使用滚动区域，内容自动撑高）
         self.bindings_container = QWidget()
         self.bindings_container_layout = QVBoxLayout(self.bindings_container)
         self.bindings_container_layout.setSpacing(8)
         self.bindings_container_layout.setContentsMargins(0, 0, 0, 0)
         self.bindings_container_layout.addStretch()
         
-        scroll_area = QScrollArea()
-        scroll_area.setWidget(self.bindings_container)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setMaximumHeight(200)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        bindings_layout.addWidget(scroll_area)
+        # 直接将容器添加到布局，不使用滚动区域
+        bindings_layout.addWidget(self.bindings_container)
         
         # 默认显示"暂无账号绑定"
         self.bindings_placeholder = QLabel("暂无账号绑定")

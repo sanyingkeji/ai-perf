@@ -31,6 +31,8 @@ class SettingsView(QWidget):
         self._is_initializing = True
         # 标记：是否已经显示过升级弹窗（防止重复弹窗）
         self._update_dialog_shown = False
+        # 标记：widget 是否正在被销毁（防止在销毁过程中访问）
+        self._is_destroying = False
 
         # 主布局
         main_layout = QVBoxLayout(self)
@@ -255,13 +257,35 @@ class SettingsView(QWidget):
 
         self.chk_auto_refresh = QCheckBox("启动时自动刷新今日评分")
         self.chk_auto_refresh.setChecked(self.cfg.get("auto_refresh", True))
-        self.chk_auto_refresh.stateChanged.connect(self._auto_save_auto_refresh)
+        # 使用 lambda 包装，添加有效性检查
+        self.chk_auto_refresh.stateChanged.connect(
+            lambda state: self._safe_auto_save_auto_refresh(state) if not self._is_destroying else None
+        )
         behavior_layout.addWidget(self.chk_auto_refresh)
 
         self.chk_notifications = QCheckBox("允许系统通知")
         self.chk_notifications.setChecked(self.cfg.get("notifications", True))
-        self.chk_notifications.stateChanged.connect(self._auto_save_notifications)
+        # 使用 lambda 包装，添加有效性检查
+        self.chk_notifications.stateChanged.connect(
+            lambda state: self._safe_auto_save_notifications(state) if not self._is_destroying else None
+        )
         behavior_layout.addWidget(self.chk_notifications)
+
+        self.chk_airdrop_auto_start = QCheckBox("启动时开启隔空投送服务")
+        self.chk_airdrop_auto_start.setChecked(self.cfg.get("airdrop_auto_start", True))
+        # 使用 lambda 包装，添加有效性检查
+        self.chk_airdrop_auto_start.stateChanged.connect(
+            lambda state: self._safe_auto_save_airdrop_auto_start(state) if not self._is_destroying else None
+        )
+        behavior_layout.addWidget(self.chk_airdrop_auto_start)
+
+        self.chk_airdrop_auto_stop = QCheckBox("关闭隔空传送服务")
+        self.chk_airdrop_auto_stop.setChecked(self.cfg.get("airdrop_auto_stop", False))
+        # 使用 lambda 包装，添加有效性检查
+        self.chk_airdrop_auto_stop.stateChanged.connect(
+            lambda state: self._safe_auto_save_airdrop_auto_stop(state) if not self._is_destroying else None
+        )
+        behavior_layout.addWidget(self.chk_airdrop_auto_stop)
 
         # 日志保留时长（小时）
         log_retention_row = QHBoxLayout()
@@ -295,7 +319,10 @@ class SettingsView(QWidget):
         if system == "Darwin":
             self.chk_global_hotkey = QCheckBox("启用全局快捷键")
             self.chk_global_hotkey.setChecked(self.cfg.get("global_hotkey_enabled", False))
-            self.chk_global_hotkey.stateChanged.connect(self._auto_save_global_hotkey)
+            # 使用 lambda 包装，添加有效性检查
+            self.chk_global_hotkey.stateChanged.connect(
+                lambda state: self._safe_auto_save_global_hotkey(state) if not self._is_destroying else None
+            )
             behavior_layout.addWidget(self.chk_global_hotkey)
         
         # 通知权限检查和引导
@@ -759,6 +786,41 @@ class SettingsView(QWidget):
         ThemeManager.apply_theme()
         # 同步主题按钮的配色
         self._update_theme_buttons_style(theme)
+        # 更新所有 webview 的主题
+        self._update_webview_themes()
+    
+    def _update_webview_themes(self):
+        """更新所有 webview 的主题"""
+        try:
+            # 获取主窗口
+            main_window = self.window()
+            while main_window and not hasattr(main_window, 'data_trend_page'):
+                main_window = main_window.parent()
+            
+            if main_window:
+                # 更新数据趋势页面的 webview
+                if hasattr(main_window, 'data_trend_page') and main_window.data_trend_page:
+                    if hasattr(main_window.data_trend_page, 'update_theme'):
+                        main_window.data_trend_page.update_theme()
+                
+                # 更新帮助中心窗口的 webview（如果已打开）
+                if hasattr(main_window, '_help_center_window') and main_window._help_center_window:
+                    if hasattr(main_window._help_center_window, 'update_theme'):
+                        main_window._help_center_window.update_theme()
+                else:
+                    # 如果主窗口没有保存引用，通过 QApplication 查找
+                    from PySide6.QtWidgets import QApplication
+                    app = QApplication.instance()
+                    if app:
+                        for widget in app.allWidgets():
+                            if widget.__class__.__name__ == "HelpCenterWindow":
+                                if hasattr(widget, 'update_theme'):
+                                    widget.update_theme()
+                                break
+        except Exception as e:
+            print(f"[Settings] Error updating webview themes: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
 
     def _resolve_effective_theme(self, pref: str) -> str:
         """根据用户偏好与系统，得出实际主题（light/dark）。"""
@@ -811,6 +873,12 @@ class SettingsView(QWidget):
         for btn in getattr(self, "theme_buttons", []):
             btn.setStyleSheet(style)
 
+    def _safe_auto_save_auto_refresh(self, state: int):
+        """安全地自动保存自动刷新设置（带有效性检查）"""
+        if self._is_destroying or not hasattr(self, 'chk_auto_refresh') or not self.chk_auto_refresh:
+            return
+        self._auto_save_auto_refresh(state)
+
     def _auto_save_auto_refresh(self, state: int):
         """自动保存自动刷新设置"""
         if self._is_initializing:
@@ -821,6 +889,12 @@ class SettingsView(QWidget):
             self.cfg = {}
         self.cfg["auto_refresh"] = (state == 2)  # 2 表示选中状态
         ConfigManager.save(self.cfg)
+
+    def _safe_auto_save_notifications(self, state: int):
+        """安全地自动保存通知设置（带有效性检查）"""
+        if self._is_destroying or not hasattr(self, 'chk_notifications') or not self.chk_notifications:
+            return
+        self._auto_save_notifications(state)
 
     def _auto_save_notifications(self, state: int):
         """自动保存通知设置"""
@@ -836,6 +910,55 @@ class SettingsView(QWidget):
         # 如果启用了通知，检查权限
         if state == 2:
             self._check_notification_permission()
+
+    def _safe_auto_save_airdrop_auto_start(self, state: int):
+        """安全地自动保存隔空投送自动启动设置（带有效性检查）"""
+        if self._is_destroying or not hasattr(self, 'chk_airdrop_auto_start') or not self.chk_airdrop_auto_start:
+            return
+        self._auto_save_airdrop_auto_start(state)
+
+    def _auto_save_airdrop_auto_start(self, state: int):
+        """自动保存隔空投送自动启动设置"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["airdrop_auto_start"] = (state == 2)  # 2 表示选中状态
+        ConfigManager.save(self.cfg)
+        # 如果启用了自动启动，确保关闭服务选项不选中
+        if state == 2 and hasattr(self, 'chk_airdrop_auto_stop'):
+            self.chk_airdrop_auto_stop.setChecked(False)
+            self.cfg["airdrop_auto_stop"] = False
+        ConfigManager.save(self.cfg)
+    
+    def _safe_auto_save_airdrop_auto_stop(self, state: int):
+        """安全地自动保存关闭隔空传送服务设置（带有效性检查）"""
+        if self._is_destroying or not hasattr(self, 'chk_airdrop_auto_stop') or not self.chk_airdrop_auto_stop:
+            return
+        self._auto_save_airdrop_auto_stop(state)
+    
+    def _auto_save_airdrop_auto_stop(self, state: int):
+        """自动保存关闭隔空传送服务设置"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        enabled = (state == 2)  # 2 表示选中状态
+        self.cfg["airdrop_auto_stop"] = enabled
+        ConfigManager.save(self.cfg)
+        
+        # 如果选中了关闭服务，实际关闭隔空投送服务
+        if enabled:
+            self._stop_airdrop_service()
+            # 如果服务已关闭，确保复选框保持不选中状态
+            QTimer.singleShot(100, self._update_airdrop_stop_checkbox)
+        else:
+            # 如果取消选中，根据服务实际状态更新复选框
+            QTimer.singleShot(100, self._update_airdrop_stop_checkbox)
 
     def _auto_save_log_retention(self, value: int):
         """自动保存日志保留时长（小时）"""
@@ -907,6 +1030,12 @@ class SettingsView(QWidget):
             print(f"[Settings] Export logs failed: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
+    
+    def _safe_auto_save_global_hotkey(self, state: int):
+        """安全地自动保存全局快捷键设置（带有效性检查）"""
+        if self._is_destroying or not hasattr(self, 'chk_global_hotkey') or not self.chk_global_hotkey:
+            return
+        self._auto_save_global_hotkey(state)
     
     def _auto_save_global_hotkey(self, state: int):
         """自动保存全局快捷键设置"""
@@ -1195,6 +1324,87 @@ class SettingsView(QWidget):
             import traceback
             traceback.print_exc()
     
+    def _stop_airdrop_service(self):
+        """停止隔空投送服务"""
+        try:
+            # 获取主窗口
+            main_window = self.window()
+            while main_window and not hasattr(main_window, '_airdrop_window'):
+                main_window = main_window.parent()
+            
+            if main_window and hasattr(main_window, '_airdrop_window') and main_window._airdrop_window:
+                airdrop_window = main_window._airdrop_window
+                # 停止传输管理器
+                if hasattr(airdrop_window, '_transfer_manager') and airdrop_window._transfer_manager:
+                    try:
+                        airdrop_window._transfer_manager.stop()
+                    except Exception:
+                        pass
+                # 关闭窗口
+                try:
+                    airdrop_window.hide()
+                    airdrop_window.close()
+                    # 延迟删除，确保资源清理完成
+                    QTimer.singleShot(100, lambda: airdrop_window.deleteLater() if airdrop_window else None)
+                except Exception:
+                    pass
+                # 清空引用
+                main_window._airdrop_window = None
+        except Exception as e:
+            print(f"[Settings] Error stopping airdrop service: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+    
+    def _update_airdrop_stop_checkbox(self):
+        """根据隔空投送服务状态更新复选框"""
+        if self._is_destroying or not hasattr(self, 'chk_airdrop_auto_stop') or not self.chk_airdrop_auto_stop:
+            return
+        
+        try:
+            # 获取主窗口
+            main_window = self.window()
+            while main_window and not hasattr(main_window, '_airdrop_window'):
+                main_window = main_window.parent()
+            
+            # 检查服务是否正在运行
+            is_service_running = False
+            if main_window and hasattr(main_window, '_airdrop_window') and main_window._airdrop_window:
+                airdrop_window = main_window._airdrop_window
+                # 检查传输管理器是否在运行
+                if hasattr(airdrop_window, '_transfer_manager') and airdrop_window._transfer_manager:
+                    # 使用 is_running() 方法检查传输管理器是否已启动
+                    if hasattr(airdrop_window._transfer_manager, 'is_running'):
+                        is_service_running = airdrop_window._transfer_manager.is_running()
+                    elif hasattr(airdrop_window._transfer_manager, '_running'):
+                        is_service_running = airdrop_window._transfer_manager._running
+                    elif hasattr(airdrop_window._transfer_manager, '_server') and airdrop_window._transfer_manager._server:
+                        is_service_running = True
+            
+            # 如果服务正在运行，复选框应该是不选中状态
+            # 如果服务未运行，复选框应该根据配置决定
+            if is_service_running:
+                # 服务正在运行，确保复选框不选中
+                if self.chk_airdrop_auto_stop.isChecked():
+                    # 临时断开信号，避免触发保存
+                    self.chk_airdrop_auto_stop.blockSignals(True)
+                    self.chk_airdrop_auto_stop.setChecked(False)
+                    self.chk_airdrop_auto_stop.blockSignals(False)
+                    # 更新配置
+                    try:
+                        self.cfg = ConfigManager.load()
+                        self.cfg["airdrop_auto_stop"] = False
+                        ConfigManager.save(self.cfg)
+                    except Exception:
+                        pass
+            else:
+                # 服务未运行，根据配置更新复选框（但不自动选中）
+                # 这里不自动选中，因为用户可能只是查看状态
+                pass
+        except Exception as e:
+            print(f"[Settings] Error updating airdrop stop checkbox: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+    
     def _unregister_hotkey_if_disabled(self):
         """如果快捷键已禁用，取消注册（仅 macOS）"""
         import platform
@@ -1449,9 +1659,50 @@ class _ApiHealthWorker(QRunnable):
             self._check_hotkey_permission()
             # 如果快捷键已启用，尝试重新注册
             self._register_hotkey_if_enabled()
+        
+        # 更新隔空传送服务复选框状态
+        self._update_airdrop_stop_checkbox()
+        
+        # 启动定时器，定期更新隔空传送服务复选框状态
+        if not hasattr(self, '_airdrop_status_timer'):
+            self._airdrop_status_timer = QTimer()
+            self._airdrop_status_timer.timeout.connect(self._update_airdrop_stop_checkbox)
+            self._airdrop_status_timer.start(2000)  # 每2秒检查一次
 
     def hideEvent(self, event):
         """页面隐藏时停止定时器"""
         super().hideEvent(event)
         if hasattr(self, '_api_health_timer'):
             self._api_health_timer.stop()
+        if hasattr(self, '_airdrop_status_timer'):
+            self._airdrop_status_timer.stop()
+    
+    def closeEvent(self, event):
+        """窗口关闭时清理资源"""
+        self._is_destroying = True
+        
+        # 在 macOS 上，先禁用所有 widget 的更新，防止绘制时崩溃
+        import platform
+        if platform.system() == "Darwin":
+            try:
+                # 禁用所有 QCheckBox 的更新
+                for attr_name in ['chk_auto_refresh', 'chk_notifications', 'chk_airdrop_auto_start', 'chk_airdrop_auto_stop', 'chk_global_hotkey']:
+                    if hasattr(self, attr_name):
+                        widget = getattr(self, attr_name, None)
+                        if widget:
+                            try:
+                                widget.setUpdatesEnabled(False)
+                                widget.setEnabled(False)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+        
+        super().closeEvent(event)
+    
+    def __del__(self):
+        """析构函数，确保清理资源"""
+        try:
+            self._is_destroying = True
+        except Exception:
+            pass

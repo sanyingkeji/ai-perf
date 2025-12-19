@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
     "notifications": True,
     # 日志保留时长（小时），默认仅保留最近 1 小时
     "log_retention_hours": 1,
-    "client_version": "1.1.1",  # 客户端版本号（格式：x.x.x）
+    "client_version": "1.1.2",  # 客户端版本号（格式：x.x.x）
     "update_dialog_dismissed_date": "",  # 非强制升级弹窗关闭的日期（格式：YYYY-MM-DD），用于当天不再弹出
     # SSH 配置（用于服务管理）
     "ssh_host": "",
@@ -51,6 +51,11 @@ DEFAULT_CONFIG = {
     "upload_api_url": "http://127.0.0.1:8882/api/upload",  # 文件上传API地址（用于上传文件）
     # OpenAI Session Key（用于获取余额信息，从浏览器中获取）
     "openai_session_key": "",  # OpenAI Dashboard session key（从浏览器 Cookie 中获取）
+    # 得力云（得力 e+）考勤对接配置（仅用于管理端“账号绑定-自动获取员工列表”等功能）
+    # 注意：App-Key / App-Secret 属于敏感信息，仅保存在本机用户配置目录，严禁写入仓库。
+    "delicloud_api_url": "https://v2-api.delicloud.com",
+    "delicloud_app_key": "",
+    "delicloud_app_secret": "",
     # 配置架构版本，用于迁移
     "config_version": CURRENT_CONFIG_VERSION,
 }
@@ -101,6 +106,10 @@ USER_DATA_FIELDS = {
     "github_api_url",  # GitHub API URL
     "github_org",  # GitHub 组织
     "upload_api_url",  # 文件上传API地址
+    # 得力云（考勤）
+    "delicloud_api_url",
+    "delicloud_app_key",
+    "delicloud_app_secret",
 }
 
 # 系统自动管理字段：这些字段会自动从模板配置同步更新

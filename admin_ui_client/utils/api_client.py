@@ -547,6 +547,91 @@ class AdminApiClient:
         """
         return self._get("/admin/api/menu_permission")
     
+    # ---------- 考勤：打卡明细（管理端展示） ----------
+    def get_attendance_checkins(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        user_id: Optional[str] = None,
+        check_type: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        GET /admin/api/attendance/checkins
+        返回格式：{"status":"success","items":[...],...}
+        """
+        params: Dict[str, Any] = {"offset": offset, "limit": limit}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if user_id:
+            params["user_id"] = user_id
+        if check_type:
+            params["check_type"] = check_type
+        return self._get("/admin/api/attendance/checkins", params=params)
+
+    def get_attendance_checkin_detail(self, checkin_id: int) -> Dict[str, Any]:
+        """
+        GET /admin/api/attendance/checkins/{checkin_id}
+        返回单条明细（包含 raw / check_data）。
+        """
+        return self._get(f"/admin/api/attendance/checkins/{int(checkin_id)}")
+
+    def manual_add_attendance_checkins(self, items: List[Dict[str, Any]], rebuild_daily: bool = True, note: str = "") -> Dict[str, Any]:
+        """
+        POST /admin/api/attendance/checkins/manual
+        手动补录考勤打卡记录（用于补齐初始化前历史缺口等场景）。
+
+        items 每个元素示例：
+        - {"user_id":"u1001","check_type":"fa","check_time_local":"2025-12-18 09:20:00"}
+        - {"user_id":"2","check_type":"fa","check_time_ts":1766020800}  # user_id 也可直接填得力云 user_id（数字字符串）
+        """
+        payload = {
+            "items": items or [],
+            "rebuild_daily": bool(rebuild_daily),
+            "note": note or "",
+        }
+        return self._post("/admin/api/attendance/checkins/manual", payload)
+
+    # ---------- 考勤：日汇总（管理端展示） ----------
+    def get_attendance_daily(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        user_id: Optional[str] = None,
+        keyword: Optional[str] = None,
+        abnormal: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        GET /admin/api/attendance/daily
+        返回格式：{"status":"success","items":[...],...}
+        """
+        params: Dict[str, Any] = {"offset": offset, "limit": limit}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if user_id:
+            params["user_id"] = user_id
+        if keyword:
+            params["keyword"] = keyword
+        if abnormal:
+            params["abnormal"] = abnormal
+        return self._get("/admin/api/attendance/daily", params=params)
+
+    def get_attendance_daily_detail(self, date_str: str, user_id: str) -> Dict[str, Any]:
+        """
+        GET /admin/api/attendance/daily/{date}/{user_id}
+        返回单人单日详情（包含 raw_meta）。
+        """
+        d = (date_str or "").strip()
+        u = (user_id or "").strip()
+        return self._get(f"/admin/api/attendance/daily/{d}/{u}")
+    
     def get_monthly_scores(
         self,
         month: Optional[str] = None,

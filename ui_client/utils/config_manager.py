@@ -37,9 +37,13 @@ DEFAULT_CONFIG = {
     "theme": "auto",        # auto / light / dark
     "auto_refresh": True,
     "notifications": True,
+    # 启动时开启隔空投送服务（默认开启）
+    "airdrop_auto_start": True,
+    # 关闭隔空传送服务（默认不关闭）
+    "airdrop_auto_stop": False,
     # 日志保留时长（小时），默认仅保留最近 1 小时
     "log_retention_hours": 1,
-    "client_version": "1.1.1",  # 客户端版本号（格式：x.x.x）
+    "client_version": "1.1.2",  # 客户端版本号（格式：x.x.x）
     "update_dialog_dismissed_date": "",  # 非强制升级弹窗关闭的日期（格式：YYYY-MM-DD），用于当天不再弹出
     # 隔空投送可被发现范围：all | group | none
     "airdrop_discover_scope": "all",
@@ -77,6 +81,8 @@ USER_DATA_FIELDS = {
     "theme",  # 主题设置
     "auto_refresh",  # 自动刷新
     "notifications",  # 通知设置
+    "airdrop_auto_start",  # 启动时开启隔空投送服务
+    "airdrop_auto_stop",  # 关闭隔空传送服务
     "log_retention_hours",  # 日志保留时长
     "airdrop_discover_scope",  # 隔空投送范围
     "airdrop_mdns_enabled",  # 隔空投送 mDNS 开关

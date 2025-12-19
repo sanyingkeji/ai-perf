@@ -3,8 +3,8 @@
   "month": "2025-11",
   "period_start": "2025-11-01",
   "period_end": "2025-11-30",
-  "generated_at": "2025-12-01T15:40:41.792644",
-  "generated_by": "admin",
+  "generated_at": "2025-12-17T19:33:18.061064",
+  "generated_by": null,
   "user_ids": null,
   "data": {
     "ai_scores": [
@@ -13840,7 +13840,7 @@
             {
               "tags": [],
               "actor": "u1006",
-              "issue": "UKEY1-152",
+              "issue": "UKEY1-151",
               "created": "2025-11-10 14:20",
               "summary": "CC → ukey.io.yhq",
               "event_type": "assignee_change"
@@ -13848,7 +13848,7 @@
             {
               "tags": [],
               "actor": "u1006",
-              "issue": "UKEY1-151",
+              "issue": "UKEY1-152",
               "created": "2025-11-10 14:20",
               "summary": "CC → ukey.io.yhq",
               "event_type": "assignee_change"
@@ -44303,288 +44303,6 @@
     ],
     "team_avg_daily": [
       {
-        "date": "2025-11-03",
-        "team_id": 1,
-        "role_id": 1,
-        "subrole_id": 1,
-        "payload": {
-          "commits": 4.6,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 917.2,
-          "diff_deleted": 392.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 414.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 2,
-        "role_id": 6,
-        "subrole_id": 6,
-        "payload": {
-          "commits": 7.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 805.0,
-          "diff_deleted": 451.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 2,
-        "role_id": 6,
-        "subrole_id": 7,
-        "payload": {
-          "commits": 4.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 1275.0,
-          "diff_deleted": 942.0,
-          "on_time_count": 0.0,
-          "status_updates": 1.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 1.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 2,
-        "role_id": 9,
-        "subrole_id": 12,
-        "payload": {
-          "commits": 0.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 0.0,
-          "diff_deleted": 0.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 0.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 3,
-        "role_id": 4,
-        "subrole_id": 3,
-        "payload": {
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 3,
-        "role_id": 4,
-        "subrole_id": 9,
-        "payload": {
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 4,
-        "role_id": 3,
-        "subrole_id": 10,
-        "payload": {
-          "mentions": 0.0,
-          "shared_links": 0.0,
-          "files_updated": 0.0,
-          "nodes_changed": 0.0,
-          "on_time_count": 0.0,
-          "comments_added": 1.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 0.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0,
-          "comments_resolved": 0.0,
-          "components_published": 0.0
-        }
-      },
-      {
-        "date": "2025-11-03",
-        "team_id": 6,
-        "role_id": 2,
-        "subrole_id": 2,
-        "payload": {
-          "commits": 1.75,
-          "reviews": 0.0,
-          "pr_merged": 0.25,
-          "pr_opened": 0.25,
-          "diff_added": 657.0,
-          "diff_deleted": 261.25,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 639.25,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 1,
-        "role_id": 1,
-        "subrole_id": 1,
-        "payload": {
-          "commits": 2.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 843.2,
-          "diff_deleted": 134.4,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 468.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 2,
-        "role_id": 6,
-        "subrole_id": 6,
-        "payload": {
-          "commits": 5.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 470.0,
-          "diff_deleted": 53.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 2,
-        "role_id": 6,
-        "subrole_id": 7,
-        "payload": {
-          "commits": 4.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 4056.0,
-          "diff_deleted": 941.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 2,
-        "role_id": 9,
-        "subrole_id": 12,
-        "payload": {
-          "commits": 0.0,
-          "reviews": 0.0,
-          "pr_merged": 0.0,
-          "pr_opened": 0.0,
-          "diff_added": 0.0,
-          "diff_deleted": 0.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 0.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 3,
-        "role_id": 4,
-        "subrole_id": 3,
-        "payload": {
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 3,
-        "role_id": 4,
-        "subrole_id": 9,
-        "payload": {
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 4,
-        "role_id": 3,
-        "subrole_id": 10,
-        "payload": {
-          "mentions": 0.0,
-          "shared_links": 0.0,
-          "files_updated": 0.0,
-          "nodes_changed": 0.0,
-          "on_time_count": 0.0,
-          "comments_added": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 480.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0,
-          "comments_resolved": 0.0,
-          "components_published": 0.0
-        }
-      },
-      {
-        "date": "2025-11-04",
-        "team_id": 6,
-        "role_id": 2,
-        "subrole_id": 2,
-        "payload": {
-          "commits": 3.0,
-          "reviews": 0.0,
-          "pr_merged": 0.5,
-          "pr_opened": 0.5,
-          "diff_added": 1119.75,
-          "diff_deleted": 574.0,
-          "on_time_count": 0.0,
-          "status_updates": 0.0,
-          "worklog_minutes": 852.0,
-          "issues_completed": 0.0,
-          "attachments_count": 0.0
-        }
-      },
-      {
         "date": "2025-11-05",
         "team_id": 1,
         "role_id": 1,
@@ -47519,6 +47237,6 @@
     "total_ai_score_records": 385,
     "total_jira_records": 385,
     "total_github_records": 295,
-    "total_team_avg_records": 186
+    "total_team_avg_records": 170
   }
 }

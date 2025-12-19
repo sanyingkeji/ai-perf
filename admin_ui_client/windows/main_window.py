@@ -10,6 +10,8 @@ import platform
 from windows.history_score_view import HistoryScoreView
 from windows.monthly_score_view import MonthlyScoreView
 from windows.employee_view import EmployeeView
+from windows.attendance_view import AttendanceView
+from windows.attendance_daily_view import AttendanceDailyView
 from windows.settings_view import SettingsView
 from windows.etl_log_view import EtlLogView
 from windows.ai_log_view import AiLogView
@@ -49,16 +51,18 @@ class MainWindow(QMainWindow):
             0: False,  # 每日评分
             1: False,  # 月度评分
             2: False,  # 员工列表
-            3: False,  # ETL日志
-            4: False,  # AI调用日志
-            5: False,  # 操作日志
-            6: False,  # 健康检查
-            7: False,  # 版本管理
-            8: False,  # 通知管理
-            9: False,  # 日历管理
-            10: False,  # 日常运维
-            11: False,  # 统计&报表
-            12: False,  # 设置
+            3: False,  # 考勤记录
+            4: False,  # 考勤日汇总
+            5: False,  # ETL日志
+            6: False,  # AI调用日志
+            7: False,  # 操作日志
+            8: False,  # 健康检查
+            9: False,  # 版本管理
+            10: False,  # 通知管理
+            11: False,  # 日历管理
+            12: False,  # 日常运维
+            13: False,  # 统计&报表
+            14: False,  # 设置
         }
 
         root = QWidget()
@@ -83,6 +87,8 @@ class MainWindow(QMainWindow):
             "每日评分",
             "月度评分",
             "员工列表",
+            "考勤记录",
+            "考勤日汇总",
             "ETL日志",
             "AI调用日志",
             "操作日志",
@@ -134,6 +140,8 @@ class MainWindow(QMainWindow):
         self.history_page = HistoryScoreView()
         self.monthly_score_page = MonthlyScoreView()
         self.employee_page = EmployeeView()
+        self.attendance_page = AttendanceView()
+        self.attendance_daily_page = AttendanceDailyView()
         self.etl_log_page = EtlLogView()
         self.ai_log_page = AiLogView()
         self.operation_log_page = OperationLogView()
@@ -148,6 +156,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.monthly_score_page)
         self.stack.addWidget(self.employee_page)
+        self.stack.addWidget(self.attendance_page)
+        self.stack.addWidget(self.attendance_daily_page)
         self.stack.addWidget(self.etl_log_page)
         self.stack.addWidget(self.ai_log_page)
         self.stack.addWidget(self.operation_log_page)
@@ -172,11 +182,11 @@ class MainWindow(QMainWindow):
         # 检查是否已登录，决定默认显示的页面
         is_logged_in = self._ensure_logged_in()
         if is_logged_in:
-            # 已登录，默认选中"设置"页面（索引12），等权限获取完成后再切换到合适的页面
-            self.nav.setCurrentRow(12)
+            # 已登录，默认选中"设置"页面（索引14），等权限获取完成后再切换到合适的页面
+            self.nav.setCurrentRow(14)
         else:
-            # 未登录，默认选中"设置"页面（索引12）
-            self.nav.setCurrentRow(12)
+            # 未登录，默认选中"设置"页面（索引14）
+            self.nav.setCurrentRow(14)
         
         # 标记：是否已经显示过升级弹窗（防止重复弹窗）
         self._update_dialog_shown = False
@@ -447,13 +457,13 @@ class MainWindow(QMainWindow):
         """
         self.stack.setCurrentIndex(index)
 
-        # 切换到设置页面（index=11）时，刷新登录状态
-        if index == 11 and hasattr(self.settings_page, "refresh_login_status"):
+        # 切换到设置页面（index=14）时，刷新登录状态
+        if index == 14 and hasattr(self.settings_page, "refresh_login_status"):
             self.settings_page.refresh_login_status()
 
         # 只对业务 Tab 做一次性自动请求
         # 判定条件：已登录 且 该页面还没有请求过数据
-        if index in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11) and not self._page_first_loaded.get(index, False):
+        if index in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13) and not self._page_first_loaded.get(index, False):
             # 未登录：只提示，不标记为已加载，方便登录后再自动触发
             if not self._ensure_logged_in():
                 return
@@ -470,31 +480,37 @@ class MainWindow(QMainWindow):
             elif index == 2 and hasattr(self.employee_page, "reload_from_api"):
                 # 员工列表
                 self.employee_page.reload_from_api()
-            elif index == 3 and hasattr(self.etl_log_page, "reload_from_api"):
+            elif index == 3 and hasattr(self.attendance_page, "reload_from_api"):
+                # 考勤记录
+                self.attendance_page.reload_from_api()
+            elif index == 4 and hasattr(self.attendance_daily_page, "reload_from_api"):
+                # 考勤日汇总
+                self.attendance_daily_page.reload_from_api()
+            elif index == 5 and hasattr(self.etl_log_page, "reload_from_api"):
                 # ETL日志
                 self.etl_log_page.reload_from_api()
-            elif index == 4 and hasattr(self.ai_log_page, "reload_from_api"):
+            elif index == 6 and hasattr(self.ai_log_page, "reload_from_api"):
                 # AI调用日志
                 self.ai_log_page.reload_from_api()
-            elif index == 5 and hasattr(self.operation_log_page, "reload_from_api"):
+            elif index == 7 and hasattr(self.operation_log_page, "reload_from_api"):
                 # 操作日志
                 self.operation_log_page.reload_from_api()
-            elif index == 6 and hasattr(self.health_check_page, "reload_from_api"):
+            elif index == 8 and hasattr(self.health_check_page, "reload_from_api"):
                 # 健康检查
                 self.health_check_page.reload_from_api()
-            elif index == 7 and hasattr(self.version_page, "reload_from_api"):
+            elif index == 9 and hasattr(self.version_page, "reload_from_api"):
                 # 版本管理
                 self.version_page.reload_from_api()
-            elif index == 8 and hasattr(self.notification_page, "reload_from_api"):
+            elif index == 10 and hasattr(self.notification_page, "reload_from_api"):
                 # 通知管理
                 self.notification_page.reload_from_api()
-            elif index == 9 and hasattr(self.workday_page, "_load_workdays"):
+            elif index == 11 and hasattr(self.workday_page, "_load_workdays"):
                 # 日历管理
                 self.workday_page._load_workdays()
-            elif index == 10 and hasattr(self.maintenance_page, "reload_from_api"):
+            elif index == 12 and hasattr(self.maintenance_page, "reload_from_api"):
                 # 日常运维
                 self.maintenance_page.reload_from_api()
-            elif index == 11 and hasattr(self.report_page, "reload_from_api"):
+            elif index == 13 and hasattr(self.report_page, "reload_from_api"):
                 # 统计&报表
                 self.report_page.reload_from_api()
     
@@ -577,7 +593,7 @@ class MainWindow(QMainWindow):
                                     self.nav.setCurrentRow(menu_index)
                         else:
                             # 如果没有允许的菜单，保持在"设置"页面
-                            self.nav.setCurrentRow(11)
+                            self.nav.setCurrentRow(14)
                 else:
                     # 如果获取失败，只显示"设置"菜单（未登录状态）
                     self.menu_permission = {
@@ -670,9 +686,9 @@ class MainWindow(QMainWindow):
                 if first_visible_index >= 0:
                     self.nav.setCurrentRow(first_visible_index)
                 else:
-                    # 如果没有可见的菜单项，默认选中"设置"（索引11）
+                    # 如果没有可见的菜单项，默认选中"设置"（索引14）
                     # 确保"设置"菜单始终可见
-                    settings_index = 11
+                    settings_index = 14
                     if settings_index < self.nav.count():
                         settings_item = self.nav.item(settings_index)
                         if settings_item:

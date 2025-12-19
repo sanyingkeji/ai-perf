@@ -356,6 +356,54 @@ class SettingsView(QWidget):
         figma_key_row.addWidget(self.figma_api_key_edit, 1)
         third_party_layout.addLayout(figma_key_row)
         
+        # 得力云（得力 e+）配置：用于考勤平台账号绑定“自动获取员工列表”
+        delicloud_api_row = QHBoxLayout()
+        delicloud_api_label = QLabel("得力云 API 地址：")
+        self.delicloud_api_edit = QLineEdit()
+        self.delicloud_api_edit.setPlaceholderText("例如：https://v2-api.delicloud.com")
+        self.delicloud_api_edit.setText(self.cfg.get("delicloud_api_url", "https://v2-api.delicloud.com"))
+        self._delicloud_api_save_timer = QTimer()
+        self._delicloud_api_save_timer.setSingleShot(True)
+        self._delicloud_api_save_timer.timeout.connect(self._auto_save_delicloud_api_url)
+        self.delicloud_api_edit.textChanged.connect(lambda: self._delicloud_api_save_timer.start(500))
+        self.delicloud_api_edit.editingFinished.connect(self._on_delicloud_api_url_changed)
+        self.delicloud_api_edit.returnPressed.connect(self._on_delicloud_api_url_changed)
+        delicloud_api_row.addWidget(delicloud_api_label)
+        delicloud_api_row.addWidget(self.delicloud_api_edit, 1)
+        third_party_layout.addLayout(delicloud_api_row)
+
+        delicloud_key_row = QHBoxLayout()
+        delicloud_key_label = QLabel("得力云 App-Key：")
+        self.delicloud_app_key_edit = QLineEdit()
+        self.delicloud_app_key_edit.setPlaceholderText("App-Key（敏感）")
+        self.delicloud_app_key_edit.setEchoMode(QLineEdit.Password)
+        self.delicloud_app_key_edit.setText(self.cfg.get("delicloud_app_key", ""))
+        self._delicloud_app_key_save_timer = QTimer()
+        self._delicloud_app_key_save_timer.setSingleShot(True)
+        self._delicloud_app_key_save_timer.timeout.connect(self._auto_save_delicloud_app_key)
+        self.delicloud_app_key_edit.textChanged.connect(lambda: self._delicloud_app_key_save_timer.start(500))
+        self.delicloud_app_key_edit.editingFinished.connect(self._on_delicloud_app_key_changed)
+        self.delicloud_app_key_edit.returnPressed.connect(self._on_delicloud_app_key_changed)
+        delicloud_key_row.addWidget(delicloud_key_label)
+        delicloud_key_row.addWidget(self.delicloud_app_key_edit, 1)
+        third_party_layout.addLayout(delicloud_key_row)
+
+        delicloud_secret_row = QHBoxLayout()
+        delicloud_secret_label = QLabel("得力云 App-Secret：")
+        self.delicloud_app_secret_edit = QLineEdit()
+        self.delicloud_app_secret_edit.setPlaceholderText("App-Secret（敏感）")
+        self.delicloud_app_secret_edit.setEchoMode(QLineEdit.Password)
+        self.delicloud_app_secret_edit.setText(self.cfg.get("delicloud_app_secret", ""))
+        self._delicloud_app_secret_save_timer = QTimer()
+        self._delicloud_app_secret_save_timer.setSingleShot(True)
+        self._delicloud_app_secret_save_timer.timeout.connect(self._auto_save_delicloud_app_secret)
+        self.delicloud_app_secret_edit.textChanged.connect(lambda: self._delicloud_app_secret_save_timer.start(500))
+        self.delicloud_app_secret_edit.editingFinished.connect(self._on_delicloud_app_secret_changed)
+        self.delicloud_app_secret_edit.returnPressed.connect(self._on_delicloud_app_secret_changed)
+        delicloud_secret_row.addWidget(delicloud_secret_label)
+        delicloud_secret_row.addWidget(self.delicloud_app_secret_edit, 1)
+        third_party_layout.addLayout(delicloud_secret_row)
+        
         # OpenAI 配置
         openai_session_row = QHBoxLayout()
         openai_session_label = QLabel("OpenAI Session Key：")
@@ -1145,6 +1193,58 @@ class SettingsView(QWidget):
         if self._figma_api_key_save_timer.isActive():
             self._figma_api_key_save_timer.stop()
         self._auto_save_figma_api_key()
+
+    # 得力云 API 配置保存方法
+    def _auto_save_delicloud_api_url(self):
+        """自动保存 得力云 API 地址"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["delicloud_api_url"] = self.delicloud_api_edit.text().strip()
+        ConfigManager.save(self.cfg)
+
+    def _on_delicloud_api_url_changed(self):
+        """得力云 API地址改变时（失去焦点或按回车）立即保存"""
+        if self._delicloud_api_save_timer.isActive():
+            self._delicloud_api_save_timer.stop()
+        self._auto_save_delicloud_api_url()
+
+    def _auto_save_delicloud_app_key(self):
+        """自动保存 得力云 App-Key"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["delicloud_app_key"] = self.delicloud_app_key_edit.text().strip()
+        ConfigManager.save(self.cfg)
+
+    def _on_delicloud_app_key_changed(self):
+        """得力云 App-Key改变时（失去焦点或按回车）立即保存"""
+        if self._delicloud_app_key_save_timer.isActive():
+            self._delicloud_app_key_save_timer.stop()
+        self._auto_save_delicloud_app_key()
+
+    def _auto_save_delicloud_app_secret(self):
+        """自动保存 得力云 App-Secret"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        self.cfg["delicloud_app_secret"] = self.delicloud_app_secret_edit.text().strip()
+        ConfigManager.save(self.cfg)
+
+    def _on_delicloud_app_secret_changed(self):
+        """得力云 App-Secret改变时（失去焦点或按回车）立即保存"""
+        if self._delicloud_app_secret_save_timer.isActive():
+            self._delicloud_app_secret_save_timer.stop()
+        self._auto_save_delicloud_app_secret()
     
     def _auto_save_openai_session_key(self):
         """自动保存 OpenAI Session Key"""

@@ -20,6 +20,8 @@ from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot
 
 from utils.api_client import ApiClient, ApiError, AuthError
+from utils.config_manager import ConfigManager
+from utils.theme_manager import ThemeManager
 from widgets.toast import Toast
 
 
@@ -123,8 +125,14 @@ class ComparisonDialog(QDialog):
         self._target_user_name = target_user_name
         self._date_str = date_str
         
+        # 检测主题
+        self._is_dark = self._detect_theme()
+        
         self.setWindowTitle(f"向 {target_user_name} 学习 - {date_str}")
         self.resize(1000, 700)
+        
+        # 应用对话框主题
+        self._apply_dialog_theme()
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -133,10 +141,12 @@ class ComparisonDialog(QDialog):
         # 标题
         title = QLabel(f"📊 对比分析：向 {target_user_name} 学习")
         title.setFont(QFont("Arial", 14, QFont.Bold))
+        self._apply_label_theme(title)
         layout.addWidget(title)
         
         # 使用Tab显示不同内容
         self.tabs = QTabWidget()
+        self._apply_tabwidget_theme(self.tabs)
         
         # Tab 1: AI分析结果
         self.analysis_tab = QWidget()
@@ -147,6 +157,7 @@ class ComparisonDialog(QDialog):
         self.analysis_text.setReadOnly(True)
         self.analysis_text.setFont(QFont("Arial", 10))
         self.analysis_text.setPlainText("正在加载对比分析，请稍候…")
+        self._apply_textedit_theme(self.analysis_text)
         analysis_layout.addWidget(self.analysis_text)
         
         self.tabs.addTab(self.analysis_tab, "AI分析结果")
@@ -158,12 +169,14 @@ class ComparisonDialog(QDialog):
         
         target_label = QLabel(f"{target_user_name} 的输入数据：")
         target_label.setFont(QFont("Arial", 11, QFont.Bold))
+        self._apply_label_theme(target_label)
         target_layout.addWidget(target_label)
         
         self.target_data_text = QTextEdit()
         self.target_data_text.setReadOnly(True)
         self.target_data_text.setFont(QFont("Courier New", 9))
         self.target_data_text.setPlainText("加载中…")
+        self._apply_textedit_theme(self.target_data_text)
         target_layout.addWidget(self.target_data_text)
         
         self.tabs.addTab(self.target_tab, f"{target_user_name} 的数据")
@@ -175,12 +188,14 @@ class ComparisonDialog(QDialog):
         
         my_label = QLabel("我的输入数据：")
         my_label.setFont(QFont("Arial", 11, QFont.Bold))
+        self._apply_label_theme(my_label)
         my_layout.addWidget(my_label)
         
         self.my_data_text = QTextEdit()
         self.my_data_text.setReadOnly(True)
         self.my_data_text.setFont(QFont("Courier New", 9))
         self.my_data_text.setPlainText("加载中…")
+        self._apply_textedit_theme(self.my_data_text)
         my_layout.addWidget(self.my_data_text)
         
         self.tabs.addTab(self.my_tab, "我的数据")
@@ -191,12 +206,163 @@ class ComparisonDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton("关闭")
+        self._apply_button_theme(close_btn)
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
         
         # 开始加载对比分析
         self._load_comparison()
+    
+    def _detect_theme(self) -> bool:
+        """检测当前是否为深色模式"""
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            
+            if preference == "auto":
+                theme = ThemeManager.detect_system_theme()
+            else:
+                theme = preference  # "light" or "dark"
+            
+            return theme == "dark"
+        except:
+            return False
+    
+    def _apply_dialog_theme(self):
+        """应用对话框背景色"""
+        if self._is_dark:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #202124;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #F7F9FC;
+                }
+            """)
+    
+    def _apply_label_theme(self, label: QLabel):
+        """应用标签文字颜色"""
+        if self._is_dark:
+            label.setStyleSheet("color: #E8EAED; background-color: transparent;")
+        else:
+            label.setStyleSheet("color: #222; background-color: transparent;")
+    
+    def _apply_textedit_theme(self, text_edit: QTextEdit):
+        """应用文本编辑框主题"""
+        if self._is_dark:
+            text_edit.setStyleSheet("""
+                QTextEdit {
+                    background-color: #2A2B2D;
+                    border: 1px solid #55575A;
+                    border-radius: 6px;
+                    padding: 6px;
+                    color: #E8EAED;
+                }
+            """)
+        else:
+            text_edit.setStyleSheet("""
+                QTextEdit {
+                    background-color: #FFFFFF;
+                    border: 1px solid #D0D3D9;
+                    border-radius: 6px;
+                    padding: 6px;
+                    color: #222;
+                }
+            """)
+    
+    def _apply_tabwidget_theme(self, tab_widget: QTabWidget):
+        """应用Tab组件主题"""
+        if self._is_dark:
+            tab_widget.setStyleSheet("""
+                QTabWidget::pane {
+                    border: 1px solid #3A3A3C;
+                    background-color: #2A2B2D;
+                    border-radius: 6px;
+                }
+                QTabBar::tab {
+                    background-color: #2A2B2D;
+                    color: #9AA0A6;
+                    border: 1px solid #3A3A3C;
+                    border-bottom: none;
+                    padding: 8px 16px;
+                    margin-right: 2px;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                }
+                QTabBar::tab:selected {
+                    background-color: #2A2B2D;
+                    color: #E8EAED;
+                    border-bottom: 2px solid #5C8CFF;
+                }
+                QTabBar::tab:hover:!selected {
+                    background-color: #333436;
+                    color: #E8EAED;
+                }
+            """)
+        else:
+            tab_widget.setStyleSheet("""
+                QTabWidget::pane {
+                    border: 1px solid #D0D3D9;
+                    background-color: #FFFFFF;
+                    border-radius: 6px;
+                }
+                QTabBar::tab {
+                    background-color: #F1F3F5;
+                    color: #666;
+                    border: 1px solid #D0D3D9;
+                    border-bottom: none;
+                    padding: 8px 16px;
+                    margin-right: 2px;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                }
+                QTabBar::tab:selected {
+                    background-color: #FFFFFF;
+                    color: #222;
+                    border-bottom: 2px solid #3A7AFE;
+                }
+                QTabBar::tab:hover:!selected {
+                    background-color: #E8F0FF;
+                    color: #3A7AFE;
+                }
+            """)
+    
+    def _apply_button_theme(self, button: QPushButton):
+        """应用按钮主题"""
+        if self._is_dark:
+            button.setStyleSheet("""
+                QPushButton {
+                    background-color: #5C8CFF;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                }
+                QPushButton:hover {
+                    background-color: #4B78E6;
+                }
+                QPushButton:pressed {
+                    background-color: #375FCC;
+                }
+            """)
+        else:
+            button.setStyleSheet("""
+                QPushButton {
+                    background-color: #3A7AFE;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                }
+                QPushButton:hover {
+                    background-color: #1E63FF;
+                }
+                QPushButton:pressed {
+                    background-color: #004DE0;
+                }
+            """)
     
     def _load_comparison(self):
         """加载对比分析"""

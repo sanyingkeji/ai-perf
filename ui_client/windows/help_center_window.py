@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QPainter, QColor, QAction
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWebEngineCore import QWebEnginePage
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
     WEBENGINE_AVAILABLE = True
 except ImportError:
     WEBENGINE_AVAILABLE = False
@@ -110,6 +110,12 @@ class HelpCenterWindow(QMainWindow):
         # 连接loadFinished信号，在页面加载完成后注入JS
         self.web_view.loadFinished.connect(self._on_load_finished)
         self.web_view.loadFinished.connect(self._on_page_loaded)
+        
+        # 设置 UserScript 在页面加载前注入变量
+        self._setup_user_script()
+        
+        # 设置 webview 背景色以适配主题
+        self._update_webview_background()
         
         layout.addWidget(self.web_view)
         
@@ -212,13 +218,91 @@ class HelpCenterWindow(QMainWindow):
         if title:
             self.setWindowTitle(title)
     
+    def _setup_user_script(self):
+        """设置 UserScript 在页面加载前注入变量"""
+        if not WEBENGINE_AVAILABLE or not self.web_view:
+            return
+        
+        # 重新获取最新主题
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            if preference == "auto":
+                self._theme = ThemeManager.detect_system_theme()
+            else:
+                self._theme = preference
+        except Exception:
+            pass
+        
+        # 转义特殊字符
+        import json
+        token_escaped = json.dumps(self._session_token)
+        theme_escaped = json.dumps(self._theme)
+        version_escaped = json.dumps(self._app_version)
+        
+        # 创建 UserScript，在文档开始创建时注入
+        script_source = f"""
+        (function() {{
+            // 在页面加载前就设置这些变量
+            Object.defineProperty(window, 'appToken', {{
+                value: {token_escaped},
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'appTheme', {{
+                value: {theme_escaped},
+                writable: true,
+                configurable: true
+            }});
+            Object.defineProperty(window, 'appVersion', {{
+                value: {version_escaped},
+                writable: true,
+                configurable: true
+            }});
+            
+            console.log('[UserScript] HelpCenter variables injected before page load:', {{
+                theme: {theme_escaped},
+                hasToken: !!{token_escaped}
+            }});
+        }})();
+        """
+        
+        script = QWebEngineScript()
+        script.setSourceCode(script_source)
+        script.setName("help_center_injector")
+        script.setWorldId(QWebEngineScript.MainWorld)
+        script.setInjectionPoint(QWebEngineScript.DocumentCreation)
+        script.setRunsOnSubFrames(False)
+        
+        # 直接插入脚本（不清除旧脚本，因为脚本是幂等的）
+        # 注意：PySide6 的 QWebEngineScriptCollection API 可能不支持遍历和查找
+        # 但直接插入是安全的，因为脚本是幂等的（重复执行结果相同）
+        page = self.web_view.page()
+        scripts = page.scripts()
+        scripts.insert(script)
+    
     def _on_page_loaded(self, ok: bool):
         """页面加载完成时注入JS变量"""
         if ok:
-            self._inject_js_variables()
+            # 延迟注入，确保DOM已经准备好
+            QTimer.singleShot(100, self._inject_js_variables)
     
     def _inject_js_variables(self):
-        """注入JS变量到页面"""
+        """注入JS变量到页面（在页面加载后再次确认和触发事件）"""
+        if not self.web_view or not self.web_view.url().isValid():
+            return
+        
+        # 重新获取最新主题
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            if preference == "auto":
+                self._theme = ThemeManager.detect_system_theme()
+            else:
+                self._theme = preference
+        except Exception:
+            pass
+        
         # 转义特殊字符，防止JS注入攻击
         import json
         token_escaped = json.dumps(self._session_token)
@@ -227,12 +311,22 @@ class HelpCenterWindow(QMainWindow):
         
         js_code = f"""
         (function() {{
-            // 注入变量到window对象
+            // 确保变量已设置（UserScript 可能已经设置了，这里再次确认）
             window.appToken = {token_escaped};
             window.appTheme = {theme_escaped};
             window.appVersion = {version_escaped};
             
-            console.log('App variables injected:', {{
+            // 触发主题变更事件，让页面可以响应主题变化
+            if (window.onAppThemeChanged) {{
+                window.onAppThemeChanged({theme_escaped});
+            }}
+            
+            // 也触发自定义事件
+            if (typeof window.dispatchEvent !== 'undefined') {{
+                window.dispatchEvent(new CustomEvent('appThemeChanged', {{ detail: {{ theme: {theme_escaped} }} }}));
+            }}
+            
+            console.log('[PostLoad] HelpCenter variables confirmed:', {{
                 token: window.appToken ? '***' : '',
                 theme: window.appTheme,
                 version: window.appVersion
@@ -241,5 +335,120 @@ class HelpCenterWindow(QMainWindow):
         """
         
         # 执行JS代码
+        self.web_view.page().runJavaScript(js_code)
+        
+        # 延迟后再次注入以确保成功（如果第一次注入时页面还没完全准备好）
+        QTimer.singleShot(300, lambda: self._retry_inject_js_variables())
+    
+    def _retry_inject_js_variables(self):
+        """重试注入（确保主题正确设置）"""
+        if not self.web_view or not self.web_view.url().isValid():
+            return
+        
+        # 重新获取最新主题
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            if preference == "auto":
+                self._theme = ThemeManager.detect_system_theme()
+            else:
+                self._theme = preference
+        except Exception:
+            pass
+        
+        # 转义特殊字符
+        import json
+        theme_escaped = json.dumps(self._theme)
+        
+        # 只注入主题相关的变量，确保主题正确
+        js_code = f"""
+        (function() {{
+            window.appTheme = {theme_escaped};
+            
+            // 触发主题变更事件
+            if (window.onAppThemeChanged) {{
+                window.onAppThemeChanged({theme_escaped});
+            }}
+            
+            if (typeof window.dispatchEvent !== 'undefined') {{
+                window.dispatchEvent(new CustomEvent('appThemeChanged', {{ detail: {{ theme: {theme_escaped} }} }}));
+            }}
+        }})();
+        """
+        
+        self.web_view.page().runJavaScript(js_code)
+    
+    def _update_webview_background(self):
+        """更新 webview 背景色以适配主题"""
+        if not WEBENGINE_AVAILABLE or not self.web_view:
+            return
+        
+        # 使用当前保存的主题
+        theme = self._theme
+        
+        # 设置页面背景色
+        page = self.web_view.page()
+        if theme == "dark":
+            # 深色主题：使用深色背景
+            page.setBackgroundColor(QColor(32, 33, 36))  # #202124
+            self.web_view.setStyleSheet("background-color: #202124;")
+        else:
+            # 浅色主题：使用浅色背景
+            page.setBackgroundColor(QColor(247, 249, 252))  # #F7F9FC
+            self.web_view.setStyleSheet("background-color: #F7F9FC;")
+    
+    def update_theme(self):
+        """更新 webview 主题（供外部调用）"""
+        if not WEBENGINE_AVAILABLE or not self.web_view:
+            return
+        
+        # 重新获取最新主题
+        try:
+            cfg = ConfigManager.load()
+            preference = cfg.get("theme", "auto")
+            if preference == "auto":
+                self._theme = ThemeManager.detect_system_theme()
+            else:
+                self._theme = preference
+        except Exception:
+            pass
+        
+        # 更新背景色
+        self._update_webview_background()
+        
+        # 更新 UserScript（下次加载时会使用新主题）
+        self._setup_user_script()
+        
+        # 如果页面已加载，立即更新主题
+        if self.web_view.url().isValid():
+            # 转义特殊字符
+            import json
+            theme_escaped = json.dumps(self._theme)
+            
+            # 立即更新主题变量并触发事件
+            js_code = f"""
+            (function() {{
+                // 更新变量
+                window.appTheme = {theme_escaped};
+                
+                console.log('[UpdateTheme] HelpCenter theme updated:', {{
+                    appTheme: window.appTheme
+                }});
+                
+                // 触发主题变更事件（延迟一点确保变量已更新）
+                setTimeout(() => {{
+                    if (window.onAppThemeChanged) {{
+                        window.onAppThemeChanged({theme_escaped});
+                    }}
+                    
+                    if (typeof window.dispatchEvent !== 'undefined') {{
+                        window.dispatchEvent(new CustomEvent('appThemeChanged', {{ detail: {{ theme: {theme_escaped} }} }}));
+                    }}
+                    
+                    console.log('[UpdateTheme] HelpCenter events triggered:', {theme_escaped});
+                }}, 50);
+            }})();
+            """
+            
         self.web_view.page().runJavaScript(js_code)
 
