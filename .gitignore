@@ -36,6 +36,10 @@ backups/
 uploads/
 *.csv
 
+# 报告文件
+for_report/
+report/
+
 # AI 相关
 prompts/
 AI_Input_fields.json
@@ -48,42 +52,51 @@ www/
 # 项目资料
 项目背景资料/
 
+# 资源文件夹（不包含打包需要的资源）
+assets/
+
 # 其他后端文件
 friendlywrt_py_script.py
 __init__.py
-NOTIFICATION_BACKGROUND_SERVICE_README.md
-NOTIFICATION_SYSTEM_GUIDE.md
-DEPENDENCIES.md
-readme.md
+test.py
+
+# 所有 Markdown 文档（只保留客户端打包相关文档）
+*.md
+!UI_CLIENT_README.md
+!ADMIN_UI_CLIENT_README.md
 
 # ==================== 排除 scripts 中非打包相关的文件 ====================
 
-# 只保留打包相关的脚本，排除其他
+# 只保留打包相关的脚本，排除其他所有非打包相关文件
+# 打包相关文件（保留）：
+# - build_client.py
+# - build_client.sh
+# - sign_and_notarize_from_github.py
+# - inno_setup_template.iss
+# - notification_background_service.py
+# - compare_builds.py
+# - compare_builds_comprehensive.py
+# - html_to_png.py
+# - convert_icons.py
+# - patch_incomplete_reviews.py（如果用于打包）
+
+# 排除所有非打包相关的文件
 scripts/backup_database*.py
 scripts/backup_database*.sh
 scripts/clear_client_config.sh
 scripts/clear_user_data*.sql
 scripts/clear_user_data*.md
-scripts/convert_icons.py
-scripts/deployment_guide.md
 scripts/fix_multiple_users.sh
-scripts/GOOGLE_OAUTH_CONFIG.md
-scripts/health_check*.sh
-scripts/health_check*.md
-scripts/how_to_run.md
 scripts/nginx_*.conf
 scripts/nginx_*.site
-# 允许 notification_background_service.py（打包需要）
-scripts/notification_*.py
-!scripts/notification_background_service.py
-scripts/notification_*.sh
-scripts/notification_*.ps1
+scripts/notification_service_macos.sh
+scripts/notification_service_windows.ps1
 scripts/run_daily_pipeline.sh
 scripts/ubuntu_systemd_*.service
 scripts/ubuntu_systemd_*.timer
 scripts/verify_timers.sh
-scripts/README.md
-scripts/BACKUP_DATABASE_README.md
+scripts/__pycache__/
+scripts/*.md
 
 # ==================== 排除敏感配置和证书 ====================
 
@@ -95,6 +108,7 @@ admin_ui_client/config.json
 
 # 证书和密钥
 apple-cer/
+apple-p12/
 *.cer
 *.crt
 *.csr
@@ -144,6 +158,7 @@ admin_ui_client/**/__pycache__/
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 *~
@@ -160,6 +175,7 @@ Desktop.ini
 *.temp
 *.tar.gz
 *.zip
+.tmp/
 
 # 测试覆盖率
 .coverage

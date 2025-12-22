@@ -217,9 +217,9 @@ class MacGlobalHotkey(QObject):
                     try:
                         # 再次检查对象是否仍然有效
                         if hasattr(self, '_registered') and self._registered:
-                        # 使用信号在主线程中执行回调
-                        # 信号会自动在主线程中触发，即使从后台线程发出
-                        self._hotkey_triggered.emit()
+                            # 使用信号在主线程中执行回调
+                            # 信号会自动在主线程中触发，即使从后台线程发出
+                            self._hotkey_triggered.emit()
                     except Exception:
                         pass
             
@@ -249,11 +249,11 @@ class MacGlobalHotkey(QObject):
                     break
                 
                 try:
-                Quartz.CFRunLoopRunInMode(
-                    Quartz.kCFRunLoopDefaultMode,
-                    0.1,  # 超时时间
-                    False  # returnAfterSourceHandled
-                )
+                    Quartz.CFRunLoopRunInMode(
+                        Quartz.kCFRunLoopDefaultMode,
+                        0.1,  # 超时时间
+                        False  # returnAfterSourceHandled
+                    )
                 except Exception:
                     # 如果运行循环出错，退出
                     break

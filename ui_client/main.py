@@ -6,6 +6,13 @@ import logging
 import faulthandler
 from pathlib import Path
 from datetime import datetime, timedelta
+
+# 确保应用目录在 Python 路径中，以便正确导入 utils 和 windows 模块
+# 这对于开发环境和打包后的应用都很重要
+_app_dir = Path(__file__).parent.resolve()
+if str(_app_dir) not in sys.path:
+    sys.path.insert(0, str(_app_dir))
+
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType, QLoggingCategory, QLockFile, QSharedMemory
