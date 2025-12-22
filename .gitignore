@@ -74,11 +74,7 @@ test.py
 # - sign_and_notarize_from_github.py
 # - inno_setup_template.iss
 # - notification_background_service.py
-# - compare_builds.py
-# - compare_builds_comprehensive.py
-# - html_to_png.py
 # - convert_icons.py
-# - patch_incomplete_reviews.py（如果用于打包）
 
 # 排除所有非打包相关的文件
 scripts/backup_database*.py
@@ -86,11 +82,16 @@ scripts/backup_database*.sh
 scripts/clear_client_config.sh
 scripts/clear_user_data*.sql
 scripts/clear_user_data*.md
+scripts/compare_builds*.py
 scripts/fix_multiple_users.sh
+scripts/health_check*.sh
+scripts/health_check*.md
+scripts/html_to_png.py
 scripts/nginx_*.conf
 scripts/nginx_*.site
 scripts/notification_service_macos.sh
 scripts/notification_service_windows.ps1
+scripts/patch_incomplete_reviews.py
 scripts/run_daily_pipeline.sh
 scripts/ubuntu_systemd_*.service
 scripts/ubuntu_systemd_*.timer
