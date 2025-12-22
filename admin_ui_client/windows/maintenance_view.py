@@ -5423,10 +5423,19 @@ class PackageTab(QWidget):
         self._upload_tabs = {}  # 存储上传任务TAB：{tab_key: {"widget": QTextEdit, "full_name": str}}
         self._download_progress_label = None  # 右上角下载进度显示标签
 
-        # 获取项目根目录
-        current_file = Path(__file__).resolve()
-        project_root = current_file.parent.parent.parent
-        self._project_root = str(project_root.resolve())
+        # 获取项目根目录：优先使用配置的操作目录，否则使用自动检测的项目根目录
+        cfg = ConfigManager.load()
+        working_directory = cfg.get("working_directory", "").strip()
+        
+        if working_directory and Path(working_directory).exists() and Path(working_directory).is_dir():
+            # 使用配置的操作目录
+            self._project_root = str(Path(working_directory).resolve())
+        else:
+            # 使用自动检测的项目根目录
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parent.parent.parent
+            self._project_root = str(project_root.resolve())
+        
         self._sign_script_default = str(Path(self._project_root) / "scripts" / "sign_and_notarize_from_github.py")
         self._sign_script_path = self._sign_script_default
         
@@ -5443,11 +5452,8 @@ class PackageTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
         
-        # 获取项目根目录
-        current_file = Path(__file__).resolve()
-        # admin_ui_client/windows/maintenance_view.py -> admin_ui_client -> 项目根目录
-        project_root = current_file.parent.parent.parent
-        self._project_root = str(project_root.resolve())
+        # 注意：项目根目录已在 __init__ 中设置，这里不再重复设置
+        # 如果需要刷新操作目录（例如在设置中修改后），可以在这里重新检查配置
         
         # 头部：显示本地目录地址和 git push 按钮
         header_layout = QHBoxLayout()
@@ -7408,11 +7414,24 @@ class PackageTab(QWidget):
         # 检查是否在 Git 仓库中
         git_dir = os.path.join(self._project_root, ".git")
         if not os.path.exists(git_dir):
-            QMessageBox.warning(
-                self,
-                "错误",
-                f"当前目录不是 Git 仓库：\n{self._project_root}"
-            )
+            cfg = ConfigManager.load()
+            working_directory = cfg.get("working_directory", "").strip()
+            if not working_directory:
+                # 如果未配置操作目录，提示用户去设置中配置
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    f"当前目录不是 Git 仓库：\n{self._project_root}\n\n"
+                    "如果应用安装在应用程序目录，请在 设置 → 其他设置 中配置操作目录。"
+                )
+            else:
+                # 如果已配置但目录不正确，提示用户检查配置
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    f"当前目录不是 Git 仓库：\n{self._project_root}\n\n"
+                    "请检查 设置 → 其他设置 中的操作目录配置是否正确。"
+                )
             return
         
         # 清空输出
@@ -7487,11 +7506,24 @@ class PackageTab(QWidget):
         # 检查是否在 Git 仓库中
         git_dir = os.path.join(self._project_root, ".git")
         if not os.path.exists(git_dir):
-            QMessageBox.warning(
-                self,
-                "错误",
-                f"当前目录不是 Git 仓库：\n{self._project_root}"
-            )
+            cfg = ConfigManager.load()
+            working_directory = cfg.get("working_directory", "").strip()
+            if not working_directory:
+                # 如果未配置操作目录，提示用户去设置中配置
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    f"当前目录不是 Git 仓库：\n{self._project_root}\n\n"
+                    "如果应用安装在应用程序目录，请在 设置 → 其他设置 中配置操作目录。"
+                )
+            else:
+                # 如果已配置但目录不正确，提示用户检查配置
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    f"当前目录不是 Git 仓库：\n{self._project_root}\n\n"
+                    "请检查 设置 → 其他设置 中的操作目录配置是否正确。"
+                )
             return
         
         # 清空输出

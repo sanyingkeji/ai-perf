@@ -56,6 +56,8 @@ DEFAULT_CONFIG = {
     "delicloud_api_url": "https://v2-api.delicloud.com",
     "delicloud_app_key": "",
     "delicloud_app_secret": "",
+    # 操作目录（用于日常运维中的 Git 操作等，如果应用安装在应用程序目录，需要手动指定项目根目录）
+    "working_directory": "",
     # 配置架构版本，用于迁移
     "config_version": CURRENT_CONFIG_VERSION,
 }
@@ -110,6 +112,8 @@ USER_DATA_FIELDS = {
     "delicloud_api_url",
     "delicloud_app_key",
     "delicloud_app_secret",
+    # 操作目录
+    "working_directory",
 }
 
 # 系统自动管理字段：这些字段会自动从模板配置同步更新

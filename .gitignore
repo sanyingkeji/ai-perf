@@ -60,10 +60,8 @@ friendlywrt_py_script.py
 __init__.py
 test.py
 
-# 所有 Markdown 文档（只保留客户端打包相关文档）
+# 所有 Markdown 文档
 *.md
-!UI_CLIENT_README.md
-!ADMIN_UI_CLIENT_README.md
 
 # ==================== 排除 scripts 中非打包相关的文件 ====================
 
@@ -74,6 +72,9 @@ test.py
 # - sign_and_notarize_from_github.py
 # - inno_setup_template.iss
 # - notification_background_service.py
+
+# 排除图标转换脚本（不是打包流程必需）
+scripts/convert_icons.py
 # - convert_icons.py
 
 # 排除所有非打包相关的文件

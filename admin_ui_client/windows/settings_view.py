@@ -622,7 +622,49 @@ class SettingsView(QWidget):
         log_layout.addLayout(export_row)
 
         other_layout.addWidget(log_frame)
-
+        
+        # --- 操作目录配置 ---
+        working_dir_frame = QFrame()
+        working_dir_layout = QVBoxLayout(working_dir_frame)
+        working_dir_layout.setContentsMargins(0, 0, 0, 0)
+        working_dir_layout.setSpacing(4)
+        
+        working_dir_label = QLabel("操作目录")
+        working_dir_label_font = QFont()
+        working_dir_label_font.setPointSize(12)
+        working_dir_label_font.setBold(True)
+        working_dir_label.setFont(working_dir_label_font)
+        working_dir_layout.addWidget(working_dir_label)
+        
+        working_dir_desc = QLabel("指定项目根目录（用于日常运维中的 Git 操作等）。如果应用安装在应用程序目录，需要手动指定项目根目录。")
+        working_dir_desc.setFont(QFont("Arial", 9))
+        working_dir_desc.setStyleSheet("color: #666;")
+        working_dir_desc.setWordWrap(True)
+        working_dir_layout.addWidget(working_dir_desc)
+        
+        working_dir_input_row = QHBoxLayout()
+        working_dir_input_label = QLabel("操作目录：")
+        self.working_dir_edit = QLineEdit()
+        self.working_dir_edit.setPlaceholderText("留空则使用自动检测的项目根目录")
+        working_dir_path = self.cfg.get("working_directory", "")
+        self.working_dir_edit.setText(working_dir_path)
+        self._working_dir_save_timer = QTimer()
+        self._working_dir_save_timer.setSingleShot(True)
+        self._working_dir_save_timer.timeout.connect(self._auto_save_working_directory)
+        self.working_dir_edit.textChanged.connect(lambda: self._working_dir_save_timer.start(500))
+        self.working_dir_edit.editingFinished.connect(self._on_working_directory_changed)
+        self.working_dir_edit.returnPressed.connect(self._on_working_directory_changed)
+        working_dir_input_row.addWidget(working_dir_input_label)
+        working_dir_input_row.addWidget(self.working_dir_edit, 1)
+        
+        working_dir_browse_btn = QPushButton("选择目录")
+        working_dir_browse_btn.setFixedWidth(100)
+        working_dir_browse_btn.clicked.connect(self._on_browse_working_directory)
+        working_dir_input_row.addWidget(working_dir_browse_btn)
+        working_dir_layout.addLayout(working_dir_input_row)
+        
+        other_layout.addWidget(working_dir_frame)
+        
         # --- 缓存管理 ---
         cache_frame = QFrame()
         cache_layout = QVBoxLayout(cache_frame)
@@ -1262,6 +1304,59 @@ class SettingsView(QWidget):
         if self._openai_session_key_save_timer.isActive():
             self._openai_session_key_save_timer.stop()
         self._auto_save_openai_session_key()
+    
+    # 操作目录配置保存方法
+    def _auto_save_working_directory(self):
+        """自动保存操作目录"""
+        if self._is_initializing:
+            return
+        try:
+            self.cfg = ConfigManager.load()
+        except Exception:
+            self.cfg = {}
+        working_dir = self.working_dir_edit.text().strip()
+        # 验证目录是否存在（如果非空）
+        if working_dir:
+            working_dir_path = Path(working_dir)
+            if not working_dir_path.exists() or not working_dir_path.is_dir():
+                Toast.show_message(self, f"目录不存在：{working_dir}")
+                return
+        self.cfg["working_directory"] = working_dir
+        ConfigManager.save(self.cfg)
+        Toast.show_message(self, "操作目录已保存")
+    
+    def _on_working_directory_changed(self):
+        """操作目录改变时（失去焦点或按回车）立即保存"""
+        if self._working_dir_save_timer.isActive():
+            self._working_dir_save_timer.stop()
+        self._auto_save_working_directory()
+    
+    def _on_browse_working_directory(self):
+        """选择操作目录"""
+        current_dir = self.working_dir_edit.text().strip()
+        if current_dir and Path(current_dir).exists():
+            start_dir = current_dir
+        else:
+            # 尝试使用默认的项目根目录
+            try:
+                current_file = Path(__file__).resolve()
+                default_root = current_file.parent.parent.parent
+                if default_root.exists():
+                    start_dir = str(default_root)
+                else:
+                    start_dir = str(Path.home())
+            except Exception:
+                start_dir = str(Path.home())
+        
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            "选择操作目录",
+            start_dir,
+            QFileDialog.Option.ShowDirsOnly
+        )
+        if dir_path:
+            self.working_dir_edit.setText(dir_path)
+            self._auto_save_working_directory()
     
     def _auto_save_theme(self, theme: str):
         """自动保存主题设置并立即应用"""
