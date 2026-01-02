@@ -956,8 +956,10 @@ class TodayView(QWidget):
             self.rank_label.setText("排名：未锁定（实时排名）")
         
         # 显示排名变化（样式对齐排行榜）
-        if rank_change is not None and rank_change != 0:
-            self.rank_change_label.show()
+        # - 有变化：↑/↓
+        # - 无变化/不可用：显示灰色 “—”（避免看起来像没渲染）
+        self.rank_change_label.show()
+        if isinstance(rank_change, int) and rank_change != 0:
             if rank_change > 0:
                 # 上升：绿色
                 self.rank_change_label.setText(f"↑ {rank_change}")
@@ -971,8 +973,10 @@ class TodayView(QWidget):
                     "color: #dc3545; font-weight: bold; font-size: 11pt; background-color: transparent;"
                 )
         else:
-            # 无变化或数据不可用，隐藏标签
-            self.rank_change_label.hide()
+            self.rank_change_label.setText("—")
+            self.rank_change_label.setStyleSheet(
+                "color: #999; font-weight: bold; font-size: 11pt; background-color: transparent;"
+            )
 
         # 月度排名
         monthly_rank = score.get("monthly_rank")

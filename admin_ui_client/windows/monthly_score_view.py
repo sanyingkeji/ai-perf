@@ -15,7 +15,8 @@ import json
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QPushButton, QHeaderView,
-    QLineEdit, QAbstractItemView, QMessageBox, QFileDialog
+    QLineEdit, QAbstractItemView, QMessageBox, QFileDialog,
+    QTabWidget, QSpinBox
 )
 from PySide6.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot, QDate
 from PySide6.QtGui import QFont
@@ -187,6 +188,67 @@ class _MonthlyScoreWorker(QRunnable):
             self.signals.error.emit(f"加载月度评分失败：{e}")
 
 
+class _ProgressStarWorkerSignals(QObject):
+    finished = Signal(dict)  # ProgressStarListResponse
+    error = Signal(str)
+
+
+class _ProgressStarWorker(QRunnable):
+    """后台加载进步之星候选列表"""
+
+    def __init__(
+        self,
+        month: Optional[str] = None,
+        *,
+        limit: int = 50,
+        min_workdays: int = 10,
+        exclude_top_n: int = 3,
+    ):
+        super().__init__()
+        self._month = month
+        self._limit = limit
+        self._min_workdays = min_workdays
+        self._exclude_top_n = exclude_top_n
+        self.signals = _ProgressStarWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        if not AdminApiClient.is_logged_in():
+            self.signals.error.emit("需要先登录")
+            return
+
+        try:
+            client = AdminApiClient.from_config()
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+            return
+        except Exception as e:
+            self.signals.error.emit(f"初始化客户端失败：{e}")
+            return
+
+        try:
+            resp = client.get_progress_star(
+                month=self._month,
+                limit=int(self._limit),
+                min_workdays=int(self._min_workdays),
+                exclude_top_n=int(self._exclude_top_n),
+            )
+            if not isinstance(resp, dict):
+                self.signals.error.emit("API返回格式错误")
+                return
+
+            if resp.get("status") != "success":
+                msg = resp.get("message") or "获取进步之星列表失败"
+                self.signals.error.emit(str(msg))
+                return
+
+            self.signals.finished.emit(resp)
+        except (ApiError, AuthError) as e:
+            self.signals.error.emit(str(e))
+        except Exception as e:
+            self.signals.error.emit(f"加载进步之星列表失败：{e}")
+
+
 class MonthlyScoreView(QWidget):
     def __init__(self):
         super().__init__()
@@ -211,15 +273,31 @@ class MonthlyScoreView(QWidget):
         self._load_employee_data()
     
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(12)
+
         # 标题
         title = QLabel("月度评分管理")
         title.setFont(QFont("Arial", 16, QFont.Bold))
-        layout.addWidget(title)
-        
+        root_layout.addWidget(title)
+
+        # Tab：月度综合榜 / 进步之星
+        self._tabs = QTabWidget()
+        self._tab_monthly = QWidget()
+        self._tab_progress_star = QWidget()
+        self._tabs.addTab(self._tab_monthly, "月度综合榜")
+        self._tabs.addTab(self._tab_progress_star, "进步之星")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        root_layout.addWidget(self._tabs, 1)
+
+        # ----------------------------------------------------------
+        # Tab 1：月度综合榜（原页面内容）
+        # ----------------------------------------------------------
+        layout = QVBoxLayout(self._tab_monthly)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
         # 筛选区域
         filter_layout = QHBoxLayout()
         
@@ -305,6 +383,79 @@ class MonthlyScoreView(QWidget):
         self._status_label.setAlignment(Qt.AlignCenter)
         self._status_label.setStyleSheet("color: #666; padding: 8px;")
         layout.addWidget(self._status_label)
+
+        # ----------------------------------------------------------
+        # Tab 2：进步之星（趋势型）候选列表
+        # ----------------------------------------------------------
+        ps_layout = QVBoxLayout(self._tab_progress_star)
+        ps_layout.setContentsMargins(0, 0, 0, 0)
+        ps_layout.setSpacing(12)
+
+        ps_filter_layout = QHBoxLayout()
+        ps_filter_layout.addWidget(QLabel("月份："))
+        self._ps_month_combo = QComboBox()
+        self._ps_month_combo.setEditable(False)
+        self._populate_ps_month_combo()
+        ps_filter_layout.addWidget(self._ps_month_combo)
+
+        ps_filter_layout.addWidget(QLabel("排除TopN："))
+        self._ps_exclude_top_n = QSpinBox()
+        self._ps_exclude_top_n.setRange(0, 50)
+        self._ps_exclude_top_n.setValue(3)
+        ps_filter_layout.addWidget(self._ps_exclude_top_n)
+
+        ps_filter_layout.addWidget(QLabel("最少工作日："))
+        self._ps_min_workdays = QSpinBox()
+        self._ps_min_workdays.setRange(1, 31)
+        self._ps_min_workdays.setValue(10)
+        ps_filter_layout.addWidget(self._ps_min_workdays)
+
+        ps_filter_layout.addWidget(QLabel("返回候选数："))
+        self._ps_limit = QSpinBox()
+        self._ps_limit.setRange(1, 500)
+        self._ps_limit.setValue(50)
+        ps_filter_layout.addWidget(self._ps_limit)
+
+        self._ps_refresh_btn = QPushButton("刷新")
+        self._ps_refresh_btn.clicked.connect(self._on_ps_refresh_clicked)
+        ps_filter_layout.addWidget(self._ps_refresh_btn)
+
+        ps_filter_layout.addStretch()
+        ps_layout.addLayout(ps_filter_layout)
+
+        self._ps_info_label = QLabel("")
+        self._ps_info_label.setStyleSheet("color: #666;")
+        ps_layout.addWidget(self._ps_info_label)
+
+        self._ps_table = QTableWidget()
+        self._ps_table.setColumnCount(12)
+        self._ps_table.setHorizontalHeaderLabels([
+            "排名", "员工ID", "姓名", "团队", "趋势分", "斜率(分/日)", "有效工作日",
+            "权重", "月初均值", "月末均值", "差值", "R²"
+        ])
+        self._ps_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._ps_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
+        ps_header = self._ps_table.horizontalHeader()
+        ps_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 排名
+        ps_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 员工ID
+        ps_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # 姓名
+        ps_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 团队
+        ps_header.setSectionResizeMode(4, QHeaderView.Stretch)           # 趋势分
+        ps_header.setSectionResizeMode(5, QHeaderView.Stretch)           # 斜率
+        ps_header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # 有效工作日
+        ps_header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # 权重
+        ps_header.setSectionResizeMode(8, QHeaderView.Stretch)           # 月初均值
+        ps_header.setSectionResizeMode(9, QHeaderView.Stretch)           # 月末均值
+        ps_header.setSectionResizeMode(10, QHeaderView.Stretch)          # 差值
+        ps_header.setSectionResizeMode(11, QHeaderView.ResizeToContents) # R²
+
+        ps_layout.addWidget(self._ps_table)
+
+        self._ps_status_label = QLabel("")
+        self._ps_status_label.setAlignment(Qt.AlignCenter)
+        self._ps_status_label.setStyleSheet("color: #666; padding: 8px;")
+        ps_layout.addWidget(self._ps_status_label)
     
     def _populate_month_combo(self):
         """填充月份下拉框（从2025-11到当前月份）"""
@@ -337,6 +488,38 @@ class MonthlyScoreView(QWidget):
         # 默认选中当前月份（最后一个）
         if self._month_combo.count() > 1:
             self._month_combo.setCurrentIndex(self._month_combo.count() - 1)
+
+    def _populate_ps_month_combo(self):
+        """填充“进步之星”月份下拉框（从2025-11到当前月份，不含“全部”）"""
+        self._ps_month_combo.clear()
+
+        start_year = 2025
+        start_month = 11
+
+        today = date.today()
+        current_year = today.year
+        current_month = today.month
+
+        year = start_year
+        month = start_month
+        while year < current_year or (year == current_year and month <= current_month):
+            month_str = f"{year}-{month:02d}"
+            display_str = f"{year}年{month:02d}月"
+            self._ps_month_combo.addItem(display_str, month_str)
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+
+        if self._ps_month_combo.count() > 0:
+            self._ps_month_combo.setCurrentIndex(self._ps_month_combo.count() - 1)
+
+    def _on_tab_changed(self, index: int):
+        """切换 Tab 时触发加载"""
+        # 0=月度综合榜，1=进步之星
+        if index == 1:
+            # 切到“进步之星”时自动加载一次
+            self._load_progress_star_with_current_filters()
     
     def _on_header_clicked(self, column: int):
         """列标题点击事件处理"""
@@ -427,6 +610,141 @@ class MonthlyScoreView(QWidget):
         """执行筛选"""
         # 使用当前排序设置加载数据
         self._load_data_with_current_filters()
+
+    # -----------------------------
+    # 进步之星（趋势型）Tab
+    # -----------------------------
+
+    def _on_ps_refresh_clicked(self):
+        """刷新进步之星列表"""
+        self._load_progress_star_with_current_filters()
+
+    def _load_progress_star_with_current_filters(self):
+        """加载进步之星候选列表（按当前筛选）"""
+        # 获取月份（YYYY-MM）
+        month = self._ps_month_combo.currentData()
+        if not month:
+            # 兜底：尝试从显示文本解析
+            month_text = self._ps_month_combo.currentText()
+            try:
+                year_str, month_str_part = month_text.replace("年", "-").replace("月", "").split("-")
+                month = f"{year_str}-{month_str_part}"
+            except Exception:
+                month = None
+
+        limit = int(self._ps_limit.value())
+        min_workdays = int(self._ps_min_workdays.value())
+        exclude_top_n = int(self._ps_exclude_top_n.value())
+
+        # 显示加载中
+        main_window = self.window()
+        if hasattr(main_window, "show_loading"):
+            main_window.show_loading("加载进步之星列表...")
+
+        self._ps_status_label.setText("加载中...")
+        self._ps_info_label.setText("")
+
+        worker = _ProgressStarWorker(
+            month=month,
+            limit=limit,
+            min_workdays=min_workdays,
+            exclude_top_n=exclude_top_n,
+        )
+        worker.signals.finished.connect(self._on_ps_data_loaded)
+        worker.signals.error.connect(self._on_ps_error)
+        self._thread_pool.start(worker)
+
+    def _on_ps_data_loaded(self, resp: Dict[str, Any]):
+        """进步之星列表加载完成"""
+        main_window = self.window()
+        if hasattr(main_window, "hide_loading"):
+            main_window.hide_loading()
+
+        ps_status = resp.get("progress_star_status") or ""
+        month_str = resp.get("month") or (self._ps_month_combo.currentData() or "")
+        excluded = resp.get("excluded_user_ids") or []
+        excluded_count = len(excluded) if isinstance(excluded, list) else 0
+
+        # 顶部说明
+        extra = f"排除月度综合榜TopN：{self._ps_exclude_top_n.value()}（命中 {excluded_count} 人）"
+        self._ps_info_label.setText(f"月份：{month_str} | 进步之星状态：{ps_status} | {extra}")
+
+        items = resp.get("items", [])
+        winner_user_id = resp.get("winner_user_id")
+
+        if not isinstance(items, list):
+            items = []
+
+        self._apply_ps_rows_to_table(items, winner_user_id=winner_user_id)
+
+        if len(items) == 0:
+            msg = resp.get("message") or "暂无数据"
+            self._ps_status_label.setText(str(msg))
+        else:
+            self._ps_status_label.setText(f"共 {len(items)} 条记录")
+
+    def _apply_ps_rows_to_table(self, items: List[Dict[str, Any]], winner_user_id: Optional[str] = None):
+        """将进步之星候选列表应用到表格"""
+        self._ps_table.setRowCount(0)
+        self._ps_table.setRowCount(len(items))
+
+        for row_idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+
+            rank = int(item.get("rank") or (row_idx + 1))
+            user_id = str(item.get("user_id") or "")
+            name = item.get("name") or ""
+            team_name = self._user_team_map.get(user_id, "") or (item.get("team_name") or "")
+
+            trend_score = float(item.get("trend_score") or 0.0)
+            slope_per_day = float(item.get("slope_per_day") or 0.0)
+            workday_count = int(item.get("workday_count") or 0)
+            workday_weight = float(item.get("workday_weight") or 0.0)
+            head_avg = float(item.get("head_avg") or 0.0)
+            tail_avg = float(item.get("tail_avg") or 0.0)
+            delta_tail_head = float(item.get("delta_tail_head") or 0.0)
+            r2 = float(item.get("r2") or 0.0)
+
+            # 姓名加奖牌：冠军用🥇，第2/3用🥈🥉
+            medal = ""
+            if winner_user_id and str(winner_user_id) == user_id:
+                medal = "🥇 "
+            elif rank == 1:
+                medal = "🥇 "
+            elif rank == 2:
+                medal = "🥈 "
+            elif rank == 3:
+                medal = "🥉 "
+            name_text = f"{medal}{name}" if name else medal.strip()
+
+            self._ps_table.setItem(row_idx, 0, QTableWidgetItem(str(rank)))
+            self._ps_table.setItem(row_idx, 1, QTableWidgetItem(user_id))
+            self._ps_table.setItem(row_idx, 2, QTableWidgetItem(name_text))
+            self._ps_table.setItem(row_idx, 3, QTableWidgetItem(team_name))
+
+            def _set_num(col: int, text: str):
+                it = QTableWidgetItem(text)
+                it.setTextAlignment(Qt.AlignCenter)
+                self._ps_table.setItem(row_idx, col, it)
+
+            _set_num(4, f"{trend_score:.6f}")
+            _set_num(5, f"{slope_per_day:.4f}")
+            _set_num(6, str(workday_count))
+            _set_num(7, f"{workday_weight:.3f}")
+            _set_num(8, f"{head_avg:.2f}")
+            _set_num(9, f"{tail_avg:.2f}")
+            _set_num(10, f"{delta_tail_head:.2f}")
+            _set_num(11, f"{r2:.3f}")
+
+    def _on_ps_error(self, error: str):
+        """进步之星列表加载失败"""
+        main_window = self.window()
+        if hasattr(main_window, "hide_loading"):
+            main_window.hide_loading()
+
+        self._ps_status_label.setText(f"加载失败：{error}")
+        handle_api_error(self, Exception(error), "加载失败")
     
     def _update_lock_rank_btn_text(self):
         """更新锁定排名按钮的文本"""
@@ -459,7 +777,14 @@ class MonthlyScoreView(QWidget):
     
     def reload_from_api(self):
         """从API重新加载数据（供主窗口调用）"""
-        self._on_filter_clicked()
+        try:
+            current_tab = self._tabs.currentIndex()
+        except Exception:
+            current_tab = 0
+        if current_tab == 1:
+            self._load_progress_star_with_current_filters()
+        else:
+            self._on_filter_clicked()
     
     def _load_employee_data(self):
         """加载员工数据以获取团队信息（带缓存）"""
@@ -555,6 +880,8 @@ class MonthlyScoreView(QWidget):
         # 如果表格已经有数据，需要更新团队列
         if self._table.rowCount() > 0:
             self._update_team_column()
+        if getattr(self, "_ps_table", None) is not None and self._ps_table.rowCount() > 0:
+            self._update_ps_team_column()
     
     def _update_team_column(self):
         """更新表格中的团队列（当员工数据加载完成后调用）"""
@@ -572,6 +899,23 @@ class MonthlyScoreView(QWidget):
                 else:
                     # 如果团队列还没有item，创建一个
                     self._table.setItem(row, 3, QTableWidgetItem(team_name))
+
+    def _update_ps_team_column(self):
+        """更新“进步之星”表格中的团队列（当员工数据加载完成后调用）"""
+        for row in range(self._ps_table.rowCount()):
+            # 员工ID在第1列（索引1），团队在第3列（索引3）
+            user_id_item = self._ps_table.item(row, 1)
+            if not user_id_item:
+                continue
+            user_id = user_id_item.text()
+            team_name = self._user_team_map.get(user_id, "")
+            team_item = self._ps_table.item(row, 3)
+            if team_item:
+                # 只在有映射值时覆盖，避免把 API 自带 team_name 覆盖成空
+                if team_name:
+                    team_item.setText(team_name)
+            else:
+                self._ps_table.setItem(row, 3, QTableWidgetItem(team_name))
     
     def _on_data_loaded(self, items: List[Dict], total_count: int):
         """数据加载完成"""

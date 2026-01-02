@@ -5,10 +5,10 @@ import sys
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit,
     QCheckBox, QHBoxLayout, QPushButton, QFrame, QDialog, QTextEdit,
-    QScrollArea, QApplication, QSpinBox, QFileDialog, QButtonGroup
+    QScrollArea, QApplication, QSpinBox, QFileDialog, QButtonGroup, QCompleter
 )
 from PySide6.QtGui import QFont
-from PySide6.QtCore import QTimer, QRunnable, QThreadPool, QObject, Signal, Slot, Qt
+from PySide6.QtCore import QTimer, QRunnable, QThreadPool, QObject, Signal, Slot, Qt, QStringListModel, QEvent
 import platform
 import zipfile
 from pathlib import Path
@@ -20,6 +20,13 @@ from utils.api_client import ApiClient, ApiError, AuthError
 from widgets.toast import Toast
 from windows.update_dialog import UpdateDialog
 from datetime import date
+
+
+# 设置页：后端 API 地址下拉快捷项（始终展示在历史输入中）
+API_BASE_QUICK_OPTIONS = [
+    "https://api-perf.sanying.site",
+    "http://127.0.0.1:8880",
+]
 
 
 class SettingsView(QWidget):
@@ -112,8 +119,10 @@ class SettingsView(QWidget):
         api_row = QHBoxLayout()
         api_label = QLabel("后端 API 地址：")
         self.api_edit = QLineEdit()
-        self.api_edit.setPlaceholderText("例如：http://127.0.0.1:8000")
+        self.api_edit.setPlaceholderText("例如：http://127.0.0.1:8880")
         self.api_edit.setText(self.cfg.get("api_base", ""))
+        # API 地址输入：支持“鼠标点击输入框 -> 下拉历史输入/快捷选择”
+        self._setup_api_base_history_dropdown()
         # API 地址变更时自动保存（延迟500ms，避免频繁保存）
         self._api_save_timer = QTimer()
         self._api_save_timer.setSingleShot(True)
@@ -754,14 +763,135 @@ class SettingsView(QWidget):
         # 更新按钮显隐
         self._refresh_login_buttons()
 
-    def _auto_save_api_base(self):
-        """自动保存 API 地址"""
+    def _normalize_api_base(self, value: str) -> str:
+        """规范化 API Base：去空格、去结尾斜杠，避免拼接出双斜杠。"""
+        return (value or "").strip().rstrip("/")
+
+    def _safe_get_api_base_history(self, cfg: dict) -> list[str]:
+        """从配置中读取 api_base_history，保证返回 list[str]。"""
+        raw = cfg.get("api_base_history", [])
+        if not isinstance(raw, list):
+            return []
+        items: list[str] = []
+        for v in raw:
+            try:
+                s = str(v)
+            except Exception:
+                continue
+            s = self._normalize_api_base(s)
+            if s:
+                items.append(s)
+        return items
+
+    def _build_api_base_history(self, current_value: str, raw_history: Any) -> list[str]:
+        """构建写回配置的历史列表：当前值置顶，并确保内置快捷项存在。"""
+        existing: list[str] = []
+        if isinstance(raw_history, list):
+            for v in raw_history:
+                try:
+                    s = str(v)
+                except Exception:
+                    continue
+                s = self._normalize_api_base(s)
+                if s:
+                    existing.append(s)
+
+        candidates: list[str] = []
+        if current_value:
+            candidates.append(current_value)
+        candidates.extend(API_BASE_QUICK_OPTIONS)
+        candidates.extend(existing)
+
+        unique: list[str] = []
+        for item in candidates:
+            item = self._normalize_api_base(item)
+            if item and item not in unique:
+                unique.append(item)
+
+        # 控制长度，避免历史无限增长
+        return unique[:20]
+
+    def _build_api_base_suggestions(self) -> list[str]:
+        """构建 API 地址下拉建议：当前值 + 内置快捷项 + 历史输入（去重）。"""
+        cfg = {}
+        try:
+            cfg = self.cfg if isinstance(getattr(self, "cfg", None), dict) else ConfigManager.load()
+        except Exception:
+            cfg = {}
+
+        current_value = self._normalize_api_base(self.api_edit.text() if hasattr(self, "api_edit") else "")
+        history = self._safe_get_api_base_history(cfg)
+        return self._build_api_base_history(current_value=current_value, raw_history=history)
+
+    def _refresh_api_base_history_dropdown(self):
+        """刷新 API 地址输入框的下拉建议数据。"""
+        if not hasattr(self, "_api_base_history_model"):
+            return
+        self._api_base_history_model.setStringList(self._build_api_base_suggestions())
+
+    def _show_api_base_history_dropdown(self):
+        """显示 API 地址输入框的下拉建议（鼠标点击输入框触发）。"""
+        if not hasattr(self, "_api_base_completer"):
+            return
+        self._refresh_api_base_history_dropdown()
+        # 展示全部候选（不要求用户先输入前缀）
+        self._api_base_completer.setCompletionPrefix("")
+        self._api_base_completer.complete()
+
+    def _setup_api_base_history_dropdown(self):
+        """为 API 地址输入框配置“历史输入下拉”能力。"""
+        # 避免重复初始化
+        if hasattr(self, "_api_base_completer"):
+            return
+
+        self._api_base_history_model = QStringListModel(self)
+        self._api_base_completer = QCompleter(self._api_base_history_model, self.api_edit)
+        self._api_base_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._api_base_completer.setCompletionMode(QCompleter.PopupCompletion)
+        # 允许包含匹配，输入任意片段都能过滤
+        self._api_base_completer.setFilterMode(Qt.MatchContains)
+        self.api_edit.setCompleter(self._api_base_completer)
+
+        # 选择下拉项后，立即保存并刷新登录状态
+        self._api_base_completer.activated.connect(lambda _: self._on_api_base_changed())
+
+        # 鼠标点击输入框时弹出下拉
+        self.api_edit.installEventFilter(self)
+
+        self._refresh_api_base_history_dropdown()
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "api_edit", None) and event.type() == QEvent.MouseButtonPress:
+            # 仅左键点击时弹出，避免影响右键菜单
+            try:
+                if event.button() != Qt.LeftButton:
+                    return super().eventFilter(obj, event)
+            except Exception:
+                pass
+            # 让系统先处理点击（聚焦/光标定位），再弹出下拉
+            QTimer.singleShot(0, self._show_api_base_history_dropdown)
+        return super().eventFilter(obj, event)
+
+    def _auto_save_api_base(self, update_history: bool = False):
+        """自动保存 API 地址（update_history=True 时同时更新“历史输入”）"""
+        if self._is_initializing:
+            return
         try:
             self.cfg = ConfigManager.load()
         except Exception:
             self.cfg = {}
-        self.cfg["api_base"] = self.api_edit.text().strip()
+        api_base = self._normalize_api_base(self.api_edit.text())
+        self.cfg["api_base"] = api_base
+
+        # 仅在“确认/失焦/回车/选择下拉项”时写入历史，避免输入一半被记入历史
+        if update_history:
+            self.cfg["api_base_history"] = self._build_api_base_history(
+                current_value=api_base,
+                raw_history=self.cfg.get("api_base_history"),
+            )
         ConfigManager.save(self.cfg)
+        if update_history:
+            self._refresh_api_base_history_dropdown()
     
     def _on_api_base_changed(self):
         """API地址改变时（失去焦点或按回车）立即保存并刷新状态"""
@@ -770,7 +900,7 @@ class SettingsView(QWidget):
             self._api_save_timer.stop()
         
         # 立即保存
-        self._auto_save_api_base()
+        self._auto_save_api_base(update_history=True)
         
         # 刷新登录状态（因为API地址改变后，需要重新检查登录状态）
         self.refresh_login_status()

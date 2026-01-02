@@ -1,6 +1,6 @@
 [Setup]
 AppName={APP_NAME}
-AppVersion=1.1.2
+AppVersion=1.1.3
 AppPublisher=SanYing
 AppPublisherURL=https://perf.sanying.site
 DefaultDirName={autopf}\{APP_NAME}

@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
         self.nav.addItem("复评中心")
         # 图文趋势：放在复评中心后、排行榜前
         self.data_trend_item = QListWidgetItem(self.DEFAULT_DATA_TREND_TEXT)
-        self.data_trend_item.setHidden(True)  # 默认隐藏
+        self.data_trend_item.setHidden(False)  # 默认显示
         self.nav.addItem(self.data_trend_item)
         self.nav.addItem("排行榜")
         self.nav.addItem("消息")
@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
         self.DATA_TREND_PAGE_INDEX = self.stack.indexOf(self.data_trend_page)
         self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = False
-        # 启动时强制隐藏图文趋势入口，等待接口决定是否展示
+        # 启动时保持图文趋势入口默认展示（即使接口未下发链接也展示）
         self._ensure_data_trend_hidden_by_default()
 
         # 全局加载中遮罩
@@ -736,6 +736,12 @@ class MainWindow(QMainWindow):
                 elif not self._page_first_loaded.get(index, False):
                     self.data_trend_page.load_url(self.data_trend_url)
                 self._page_first_loaded[index] = True
+            else:
+                # 无链接：给用户一个轻提示，避免误以为卡住
+                try:
+                    Toast.show_message(self, "暂无数据趋势链接配置")
+                except Exception:
+                    pass
 
     # 窗口尺寸变化时，让遮罩自适应
     def resizeEvent(self, event):
@@ -1954,14 +1960,14 @@ class MainWindow(QMainWindow):
                 self.help_label.setVisible(False)
 
     def _ensure_data_trend_hidden_by_default(self):
-        """默认隐藏图文趋势入口，等待接口返回控制显示与文案"""
+        """启动时初始化图文趋势入口状态（默认显示，链接由接口下发后加载）"""
         if not hasattr(self, "data_trend_item"):
             return
         # 清空缓存的链接与加载状态，防止默认展示
         self.data_trend_url = None
         self._data_trend_last_loaded_url = None
         self.data_trend_item.setText(self.DEFAULT_DATA_TREND_TEXT)
-        self.data_trend_item.setHidden(True)
+        self.data_trend_item.setHidden(False)
         # 同步导航尺寸，避免因默认项展示导致的占位
         if hasattr(self, "_adjust_nav_height"):
             self._adjust_nav_height()
@@ -1973,31 +1979,56 @@ class MainWindow(QMainWindow):
         if self.DATA_TREND_PAGE_INDEX is None or not hasattr(self, "data_trend_item"):
             return
 
-        # 处理菜单文案
-        text = self.DEFAULT_DATA_TREND_TEXT
-        if isinstance(data_trend_text, str) and data_trend_text.strip():
-            text = data_trend_text.strip()
-        self.data_trend_item.setText(text)
-        if hasattr(self, "_recalculate_nav_width"):
-            self._recalculate_nav_width()
-
         # 校验链接格式，仅接受 http/https
-        url = ""
+        desired_url = ""
         if isinstance(data_trend_value, str):
             candidate = data_trend_value.strip()
             if candidate.lower().startswith(("http://", "https://")):
-                url = candidate
+                desired_url = candidate
 
-        if url:
-            # 只有当 URL 发生变化时才更新和加载
-            url_changed = (self.data_trend_url != url)
-            self.data_trend_url = url
-            self.data_trend_item.setHidden(False)
+        # 处理菜单文案
+        desired_text = self.DEFAULT_DATA_TREND_TEXT
+        if isinstance(data_trend_text, str) and data_trend_text.strip():
+            desired_text = data_trend_text.strip()
+
+        # 目标状态：菜单默认展示（不再随 url 隐藏）
+        desired_hidden = False
+
+        # ---- 闪动优化：如果文字/URL/显隐都没变化，则不做任何 UI 更新 ----
+        current_text = self.data_trend_item.text()
+        current_hidden = self.data_trend_item.isHidden()
+        current_url = self.data_trend_url or ""
+        current_loaded_url = self._data_trend_last_loaded_url or ""
+
+        # url 缺失时，我们会把 data_trend_url 置空并把 loaded_url 置空；
+        # 如果这些状态已经是“空”，就不要反复重置，避免重复刷新 UI。
+        if (
+            desired_text == current_text
+            and desired_hidden == current_hidden
+            and desired_url == current_url
+            and (desired_url != "" or current_loaded_url == "")
+        ):
+            return
+
+        # 仅在文案变化时 setText + 触发布局重新计算（避免频繁重绘）
+        if desired_text != current_text:
+            self.data_trend_item.setText(desired_text)
+            if hasattr(self, "_recalculate_nav_width"):
+                self._recalculate_nav_width()
+
+        # 仅在显隐状态变化时更新（默认应一直显示）
+        if desired_hidden != current_hidden:
+            self.data_trend_item.setHidden(desired_hidden)
             if hasattr(self, "_adjust_nav_height"):
                 self._adjust_nav_height()
 
+        if desired_url:
+            # 只有当 URL 发生变化时才更新和加载
+            url_changed = (self.data_trend_url != desired_url)
+            self.data_trend_url = desired_url
+
             # 如果 URL 没有变化，且已经加载过，则不重新加载（避免刷新）
-            if not url_changed and self._data_trend_last_loaded_url == url:
+            if not url_changed and self._data_trend_last_loaded_url == desired_url:
                 # URL 没有变化，不需要重新加载
                 return
             
@@ -2011,19 +2042,15 @@ class MainWindow(QMainWindow):
                 or not self._page_first_loaded.get(self.DATA_TREND_PAGE_INDEX, False)
             )
             if should_load_now:
-                self.data_trend_page.load_url(url)
-                self._data_trend_last_loaded_url = url
+                self.data_trend_page.load_url(desired_url)
+                self._data_trend_last_loaded_url = desired_url
                 self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = True
         else:
-            # 不合法或缺失：收起菜单、重置状态
-            self.data_trend_url = None
-            self._data_trend_last_loaded_url = None
-            self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = False
-            self.data_trend_item.setHidden(True)
-            if self.nav.currentRow() == self.DATA_TREND_PAGE_INDEX:
-                self.nav.setCurrentRow(0)
-            if hasattr(self, "_adjust_nav_height"):
-                self._adjust_nav_height()
+            # 不合法或缺失：保留菜单展示，仅重置状态
+            if self.data_trend_url is not None or self._data_trend_last_loaded_url is not None:
+                self.data_trend_url = None
+                self._data_trend_last_loaded_url = None
+                self._page_first_loaded[self.DATA_TREND_PAGE_INDEX] = False
     
     def _on_version_update_available(self, version_info: dict):
         """检测到新版本，显示升级弹窗（从轮询服务调用）"""
@@ -2317,13 +2344,18 @@ class MainWindow(QMainWindow):
         else:
             theme = preference
         
-        # macOS 特殊处理：尝试使用 PyObjC 设置 NSWindow 外观
+        # macOS 特殊处理：使用 PyObjC 设置 NSWindow 外观
+        # 需求：标题栏外观跟随“应用主题”，而不是被系统浅色/深色覆盖（即使系统浅色，应用深色也应为 DarkAqua）。
         if platform.system() == "Darwin":
             try:
                 # 尝试导入 PyObjC
                 try:
-                    from AppKit import NSAppearance, NSAppearanceNameDarkAqua, NSAppearanceNameAqua
-                    from PySide6.QtGui import QGuiApplication
+                    from AppKit import (
+                        NSAppearance,
+                        NSAppearanceNameDarkAqua,
+                        NSAppearanceNameAqua,
+                        NSApplication,
+                    )
                     
                     # 获取窗口的 QWindow
                     window_handle = self.windowHandle()
@@ -2356,12 +2388,21 @@ class MainWindow(QMainWindow):
                                     # 直接通过 winId 转换
                                     ns_window = objc.objc_object(c_void_p=c_void_p(int(win_id)))
                                 
+                                # 根据“应用主题”设置外观（强制）
+                                appearance = NSAppearance.appearanceNamed_(
+                                    NSAppearanceNameDarkAqua if theme == "dark" else NSAppearanceNameAqua
+                                )
+
+                                # 1) 先设置应用级 appearance（更强，能影响 tooltip/标题栏等原生组件）
+                                try:
+                                    app = NSApplication.sharedApplication()
+                                    if app and hasattr(app, "setAppearance_"):
+                                        app.setAppearance_(appearance)
+                                except Exception:
+                                    pass
+
+                                # 2) 再设置窗口级 appearance
                                 if ns_window and hasattr(ns_window, 'setAppearance_'):
-                                    # 根据主题设置外观
-                                    if theme == "dark":
-                                        appearance = NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
-                                    else:
-                                        appearance = NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
                                     ns_window.setAppearance_(appearance)
                             except (ImportError, AttributeError, Exception) as e:
                                 # PyObjC 不可用或方法失败，使用备用方法
@@ -2374,10 +2415,15 @@ class MainWindow(QMainWindow):
                                             # 尝试获取 NSWindow
                                             ns_window_ref = native.nativeResourceForWindow("NSWindow", window_handle)
                                             if ns_window_ref and hasattr(ns_window_ref, 'setAppearance_'):
-                                                if theme == "dark":
-                                                    appearance = NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
-                                                else:
-                                                    appearance = NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
+                                                appearance = NSAppearance.appearanceNamed_(
+                                                    NSAppearanceNameDarkAqua if theme == "dark" else NSAppearanceNameAqua
+                                                )
+                                                try:
+                                                    app = NSApplication.sharedApplication()
+                                                    if app and hasattr(app, "setAppearance_"):
+                                                        app.setAppearance_(appearance)
+                                                except Exception:
+                                                    pass
                                                 ns_window_ref.setAppearance_(appearance)
                                 except Exception as e2:
                                     print(f"[MainWindow] Native interface method failed: {e2}")
@@ -2386,6 +2432,37 @@ class MainWindow(QMainWindow):
                     print("[MainWindow] PyObjC not available, skipping macOS title bar theme")
             except Exception as e:
                 print(f"[MainWindow] macOS title bar theme setup error: {e}")
+
+        # Windows 特殊处理：使用 DWM Immersive Dark Mode 设置标题栏（跟随应用主题）
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                from ctypes import c_void_p, byref, sizeof, c_int
+
+                hwnd = int(self.winId()) if self.winId() else 0
+                if hwnd:
+                    use_dark = 1 if theme == "dark" else 0
+                    value = c_int(use_dark)
+                    dwmapi = ctypes.windll.dwmapi
+
+                    # Win10 1809/1903 开始：属性值可能是 19 或 20，优先试 20，失败再试 19
+                    DWMWA_USE_IMMERSIVE_DARK_MODE_20 = 20
+                    DWMWA_USE_IMMERSIVE_DARK_MODE_19 = 19
+                    res = dwmapi.DwmSetWindowAttribute(
+                        c_void_p(hwnd),
+                        DWMWA_USE_IMMERSIVE_DARK_MODE_20,
+                        byref(value),
+                        sizeof(value),
+                    )
+                    if res != 0:
+                        dwmapi.DwmSetWindowAttribute(
+                            c_void_p(hwnd),
+                            DWMWA_USE_IMMERSIVE_DARK_MODE_19,
+                            byref(value),
+                            sizeof(value),
+                        )
+            except Exception as e:
+                print(f"[MainWindow] Windows title bar theme setup error: {e}")
         
         # 通用方法：设置窗口背景色
         # 注意：在 macOS 上，这不会直接影响标题栏，但会让窗口内容区域与主题一致
@@ -2407,9 +2484,9 @@ class MainWindow(QMainWindow):
     def showEvent(self, event):
         """窗口显示时调用，用于设置 macOS 标题栏主题"""
         super().showEvent(event)
-        # macOS: 窗口显示后再次应用标题栏主题
+        # macOS/Windows: 窗口显示后再次应用标题栏主题（需要窗口句柄已就绪）
         import platform
-        if platform.system() == "Darwin":
+        if platform.system() in ("Darwin", "Windows"):
             from PySide6.QtCore import QTimer
             QTimer.singleShot(100, self._apply_window_title_bar_theme)
     

@@ -657,6 +657,28 @@ class AdminApiClient:
         if sort_order:
             params["sort_order"] = sort_order
         return self._get("/admin/api/monthly_scores", params=params if params else None)
+
+    def get_progress_star(
+        self,
+        month: Optional[str] = None,
+        *,
+        limit: int = 50,
+        min_workdays: int = 10,
+        exclude_top_n: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        GET /admin/api/progress_star
+        管理端：进步之星（趋势型）候选列表
+        返回格式：{"status":"success","progress_star_status":"success|...","items":[...],...}
+        """
+        params: Dict[str, Any] = {
+            "limit": int(limit),
+            "min_workdays": int(min_workdays),
+            "exclude_top_n": int(exclude_top_n),
+        }
+        if month:
+            params["month"] = month
+        return self._get("/admin/api/progress_star", params=params if params else None)
     
     def lock_month_rank(self, month: str) -> Dict[str, Any]:
         """

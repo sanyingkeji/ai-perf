@@ -1,0 +1,16 @@
+Collecting playwright
+  Downloading playwright-1.57.0-py3-none-macosx_11_0_universal2.whl.metadata (3.5 kB)
+Collecting pyee<14,>=13 (from playwright)
+  Downloading pyee-13.0.0-py3-none-any.whl.metadata (2.9 kB)
+Collecting greenlet<4.0.0,>=3.1.1 (from playwright)
+  Downloading greenlet-3.3.0-cp310-cp310-macosx_11_0_universal2.whl.metadata (4.1 kB)
+Requirement already satisfied: typing-extensions in /Users/liuwei/.pyenv/versions/3.10.4/lib/python3.10/site-packages (from pyee<14,>=13->playwright) (4.15.0)
+Downloading playwright-1.57.0-py3-none-macosx_11_0_universal2.whl (42.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.0/42.0 MB 4.6 MB/s  0:00:10
+
+Downloading greenlet-3.3.0-cp310-cp310-macosx_11_0_universal2.whl (273 kB)
+Downloading pyee-13.0.0-py3-none-any.whl (15 kB)
+Installing collected packages: pyee, greenlet, playwright
+
+
+Successfully installed greenlet-3.3.0 playwright-1.57.0 pyee-13.0.0

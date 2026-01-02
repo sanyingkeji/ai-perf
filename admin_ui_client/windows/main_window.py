@@ -1032,6 +1032,14 @@ class MainWindow(QMainWindow):
     def showEvent(self, event):
         """窗口显示事件：在窗口显示后立即请求菜单权限（如果已登录）"""
         super().showEvent(event)
+        # macOS/Windows：窗口显示后再应用一次标题栏主题（原生窗口句柄需已就绪）
+        try:
+            import platform
+            if platform.system() in ("Darwin", "Windows"):
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(100, self._apply_window_title_bar_theme)
+        except Exception:
+            pass
         # 如果已登录且还没有请求过菜单权限，立即请求（最优先）
         if not self._menu_permission_requested:
             is_logged_in = self._ensure_logged_in()
@@ -1230,6 +1238,7 @@ class MainWindow(QMainWindow):
     
     def _apply_window_title_bar_theme(self):
         """应用窗口标题栏主题样式"""
+        import platform
         from utils.theme_manager import ThemeManager
         from utils.config_manager import ConfigManager
         
@@ -1241,7 +1250,79 @@ class MainWindow(QMainWindow):
         else:
             theme = preference
         
-        # 根据主题设置窗口样式
+        # macOS：使用 PyObjC 强制标题栏外观跟随“应用主题”（不受系统浅色/深色影响）
+        if platform.system() == "Darwin":
+            try:
+                try:
+                    from AppKit import (
+                        NSAppearance,
+                        NSAppearanceNameDarkAqua,
+                        NSAppearanceNameAqua,
+                        NSApplication,
+                    )
+
+                    window_handle = self.windowHandle()
+                    if window_handle and window_handle.isVisible():
+                        win_id = window_handle.winId()
+                        if win_id:
+                            from ctypes import c_void_p
+                            import objc
+
+                            ns_window = None
+                            if hasattr(window_handle, "nativeInterface"):
+                                native = window_handle.nativeInterface()
+                                if native:
+                                    ns_window = native.nativeResourceForWindow("NSWindow", window_handle)
+                            if not ns_window:
+                                ns_window = objc.objc_object(c_void_p=c_void_p(int(win_id)))
+
+                            appearance = NSAppearance.appearanceNamed_(
+                                NSAppearanceNameDarkAqua if theme == "dark" else NSAppearanceNameAqua
+                            )
+                            try:
+                                app = NSApplication.sharedApplication()
+                                if app and hasattr(app, "setAppearance_"):
+                                    app.setAppearance_(appearance)
+                            except Exception:
+                                pass
+
+                            if ns_window and hasattr(ns_window, "setAppearance_"):
+                                ns_window.setAppearance_(appearance)
+                except ImportError:
+                    print("[MainWindow] PyObjC not available, skipping macOS title bar theme")
+            except Exception as e:
+                print(f"[MainWindow] macOS title bar theme setup error: {e}")
+
+        # Windows：使用 DWM Immersive Dark Mode 设置标题栏（跟随应用主题）
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                from ctypes import c_void_p, byref, sizeof, c_int
+
+                hwnd = int(self.winId()) if self.winId() else 0
+                if hwnd:
+                    use_dark = 1 if theme == "dark" else 0
+                    value = c_int(use_dark)
+                    dwmapi = ctypes.windll.dwmapi
+                    DWMWA_USE_IMMERSIVE_DARK_MODE_20 = 20
+                    DWMWA_USE_IMMERSIVE_DARK_MODE_19 = 19
+                    res = dwmapi.DwmSetWindowAttribute(
+                        c_void_p(hwnd),
+                        DWMWA_USE_IMMERSIVE_DARK_MODE_20,
+                        byref(value),
+                        sizeof(value),
+                    )
+                    if res != 0:
+                        dwmapi.DwmSetWindowAttribute(
+                            c_void_p(hwnd),
+                            DWMWA_USE_IMMERSIVE_DARK_MODE_19,
+                            byref(value),
+                            sizeof(value),
+                        )
+            except Exception as e:
+                print(f"[MainWindow] Windows title bar theme setup error: {e}")
+
+        # 根据主题设置窗口样式（内容区）
         if theme == "dark":
             # 深色主题：标题栏背景和文字颜色
             self.setStyleSheet("""

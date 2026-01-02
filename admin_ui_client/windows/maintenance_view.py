@@ -5586,19 +5586,23 @@ class PackageTab(QWidget):
         tab_bar.setExpanding(False)  # 禁用扩展，确保标签从左边开始排列
         tab_bar.setDocumentMode(False)  # 禁用文档模式，确保标签正常显示
         tab_bar.setMovable(False)  # 禁用标签移动
+        # 关键：不绘制 TabBar 的 base（很多 style 会在 tab 下方留“底座高度”，肉眼看就是空隙）
+        try:
+            tab_bar.setDrawBase(False)
+        except Exception:
+            pass
 
         # -----------------------------
-        # 修复 macOS 下 TAB 与输出区域之间的“间隙”（你观察到需要 -9px）
+        # 修复 TAB 与输出区域之间的“间隙”
         #
         # 现象：
-        # - 在 macOS（含 Intel + 14+）的某些 Qt style 下
-        #   QStyle.PM_TabBarBaseOverlap / PM_TabBarBaseHeight 可能返回 0
-        # - 但视觉上 TabBar 底部仍然会留出一段“底座高度”（常见 8~9px），导致 tab 与 pane 有缝
+        # - 在某些 Qt style 下（macOS/Windows 都可能）
+        #   TabBar 会有一段“底座高度”（常见 8~9px），导致 tab 与 pane 之间出现空隙
         #
         # 策略：
         # - 先用最小值消除 1px 边框缝
-        # - 再在布局完成后，通过 tabBar 的实际尺寸/sizeHint 估算底座高度，动态把 tab 的 margin-bottom 调整为 -N
-        #   （等价于你手动设置 margin-bottom:-9px，但不写死）
+        # - 再在控件真正显示后（尺寸就绪），通过 tabBar 的实际尺寸/sizeHint 估算底座高度
+        #   用 QTabWidget::pane 的 top 负偏移把 pane “顶上去”，确保 tab 与正文紧贴（不写死 -9）
         # -----------------------------
         pane_top_px = -1
         tab_margin_bottom_px = -1
@@ -5687,10 +5691,17 @@ class PackageTab(QWidget):
         """
         def _apply_output_tabs_style(pane_top: int, tab_margin_bottom: int):
             """应用 output_tabs 的样式（支持动态替换 pane/top 与 tab/margin-bottom）。"""
+            try:
+                state = (int(pane_top), int(tab_margin_bottom))
+            except Exception:
+                state = (pane_top, tab_margin_bottom)
+            if getattr(self, "_output_tabs_style_state", None) == state:
+                return
+            self._output_tabs_style_state = state
             self.output_tabs.setStyleSheet(
                 output_tabs_style
-                .replace("__PANE_TOP_PX__", str(pane_top))
-                .replace("__TAB_MARGIN_BOTTOM_PX__", str(tab_margin_bottom))
+                .replace("__PANE_TOP_PX__", str(state[0]))
+                .replace("__TAB_MARGIN_BOTTOM_PX__", str(state[1]))
             )
 
         # 初始应用（先保证基本对齐，避免闪一下）
@@ -5740,17 +5751,35 @@ class PackageTab(QWidget):
 
                 base_gap = max(base_gap_1, base_gap_2)
 
+                # 额外：直接从“TabBar 与页面内容”的几何关系推导真实缝隙（更稳）
+                # 有些 style 下 tabRect/sizeHint 不稳定，但页面的 geometry 一定反映最终布局结果
+                pane_gap = 0
+                try:
+                    page = self.output_tabs.currentWidget()
+                    if page:
+                        bar_bottom = tb.geometry().bottom()
+                        page_top = page.geometry().top()
+                        pane_gap = max(0, int(page_top - bar_bottom - 1))
+                except Exception:
+                    pane_gap = 0
+
+                gap_to_fix = max(int(base_gap), int(pane_gap))
+
                 # gap 很小时不用动（保留 -1 用于消边框缝）
-                if base_gap <= 1:
+                if gap_to_fix <= 1:
                     return
 
-                # 核心：用负 margin-bottom 抵消底座高度（等价于手动 -9px）
-                _apply_output_tabs_style(-1, -int(base_gap))
+                # 核心：把 pane “顶上去”抵消底座高度（让 tab 与正文紧贴）
+                _apply_output_tabs_style(-int(gap_to_fix), -1)
             except Exception:
                 # 任何异常都不影响主流程
                 return
 
+        # 重要：页面可能在应用启动时就创建，但此时还不可见，尺寸为 0，会导致误判
+        # 这里先跑一遍兜底；真正生效的校准放到 showEvent 再跑一次。
         QTimer.singleShot(0, _auto_fix_output_tabs_gap)
+        self._apply_output_tabs_style = _apply_output_tabs_style
+        self._auto_fix_output_tabs_gap = _auto_fix_output_tabs_gap
         
         # 确保 TAB 文字可见：显式设置文字和颜色
         tab_bar = self.output_tabs.tabBar()
@@ -5822,6 +5851,18 @@ class PackageTab(QWidget):
         """)
         self._download_progress_label.hide()
         self._download_progress_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标事件
+
+    def showEvent(self, event):
+        """TAB 真正可见后再做一次“消缝”校准，确保 tab 与正文紧贴。"""
+        super().showEvent(event)
+        try:
+            if hasattr(self, "_auto_fix_output_tabs_gap"):
+                # 0ms：等当前事件循环结束
+                QTimer.singleShot(0, self._auto_fix_output_tabs_gap)
+                # 50ms：再兜底一次，避免首次进入该页时布局尚未完全稳定
+                QTimer.singleShot(50, self._auto_fix_output_tabs_gap)
+        except Exception:
+            pass
     
     def _hide_git_push_close_button(self, index: int):
         """隐藏 Github 输出 TAB 的关闭按钮"""

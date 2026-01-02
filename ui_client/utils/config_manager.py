@@ -27,6 +27,11 @@ CURRENT_CONFIG_VERSION = 2
 
 DEFAULT_CONFIG = {
     "api_base": "http://127.0.0.1:8000",
+    # API 地址历史输入（用于设置页下拉快捷选择）
+    "api_base_history": [
+        "https://api-perf.sanying.site",
+        "http://127.0.0.1:8880",
+    ],
     # 通过 Google 登录获取到的 ID Token，仅用于调试 / 排查
     "google_id_token": "",
     # 后端 /auth/google_login 签发的会话 token，用于真正调用 /api/*
@@ -43,7 +48,7 @@ DEFAULT_CONFIG = {
     "airdrop_auto_stop": False,
     # 日志保留时长（小时），默认仅保留最近 1 小时
     "log_retention_hours": 1,
-    "client_version": "1.1.2",  # 客户端版本号（格式：x.x.x）
+    "client_version": "1.1.3",  # 客户端版本号（格式：x.x.x）
     "update_dialog_dismissed_date": "",  # 非强制升级弹窗关闭的日期（格式：YYYY-MM-DD），用于当天不再弹出
     # 隔空投送可被发现范围：all | group | none
     "airdrop_discover_scope": "all",
@@ -78,6 +83,7 @@ USER_DATA_FIELDS = {
     "update_dialog_dismissed_date",  # 用户交互数据
     # 用户可配置的设置（用户在设置菜单中可以修改，应该保留用户的值）
     "api_base",  # API地址
+    "api_base_history",  # API 地址历史输入（设置页下拉）
     "theme",  # 主题设置
     "auto_refresh",  # 自动刷新
     "notifications",  # 通知设置

@@ -300,6 +300,34 @@ class ApiClient:
         data = self._get("/api/monthly_ranking", params=params if params else None)
         return data
 
+    def get_monthly_rank_ext(self, rank_type: str, month_str: Optional[str] = None) -> Any:
+        """
+        GET /api/monthly_rank_ext?rank_type=...&month=YYYY-MM-DD
+        返回格式：MonthlyRankExtResponse
+        rank_type: progress/execution/quality/collaboration/reflection
+        """
+        params = {"rank_type": rank_type}
+        if month_str:
+            params["month"] = month_str
+        data = self._get("/api/monthly_rank_ext", params=params)
+        return data
+
+    def get_progress_rank_detail(self, month_str: str, user_id: str) -> Any:
+        """
+        GET /api/progress_rank_detail?month=YYYY-MM-DD&user_id=xxx
+        返回格式：ProgressRankDetailResponse
+        """
+        params = {"month": month_str, "user_id": user_id}
+        return self._get("/api/progress_rank_detail", params=params)
+
+    def get_top_daily_dim_scores(self, rank_type: str, month_str: str, user_id: str, limit: int = 3) -> Any:
+        """
+        GET /api/top_daily_dim_scores?rank_type=...&month=YYYY-MM-DD&user_id=xxx&limit=3
+        返回格式：TopDailyDimScoresResponse
+        """
+        params = {"rank_type": rank_type, "month": month_str, "user_id": user_id, "limit": int(limit)}
+        return self._get("/api/top_daily_dim_scores", params=params)
+
     def get_monthly_detail(self, month_str: Optional[str] = None) -> Any:
         """
         GET /api/monthly_detail?month=YYYY-MM-DD
@@ -334,6 +362,20 @@ class ApiClient:
         if isinstance(data, dict) and "result" in data:
             return data["result"]
         return data
+
+    def get_top10_user_daily_view(self, date_str: str, user_id: str) -> Any:
+        """
+        GET /api/top10_user_daily_view?date=YYYY-MM-DD&user_id=xxx
+        返回格式：Top10UserDailyViewResponse
+        """
+        return self._get("/api/top10_user_daily_view", params={"date": date_str, "user_id": user_id})
+
+    def get_top10_user_monthly_detail(self, month_str: str, user_id: str) -> Any:
+        """
+        GET /api/top10_user_monthly_detail?month=YYYY-MM-DD&user_id=xxx
+        返回格式：Top10UserMonthlyDetailResponse
+        """
+        return self._get("/api/top10_user_monthly_detail", params={"month": month_str, "user_id": user_id})
 
     def get_health_check(self) -> Any:
         """
