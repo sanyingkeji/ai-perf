@@ -3548,12 +3548,20 @@ class ScriptExecutionTab(QWidget):
         layout.addWidget(splitter, 1)
     
     def _load_readme(self):
-        """加载 scripts/README.md 文档"""
+        """加载 docs/scripts/README.md 文档（默认使用“操作目录”作为项目根目录）"""
         try:
-            current_file = Path(__file__).resolve()
-            # admin_ui_client/windows/maintenance_view.py -> admin_ui_client -> 项目根目录
-            project_root = current_file.parent.parent.parent
-            readme_path = project_root / "scripts" / "README.md"
+            # 优先使用设置页手动配置的“操作目录”（项目根目录）
+            cfg = ConfigManager.load()
+            working_directory = (cfg.get("working_directory", "") or "").strip()
+            if working_directory and Path(working_directory).exists() and Path(working_directory).is_dir():
+                project_root = Path(working_directory).resolve()
+            else:
+                # 兜底：使用自动检测的项目根目录（开发环境/未配置时）
+                current_file = Path(__file__).resolve()
+                # admin_ui_client/windows/maintenance_view.py -> admin_ui_client -> 项目根目录
+                project_root = current_file.parent.parent.parent
+
+            readme_path = project_root / "docs" / "scripts" / "README.md"
             
             if readme_path.exists():
                 content = readme_path.read_text(encoding='utf-8')
@@ -3569,7 +3577,10 @@ class ScriptExecutionTab(QWidget):
                 self.md_path_label.setText(f"文件路径: {self._current_md_path}")
             else:
                 self.readme_text.clear()
-                self.readme_text.setPlainText(f"README.md 文件不存在: {readme_path}")
+                hint = ""
+                if not working_directory:
+                    hint = "\n\n提示：可在【设置 → 操作目录】配置项目根目录。"
+                self.readme_text.setPlainText(f"README.md 文件不存在: {readme_path}{hint}")
                 self._current_md_path = None
                 self.md_path_label.setText("文件路径: --")
         except Exception as e:
@@ -3662,9 +3673,16 @@ class ScriptExecutionTab(QWidget):
     
     def _on_browse_md_file(self):
         """浏览并加载MD文件"""
-        current_file = Path(__file__).resolve()
-        project_root = current_file.parent.parent.parent
-        scripts_dir = project_root / "scripts"
+        # 默认从“操作目录/docs/scripts”开始浏览（与默认 README 路径一致）
+        cfg = ConfigManager.load()
+        working_directory = (cfg.get("working_directory", "") or "").strip()
+        if working_directory and Path(working_directory).exists() and Path(working_directory).is_dir():
+            project_root = Path(working_directory).resolve()
+        else:
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parent.parent.parent
+
+        scripts_dir = project_root / "docs" / "scripts"
         
         file_path, _ = QFileDialog.getOpenFileName(
             self,
